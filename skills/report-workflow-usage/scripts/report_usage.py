@@ -41,8 +41,11 @@ def validate_report(value):
         item = value.get(key)
         if not isinstance(item, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})", item):
             fail(key + " must be RFC3339 with a timezone")
-        # Python 3.9/3.10 accept microseconds; RFC3339Nano producers may emit nine digits.
-        normalized = re.sub(r"(\.\d{6})\d+(?=Z|[+-]\d{2}:\d{2}$)", r"\1", item)
+        # Python 3.9/3.10 require three or six fractional digits, while Go's
+        # RFC3339Nano omits trailing zeroes. Normalize every fraction to six
+        # digits, padding short fractions and truncating nanosecond precision.
+        normalized = re.sub(r"\.(\d+)(?=Z|[+-]\d{2}:\d{2}$)",
+                            lambda match: "." + match.group(1)[:6].ljust(6, "0"), item)
         return datetime.fromisoformat(normalized.replace("Z", "+00:00")).astimezone(timezone.utc)
 
     fields(value, "id type externalExecutionId workflow externalUserId url startedAt finishedAt executionDurationMs status usage", "report")
