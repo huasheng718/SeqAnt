@@ -1,5 +1,13 @@
 # Deployment
 
+## Delivery policy in this source build
+
+`AGENTFLOW_DELIVERY_POLICY` defaults to `controlled_pr`. Configure the API and every Engine/Worker consistently. Unknown values stop startup. New Runs freeze the configured policy, and controlled parents remain controlled in child SOPs. Missing policies in persisted Runs/tasks are controlled, including when the deployment later selects `legacy`.
+
+Controlled execution receives no platform Git token, credential-bearing HTTP clone URL, known hosting credential environment keys, or MCP server/file/call configuration. Model credentials and skills remain available. Runner publication actions, conversation pushes, automatic integration/merge and automatic Issue completion are disabled. Checkout also cannot initialize an empty remote or publish a missing integration branch. The old scheduled integration path fails closed. The explicit controller contribution path imports immutable accepted Git bundles, records fixed-SHA gates from independent SOP Runs and creates a draft GitHub PR. It is opt-in, requires attempt workspaces and platform administration, and grants no merge or business-completion capability. See [contribution delivery](contribution-delivery.md) for prerequisites and limits.
+
+Set `AGENTFLOW_DELIVERY_POLICY=legacy` only when deliberately retaining the old publication/MCP behavior for new Runs. Legacy does not weaken a previously controlled or unstamped Run. Platform policy does not revoke previously issued credentials, ambient native-user Git/SSH access, or secrets embedded in user scripts/images; independent execution confinement remains necessary.
+
 ## Native development
 
 `bash scripts/dev.sh` explicitly configures local secrets, starts only this checkout's MySQL service, builds the platform, provisions the `admin` account, installs the missing observability generated columns through an explicit script, applies `migrations/seed/*.sql`, and starts the server on port 8090. Existing catalog definitions are preserved by `INSERT IGNORE`. Keep `.env`, `.local/` and database volumes outside version control.
