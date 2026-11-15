@@ -37,12 +37,13 @@ func TestPushConversationWorkspaceCommitsAndPushesWorkBranch(t *testing.T) {
 	}
 	t.Cleanup(st.Close)
 	e := New(st, runtime.NewManager(filepath.Join(root, "workspaces")))
+	_ = e.ConfigureDeliveryPolicy(domain.DeliveryPolicyLegacy)
 	run := domain.Run{
 		ID:               "run-direct-push",
 		Status:           "waiting",
 		Input:            "改文案",
 		WorkflowSnapshot: domain.WorkflowDefinition{ID: "free-collaboration", Name: "自由协作", CollaborationMode: "group"},
-		ExecutionContext: domain.TelemetryContext{ProjectID: "platform", ExecutionMode: domain.ExecutionModeCloud},
+		ExecutionContext: domain.TelemetryContext{DeliveryPolicy: domain.DeliveryPolicyLegacy, ProjectID: "platform", ExecutionMode: domain.ExecutionModeCloud},
 		Repositories:     []domain.RepositoryContext{{RepositoryID: "repo-1", Name: "app", CloneURL: remote, BaseBranch: "master", WorkBranch: "feature/direct", WorkspaceDir: "app"}},
 		Nodes:            map[string]*domain.NodeRun{},
 	}

@@ -13,8 +13,10 @@ import (
 
 func TestRunnerIntegrateAndConversationPushCanceled(t *testing.T) {
 	e, st := cvEEngine(t)
+	_ = e.ConfigureDeliveryPolicy(domain.DeliveryPolicyLegacy)
 	runner := cvERunner(t, e, "integration-runner", domain.RunnerStatusOnline, "terminal")
 	run := cvERunnerRun("integration-run", runner.ID)
+	run.ExecutionContext.DeliveryPolicy = domain.DeliveryPolicyLegacy
 	run.Input = "delivery"
 	run.Repositories = []domain.RepositoryContext{{
 		RepositoryID: "repo", Name: "Repo", CloneURL: "https://example/repo.git",
@@ -68,9 +70,11 @@ func TestRunnerIntegrateAndConversationPushCanceled(t *testing.T) {
 
 func TestIntegrationCallbacksRepairPatchAndCompleteness(t *testing.T) {
 	e, st := cvEEngine(t)
+	_ = e.ConfigureDeliveryPolicy(domain.DeliveryPolicyLegacy)
 	run := domain.Run{ID: "integration-callback", Status: "running", Input: "Title", WorkflowSnapshot: domain.WorkflowDefinition{
 		Nodes: []domain.WorkflowNode{{ID: "implement", Type: "agent"}, {ID: "review", Type: "approval", RejectTo: "implement"}},
 	}, Nodes: map[string]*domain.NodeRun{"implement": {NodeID: "implement", Status: "succeeded"}, "review": {NodeID: "review", Status: "failed"}}}
+	run.ExecutionContext.DeliveryPolicy = domain.DeliveryPolicyLegacy
 	if err := st.PutRun(run); err != nil {
 		t.Fatal(err)
 	}

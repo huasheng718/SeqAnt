@@ -323,6 +323,7 @@ func (e *Engine) executeNode(ctx context.Context, runID string, wf domain.Workfl
 	defer unlock()
 	executionGeneration := currentLease.Generation
 	executionAttempt := 0
+	var executionDeadline *time.Time
 	started := false
 	e.updateRun(runID, func(r *domain.Run) {
 		nr := r.Nodes[node.ID]
@@ -339,9 +340,15 @@ func (e *Engine) executeNode(ctx context.Context, runID string, wf domain.Workfl
 		nr.Status = "running"
 		if !continuingInterruptedAttempt(nr) {
 			nr.Attempt++
+			nr.StartedAt = time.Now().UTC()
+			nr.ExecutionDeadline = nil
+			if node.MaxDurationSec > 0 && node.MaxDurationSec <= 86400 {
+				deadline := nr.StartedAt.Add(time.Duration(node.MaxDurationSec) * time.Second)
+				nr.ExecutionDeadline = &deadline
+			}
 		}
 		executionAttempt = nr.Attempt
-		nr.StartedAt = time.Now().UTC()
+		executionDeadline = nr.ExecutionDeadline
 		nr.GateResult = nil
 		e.event(r, node.ID, "node.started", node.Name+" 开始执行")
 	})
@@ -350,7 +357,24 @@ func (e *Engine) executeNode(ctx context.Context, runID string, wf domain.Workfl
 	}
 	ctx, cancelNode := context.WithCancel(ctx)
 	defer cancelNode()
+	if executionDeadline != nil {
+		var stopDeadline context.CancelFunc
+		ctx, stopDeadline = context.WithDeadline(ctx, *executionDeadline)
+		defer stopDeadline()
+		defer func() {
+			if domain.ExecutionDeadlineExpired(executionDeadline, time.Now().UTC()) {
+				e.nodeFailedAt(runID, node, executionAttempt, executionGeneration, domain.ErrExecutionDeadlineExceeded, false)
+			}
+		}()
+	}
 	defer e.registerNodeExecution(runID, node.ID, executionAttempt, cancelNode)()
+	if err := domain.ValidateWorkflowExecutionLimits(domain.WorkflowDefinition{Nodes: []domain.WorkflowNode{node}}); err != nil {
+		e.nodeFailedAt(runID, node, executionAttempt, executionGeneration, err, false)
+		return
+	}
+	if ctx.Err() != nil {
+		return
+	}
 	failNode := func(err error, allowReject bool) {
 		if err == nil {
 			return
@@ -464,7 +488,7 @@ func (e *Engine) executeNode(ctx context.Context, runID string, wf domain.Workfl
 	}
 	current, _ = e.repo.RunState(runID)
 	gitTok := sb.credentialSnapshot().GitToken
-	ctx = withGitToken(ctx, gitTok)
+	ctx = withGitToken(e.deliveryContext(ctx, current), gitTok)
 	ctx = withGitIdentity(ctx, sb.credentialSnapshot().GitUserName, sb.credentialSnapshot().GitUserEmail)
 	// Repository checkout and Agent-configuration index isolation belong to the
 	// run environment, not to each node. The same checkout and .git/index are
@@ -613,7 +637,7 @@ func (e *Engine) executeNode(ctx context.Context, runID string, wf domain.Workfl
 			rawOutput, runErr := executeForTargets(current, node.ExecutionScope, func(target executionTarget) (string, error) {
 				bound := bindExecutionTarget(command, target)
 				targetSink := executionTargetSink(sink, target)
-				scriptAssets := e.resolveScriptMCPAssets(current.ExecutionContext.ProjectID, current.ExecutionContext.ResponsibleUserID)
+				scriptAssets := e.deliveryAssets(current, e.resolveScriptMCPAssets(current.ExecutionContext.ProjectID, current.ExecutionContext.ResponsibleUserID))
 				if execMachine := e.defaultExecutionRunner(current); execMachine != "" {
 					workspace := runnerWorkspaceRel(current, node.ID)
 					return e.dispatchRunnerScript(ctx, execMachine, current, node.ID, workspace, "shell", bound, target.directory(), effectiveNode.ArtifactOutputs, sb, sb.credentialSnapshot().GitToken, sb.credentialSnapshot().GitUserName, sb.credentialSnapshot().GitUserEmail, scriptAssets, targetSink)
@@ -724,7 +748,7 @@ func (e *Engine) executeNode(ctx context.Context, runID string, wf domain.Workfl
 			if requiresSubmit {
 				prompt = appendSubmitGateInstruction(prompt, node.RejectTo, feedback == gateMissingRetryMarker)
 			}
-			assets := e.resolveAssets(agent, current.ExecutionContext.ProjectID, wf.ID, current.ExecutionContext.ResponsibleUserID)
+			assets := e.deliveryAssets(current, e.resolveAssets(agent, current.ExecutionContext.ProjectID, wf.ID, current.ExecutionContext.ResponsibleUserID))
 			warnMCPSkipped := func(message string) {
 				sink(domain.TelemetryEvent{Category: "mcp", Name: "mcp.skipped", Phase: "start", Level: "warn", Message: message})
 			}
@@ -1016,6 +1040,9 @@ func (e *Engine) executeNode(ctx context.Context, runID string, wf domain.Workfl
 	e.updateRun(runID, func(r *domain.Run) {
 		nr := r.Nodes[node.ID]
 		if !shouldCommitNodeOutcome(*r, nr, executionGeneration, executionAttempt, true) {
+			return
+		}
+		if domain.ExecutionDeadlineExpired(nr.ExecutionDeadline, time.Now().UTC()) {
 			return
 		}
 		r.Artifacts = append(r.Artifacts, artifacts...)

@@ -26,6 +26,7 @@ func commitOnBranch(t *testing.T, remote, branch, path, content string) {
 // 基线对齐也在云端执行机器上做：干净合并直接推送，冲突带着冲突片段返回，集成分支不动。
 func TestAlignBaselineRunsOnPoolRunner(t *testing.T) {
 	server, s, e := newDaemonTestServer(t)
+	_ = e.ConfigureDeliveryPolicy(domain.DeliveryPolicyLegacy)
 	e.ConfigureCloudRunnerPool(engine.CloudRunnerPool{Label: "pool=cloud", Projects: []string{"*"}, Required: true})
 	startPoolRunner(t, s, server.URL, "builtin-a")
 	remote := bareRemoteWithBaseline(t)

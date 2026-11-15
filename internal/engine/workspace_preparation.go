@@ -14,7 +14,11 @@ import (
 
 func (e *Engine) workspaceSandboxProfile(run domain.Run) (domain.SandboxProfile, runtime.SandboxResources, error) {
 	if spec := run.WorkflowSnapshot.SandboxSnapshot; spec != nil {
-		return spec.Profile, sandboxResourcesFromSnapshot(spec), nil
+		task := domain.RunnerTask{Sandbox: spec}
+		if err := e.applyRunnerTaskPolicy(run, &task); err != nil {
+			return domain.SandboxProfile{}, runtime.SandboxResources{}, err
+		}
+		return task.Sandbox.Profile, sandboxResourcesFromSnapshot(task.Sandbox), nil
 	}
 	id := strings.TrimSpace(run.WorkflowSnapshot.SandboxProfileID)
 	if id == "" {
@@ -25,6 +29,10 @@ func (e *Engine) workspaceSandboxProfile(run domain.Run) (domain.SandboxProfile,
 		return profile, runtime.SandboxResources{}, fmt.Errorf("sandbox profile %q not found", id)
 	}
 	resources, err := resolveSandboxResources(e.repo, profile)
+	if e.controlledRun(run) {
+		profile.Environment = domain.RestrictDeliveryEnvironment(profile.Environment)
+		resources.Environment.Variables = domain.RestrictDeliveryEnvironment(resources.Environment.Variables)
+	}
 	return profile, resources, err
 }
 
@@ -32,6 +40,9 @@ func (e *Engine) workspaceSandboxProfile(run domain.Run) (domain.SandboxProfile,
 // lease. The workspace-use lease fences cleanup; the sandbox's workspace flock
 // fences another process. An active local scheduler shares its existing handle.
 func (e *Engine) acquireConversationEnvironment(ctx context.Context, run domain.Run) (*runEnvironment, error) {
+	if err := e.validateDeliveryRepositories(run); err != nil {
+		return nil, err
+	}
 	if e.foreignWorkspaceBind(run) || e.defaultExecutionRunner(run) != "" {
 		return nil, fmt.Errorf("工作区属于其他执行实例")
 	}
@@ -84,7 +95,7 @@ func (e *Engine) prepareLocalEnvironment(ctx context.Context, run domain.Run, en
 	defer env.preparing.Store(false)
 	// Caller owns env.nodeMu so reconstruction is serialized without turning
 	// environment preparation into business-node attempts.
-	assets := e.resolveScriptMCPAssets(run.ExecutionContext.ProjectID, run.ExecutionContext.ResponsibleUserID)
+	assets := e.deliveryAssets(run, e.resolveScriptMCPAssets(run.ExecutionContext.ProjectID, run.ExecutionContext.ResponsibleUserID))
 	if len(runtime.PreparationNodes(workspacePreparationPlan(run))) > 0 {
 		if err := runtime.ProvisionMCPAssets(ctx, env, env.Workspace(), assets, nil); err != nil {
 			return runtime.WorkspacePreparationStatus{Status: "failed", Error: err.Error(), Steps: []runtime.WorkspacePreparationStep{}}, err
@@ -138,10 +149,15 @@ func (e *Engine) preparedWorkspaceRequest(run domain.Run, request domain.RunnerW
 	credentials := e.resolveRunCredentials(run)
 	invocation := &domain.RunnerInvocation{}
 	bindRunnerRepositories(invocation, run, credentials.GitToken, credentials.GitUserName, credentials.GitUserEmail)
-	assets := e.resolveScriptMCPAssets(run.ExecutionContext.ProjectID, run.ExecutionContext.ResponsibleUserID)
+	assets := e.deliveryAssets(run, e.resolveScriptMCPAssets(run.ExecutionContext.ProjectID, run.ExecutionContext.ResponsibleUserID))
 	invocation.Assets = assets
 	invocation.MCPCallServers = assets.MCPServers
-	request.PreparationInvocation = invocation
+	task := domain.RunnerTask{Invocation: invocation, Sandbox: request.Sandbox}
+	if err := e.applyRunnerTaskPolicy(run, &task); err != nil {
+		return request, err
+	}
+	request.Sandbox = task.Sandbox
+	request.PreparationInvocation = task.Invocation
 	request.RunStatus = run.Status
 	request.WorkspaceLayout = run.ExecutionContext.RunnerWorkspaceLayout
 	return request, nil

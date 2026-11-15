@@ -35,13 +35,20 @@ type runSandbox struct {
 // to call when the task is done. Tasks of a shared run checkout reuse one
 // sandbox per definition; other tasks get a throwaway one.
 func (d *Daemon) acquireTaskSandbox(ctx context.Context, task domain.RunnerTask) (runtime.Sandbox, func(), error) {
+	if err := d.prepareTaskWorkspace(task); err != nil {
+		return nil, nil, err
+	}
 	if task.Sandbox == nil {
 		return nil, nil, fmt.Errorf("frozen run sandbox definition is required")
 	}
 	requirements, resources := taskSandboxSpec(task)
 	key, id, shared := runSandboxKey(task, requirements, resources)
 	if !shared || d.cfg.DisableRunSandboxReuse {
-		sandbox, err := runtime.OpenRemoteSandbox(ctx, task.ID, d.taskWorkspace(task), task.Sandbox.Profile, requirements, resources)
+		sandboxID := task.ID
+		if isolatedTask(task) {
+			sandboxID = id
+		}
+		sandbox, err := runtime.OpenRemoteSandbox(ctx, sandboxID, d.taskWorkspace(task), task.Sandbox.Profile, requirements, resources)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -140,7 +147,7 @@ func (d *Daemon) closeSharedSandboxes(ctx context.Context, match func(*runSandbo
 // enumerates.
 func runSandboxKey(task domain.RunnerTask, requirements runtime.SandboxRequirements, resources runtime.SandboxResources) (string, string, bool) {
 	runID := strings.TrimSpace(task.RunID)
-	if runID == "" || task.Sandbox == nil || !sharedRunWorkspace(task.Workspace) {
+	if runID == "" || task.Sandbox == nil || (!isolatedTask(task) && !sharedRunWorkspace(task.Workspace)) {
 		return "", "", false
 	}
 	spec, err := json.Marshal(struct {
@@ -153,6 +160,13 @@ func runSandboxKey(task domain.RunnerTask, requirements runtime.SandboxRequireme
 	}
 	sum := sha256.Sum256(spec)
 	fingerprint := hex.EncodeToString(sum[:])[:12]
+	if isolatedTask(task) {
+		desc, err := domain.IsolatedWorkspaceDescriptor(task)
+		if err != nil {
+			return "", "", false
+		}
+		return runID + "|attempt|" + desc.IdentitySHA256 + "|" + fingerprint, "rt-attempt-" + desc.IdentitySHA256[:32] + "-" + fingerprint, true
+	}
 	return runID + "|" + fingerprint, "rt-run-" + containerSafe(runID) + "-" + fingerprint, true
 }
 

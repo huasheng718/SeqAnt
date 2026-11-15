@@ -29,6 +29,7 @@ func seedIntegrationBranch(t *testing.T, remote, branch, path, content string) {
 // 定时 SOP 跑在执行机器上时，合入集成分支要在执行机器的工作区里做，推上去的才是真正的改动。
 func TestRunnerModeScheduledRunIntegratesOnRunner(t *testing.T) {
 	server, s, e := newDaemonTestServer(t)
+	_ = e.ConfigureDeliveryPolicy(domain.DeliveryPolicyLegacy)
 	remote := bareRemoteWithBaseline(t)
 	seedIntegrationBranch(t, remote, "integration", "other.txt", "from another issue\n")
 	runner := startReportingRunner(t, s, server.URL)

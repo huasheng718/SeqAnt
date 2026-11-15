@@ -14,10 +14,14 @@ import (
 const processWaitDelay = time.Second
 
 func runCommand(cmd *exec.Cmd, sink EventSink) (string, error) {
+	return runCommandWithDisplayArgs(cmd, sink, cmd.Args)
+}
+
+func runCommandWithDisplayArgs(cmd *exec.Cmd, sink EventSink, displayArgs []string) (string, error) {
 	var buf bytes.Buffer
 	var mu sync.Mutex
 	if sink != nil {
-		sink(domain.TelemetryEvent{Category: "process", Name: "process.started", Phase: "start", Message: compactCommand(cmd.Args)})
+		sink(domain.TelemetryEvent{Category: "process", Name: "process.started", Phase: "start", Message: compactCommand(displayArgs)})
 	}
 	stdout := &processWriter{output: &buf, mu: &mu, sink: sink, name: "process.stdout", level: "info"}
 	stderr := &processWriter{output: &buf, mu: &mu, sink: sink, name: "process.stderr", level: "error"}
@@ -27,7 +31,9 @@ func runCommand(cmd *exec.Cmd, sink EventSink) (string, error) {
 	// exits. The same timer also cuts off output still buffered in the pipe:
 	// at 100ms a busy host (CI running Go and JS tests together) dropped the
 	// tail of a 50KB failure log, which is the part users need.
-	cmd.WaitDelay = processWaitDelay
+	if cmd.WaitDelay == 0 {
+		cmd.WaitDelay = processWaitDelay
+	}
 	err := cmd.Run()
 	if errors.Is(err, exec.ErrWaitDelay) {
 		err = nil

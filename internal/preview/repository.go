@@ -15,6 +15,8 @@ type Repository interface {
 	PutPreview(p domain.RunPreview) error
 	ClaimPreviewArchive(id string, now, until time.Time) (domain.RunPreview, bool, error)
 	MarkPreviewReadyIfArchiving(p domain.RunPreview) (bool, error)
+	ValidateRunnerPreviewUpload(previewID, runnerID, taskID string, attempt int, tokenHash string, now time.Time) error
+	MarkRunnerPreviewReady(p domain.RunPreview, runnerID, taskID string, attempt int, tokenHash string, now time.Time) (bool, error)
 	FailPreviewIfOpen(id, errText string, now time.Time) (bool, error)
 	Preview(id string) (domain.RunPreview, bool)
 	PreviewByRun(runID string) (domain.RunPreview, bool)

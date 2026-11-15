@@ -22,6 +22,9 @@ import (
 // opens a listener; the runner is unreachable from the network by design.
 
 var ErrUnauthorized = errors.New("runner session rejected by server")
+
+const runnerTaskProtocol = "2"
+
 var ErrTaskLeaseLost = errors.New("task lease lost")
 
 type Client struct {
@@ -71,6 +74,9 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 	if session := c.sessionToken(); session != "" {
 		req.Header.Set("Authorization", "Bearer "+session)
 	}
+	if path == "/runners/tasks/claim" {
+		req.Header.Set("X-Runner-Task-Protocol", runnerTaskProtocol)
+	}
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return err
@@ -78,6 +84,9 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusUnauthorized {
 		return ErrUnauthorized
+	}
+	if path == "/runners/tasks/claim" && resp.StatusCode < 400 && resp.Header.Get("X-Runner-Task-Protocol") != runnerTaskProtocol {
+		return errors.New("runner task protocol 2 required from server")
 	}
 	if resp.StatusCode == http.StatusNoContent {
 		return nil
@@ -188,8 +197,7 @@ type ClaimRequest struct {
 	NoWait            bool     `json:"noWait,omitempty"`
 }
 
-// WaitForTask long-polls without leasing work. Older servers ignore preflight
-// and return a leased task, which the daemon can still execute.
+// WaitForTask long-polls without leasing work. Both peers must support attempt fencing.
 func (c *Client) WaitForTask(ctx context.Context, req ClaimRequest) (bool, *domain.RunnerTask, error) {
 	req.Preflight = true
 	var out struct {
@@ -200,7 +208,7 @@ func (c *Client) WaitForTask(ctx context.Context, req ClaimRequest) (bool, *doma
 		return false, nil, err
 	}
 	if out.Task.ID != "" {
-		return true, &out.Task, nil
+		return false, nil, errors.New("preflight unexpectedly returned a leased task")
 	}
 	return out.TaskAvailable, nil, nil
 }
@@ -218,11 +226,14 @@ func (c *Client) Claim(ctx context.Context, req ClaimRequest) (*domain.RunnerTas
 	if out.Task.ID == "" {
 		return nil, false, nil
 	}
+	if out.Task.Attempt <= 0 {
+		return nil, false, errors.New("claimed task has no positive attempt")
+	}
 	return &out.Task, true, nil
 }
 
-func (c *Client) StartTask(ctx context.Context, taskID string) error {
-	return c.do(ctx, http.MethodPost, "/runners/tasks/"+taskID+"/start", map[string]any{}, nil)
+func (c *Client) StartTask(ctx context.Context, taskID string, attempt int) error {
+	return c.do(ctx, http.MethodPost, "/runners/tasks/"+taskID+"/start", map[string]any{"attempt": attempt}, nil)
 }
 
 type RenewResponse struct {
@@ -230,17 +241,17 @@ type RenewResponse struct {
 	DesiredState string    `json:"desiredState"`
 }
 
-func (c *Client) RenewLease(ctx context.Context, taskID string) (*RenewResponse, error) {
+func (c *Client) RenewLease(ctx context.Context, taskID string, attempt int) (*RenewResponse, error) {
 	var out RenewResponse
-	if err := c.do(ctx, http.MethodPost, "/runners/tasks/"+taskID+"/lease/renew", map[string]any{}, &out); err != nil {
+	if err := c.do(ctx, http.MethodPost, "/runners/tasks/"+taskID+"/lease/renew", map[string]any{"attempt": attempt}, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
 }
 
-func (c *Client) TaskControl(ctx context.Context, taskID string) (*RenewResponse, error) {
+func (c *Client) TaskControl(ctx context.Context, taskID string, attempt int) (*RenewResponse, error) {
 	var out RenewResponse
-	if err := c.do(ctx, http.MethodGet, "/runners/tasks/"+taskID+"/control", nil, &out); err != nil {
+	if err := c.do(ctx, http.MethodGet, "/runners/tasks/"+taskID+fmt.Sprintf("/control?attempt=%d", attempt), nil, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -282,11 +293,12 @@ func (c *Client) OpenControl(ctx context.Context) (*websocket.Conn, error) {
 	return conn, nil
 }
 
-func (c *Client) SendEvents(ctx context.Context, taskID string, events []domain.RunnerTaskEvent) error {
-	return c.do(ctx, http.MethodPost, "/runners/tasks/"+taskID+"/events", map[string]any{"events": events}, nil)
+func (c *Client) SendEvents(ctx context.Context, taskID string, attempt int, events []domain.RunnerTaskEvent) error {
+	return c.do(ctx, http.MethodPost, "/runners/tasks/"+taskID+"/events", map[string]any{"attempt": attempt, "events": events}, nil)
 }
 
 type CompleteRequest struct {
+	Attempt   int                       `json:"attempt"`
 	Status    string                    `json:"status"`
 	ExitCode  *int                      `json:"exitCode"`
 	Result    string                    `json:"result"`
@@ -295,17 +307,20 @@ type CompleteRequest struct {
 	Outputs   *domain.RunnerTaskOutputs `json:"outputs,omitempty"`
 }
 
-func (c *Client) Complete(ctx context.Context, taskID string, req CompleteRequest) error {
+func (c *Client) Complete(ctx context.Context, taskID string, attempt int, req CompleteRequest) error {
+	req.Attempt = attempt
 	return c.do(ctx, http.MethodPost, "/runners/tasks/"+taskID+"/complete", req, nil)
 }
 
-func (c *Client) UploadPreview(ctx context.Context, previewID, token string, body io.Reader) error {
+func (c *Client) UploadPreview(ctx context.Context, task domain.RunnerTask, previewID, token string, body io.Reader) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, c.base+"/runners/previews/"+previewID+"/content", body)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/octet-stream")
 	req.Header.Set("X-Preview-Upload-Token", token)
+	req.Header.Set("X-Runner-Task-ID", task.ID)
+	req.Header.Set("X-Runner-Task-Attempt", fmt.Sprint(task.Attempt))
 	if session := c.sessionToken(); session != "" {
 		req.Header.Set("Authorization", "Bearer "+session)
 	}
@@ -316,12 +331,19 @@ func (c *Client) UploadPreview(ctx context.Context, previewID, token string, bod
 	}
 	defer resp.Body.Close()
 	payload, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	if resp.StatusCode == http.StatusUnauthorized {
+		return ErrUnauthorized
+	}
+	if resp.StatusCode == http.StatusConflict {
+		var detail struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(payload, &detail) == nil && detail.Error == ErrTaskLeaseLost.Error() {
+			return ErrTaskLeaseLost
+		}
+	}
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("upload preview: %s", strings.TrimSpace(string(payload)))
 	}
 	return nil
-}
-
-func (c *Client) CompletePreview(ctx context.Context, previewID string) error {
-	return c.do(ctx, http.MethodPost, "/runners/previews/"+previewID+"/complete", map[string]any{}, nil)
 }

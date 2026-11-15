@@ -24,8 +24,9 @@ type TelemetrySource struct {
 
 // TelemetryContext correlates all three platform layers plus product context.
 type TelemetryContext struct {
-	ProjectID string `json:"projectId,omitempty"`
-	IssueID   string `json:"issueId,omitempty"`
+	DeliveryPolicy string `json:"deliveryPolicy,omitempty"`
+	ProjectID      string `json:"projectId,omitempty"`
+	IssueID        string `json:"issueId,omitempty"`
 	// TAPDID is the external requirement key; local IssueID may differ across imports.
 	TAPDID            string `json:"tapdId,omitempty"`
 	ResponsibleUserID int64  `json:"responsibleUserId,omitempty"`
@@ -41,12 +42,15 @@ type TelemetryContext struct {
 	// nodes to disk. Empty is the legacy per-node layout; shared gives every
 	// node in a new Run the same repository and Git index.
 	RunnerWorkspaceLayout string `json:"runnerWorkspaceLayout,omitempty"`
-	IssueNumber           int    `json:"issueNumber,omitempty"`
-	TaskID                string `json:"taskId,omitempty"`
-	ScheduleJobID         string `json:"scheduleJobId,omitempty"`
-	RunID                 string `json:"runId"`
-	ParentRunID           string `json:"parentRunId,omitempty"`
-	ParentNodeID          string `json:"parentNodeId,omitempty"`
+	// WorkspaceBaseSHAs is the caller's explicit repository-ID allowlist of
+	// immutable initial commits for the opt-in attempt layout.
+	WorkspaceBaseSHAs map[string]string `json:"workspaceBaseSHAs,omitempty"`
+	IssueNumber       int               `json:"issueNumber,omitempty"`
+	TaskID            string            `json:"taskId,omitempty"`
+	ScheduleJobID     string            `json:"scheduleJobId,omitempty"`
+	RunID             string            `json:"runId"`
+	ParentRunID       string            `json:"parentRunId,omitempty"`
+	ParentNodeID      string            `json:"parentNodeId,omitempty"`
 	// WorkspaceRunID names the run that owns the workspace a child SOP works
 	// in: the top-level run of its SOP chain. Empty means the run owns its
 	// own workspace.

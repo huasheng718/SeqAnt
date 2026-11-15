@@ -131,6 +131,9 @@ func TestReconcileCompletedDeliveries(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(s.Close)
+	if err := s.DeliveryRepo.ConfigureDeliveryPolicy(domain.DeliveryPolicyLegacy); err != nil {
+		t.Fatal(err)
+	}
 	issue := domain.Issue{ID: "tapd-done", ProjectID: "platform", Source: "tapd", LatestTaskID: "task-1"}
 	if err := s.PutIssue(issue); err != nil {
 		t.Fatal(err)
@@ -138,7 +141,7 @@ func TestReconcileCompletedDeliveries(t *testing.T) {
 	if err := s.PutTask(domain.Task{ID: "task-1", IssueID: issue.ID, RunID: "run-1", Status: "completed"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.PutRun(domain.Run{ID: "run-1", Status: "succeeded", UpdatedAt: time.Now().UTC(), ExecutionContext: domain.TelemetryContext{IssueID: issue.ID}}); err != nil {
+	if err := s.PutRun(domain.Run{ID: "run-1", Status: "succeeded", UpdatedAt: time.Now().UTC(), ExecutionContext: domain.TelemetryContext{DeliveryPolicy: domain.DeliveryPolicyLegacy, IssueID: issue.ID}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.ReconcileCompletedDeliveries(); err != nil {
@@ -446,6 +449,9 @@ func TestReconcileDeliveryMRStatesRecoversHTTPArtifactLink(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(s.Close)
+	if err := s.DeliveryRepo.ConfigureDeliveryPolicy(domain.DeliveryPolicyLegacy); err != nil {
+		t.Fatal(err)
+	}
 	issue := domain.Issue{
 		ID: "tapd-http-mr", ProjectID: "privatedns", Status: "done",
 		DeliveryState: "merged", LatestTaskID: "task-http",
@@ -459,7 +465,7 @@ func TestReconcileDeliveryMRStatesRecoversHTTPArtifactLink(t *testing.T) {
 	}
 	run := domain.Run{
 		ID: "run-http", Status: "succeeded", UpdatedAt: time.Now().UTC(),
-		ExecutionContext: domain.TelemetryContext{IssueID: issue.ID},
+		ExecutionContext: domain.TelemetryContext{DeliveryPolicy: domain.DeliveryPolicyLegacy, IssueID: issue.ID},
 		Repositories: []domain.RepositoryContext{{
 			RepositoryID: "demodns", Name: "dns-service", GongfengProjectID: "example/dns/dns-service",
 			WorkBranch: "feature/story-1",

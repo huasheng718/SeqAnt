@@ -83,7 +83,8 @@ func TestRunnerCallbacksPathsBindingsAndReconnect(t *testing.T) {
 
 	invocation := &domain.RunnerInvocation{}
 	run := domain.Run{
-		Repository: domain.RepositoryContext{RepositoryID: "legacy", CloneURL: "https://legacy", BaseBranch: "main", WorkBranch: "work"},
+		ExecutionContext: domain.TelemetryContext{DeliveryPolicy: domain.DeliveryPolicyLegacy},
+		Repository:       domain.RepositoryContext{RepositoryID: "legacy", CloneURL: "https://legacy", BaseBranch: "main", WorkBranch: "work"},
 	}
 	bindRunnerRepositories(invocation, run, "token", " Name ", " mail ")
 	if invocation.Repository == nil || invocation.Repository.GitToken != "token" || invocation.GitUserName != "Name" {
@@ -140,6 +141,9 @@ func TestRunnerQueueAwaitEventsAndArtifacts(t *testing.T) {
 	e, _ := cvEEngine(t)
 	cvERunner(t, e, "runner", domain.RunnerStatusOnline, "terminal", "codex")
 	run := cvERunnerRun("queue-run", "runner")
+	if err := e.repo.PutRun(run); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := e.queueRunnerRunCleanup(domain.Run{ID: "cloud", ExecutionContext: domain.TelemetryContext{ExecutionMode: domain.ExecutionModeCloud}}); err != nil {
 		t.Fatal(err)
@@ -154,7 +158,7 @@ func TestRunnerQueueAwaitEventsAndArtifacts(t *testing.T) {
 	if err := e.queueRunnerRunCleanup(run); err != nil {
 		t.Fatal(err)
 	}
-	if task, ok := e.repo.RunnerTask("rt-cleanup-queue-run"); !ok || task.Action != domain.RunnerTaskActionCleanupRun {
+	if task, ok := e.repo.LatestRunnerTaskForRunAction(run.ID, domain.RunnerTaskActionCleanupRun); !ok || task.Action != domain.RunnerTaskActionCleanupRun {
 		t.Fatalf("cleanup task = %+v %v", task, ok)
 	}
 	if err := e.queueRunnerPreviewArchive(domain.Run{ExecutionContext: domain.TelemetryContext{ExecutionMode: domain.ExecutionModeCloud}}, domain.RunnerPreviewArchiveSpec{}); err == nil {

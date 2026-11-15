@@ -231,7 +231,7 @@ func TestRunnerDisconnectKeepsRegistrationAndSession(t *testing.T) {
 	h := newRunnerTestServer(t)
 	t.Setenv("AGENTFLOW_RUNNER_BOOTSTRAP_TOKEN", "boot-secret")
 	runnerID, session := registerTestRunner(t, h)
-	auth := map[string]string{"Authorization": "Bearer " + session}
+	auth := map[string]string{"Authorization": "Bearer " + session, "X-Runner-Task-Protocol": "2"}
 
 	// A normal daemon stop marks presence offline without destroying the
 	// registration. The same session can heartbeat after a service restart.
@@ -295,7 +295,7 @@ func TestRunnerTaskEndToEnd(t *testing.T) {
 	// Keep the long poll short so the empty-claim check does not stall.
 	t.Setenv("AGENTFLOW_RUNNER_LONG_POLL_TIMEOUT", "200ms")
 	runnerID, session := registerTestRunner(t, h)
-	auth := map[string]string{"Authorization": "Bearer " + session}
+	auth := map[string]string{"Authorization": "Bearer " + session, "X-Runner-Task-Protocol": "2"}
 
 	// Heartbeat keeps the runner online.
 	rec := requestWithHeaders(t, h, http.MethodPost, "/api/runners/heartbeat", map[string]any{
@@ -351,13 +351,13 @@ func TestRunnerTaskEndToEnd(t *testing.T) {
 	}
 
 	// Start.
-	rec = requestWithHeaders(t, h, http.MethodPost, "/api/runners/tasks/"+created.ID+"/start", map[string]any{}, auth)
+	rec = requestWithHeaders(t, h, http.MethodPost, "/api/runners/tasks/"+created.ID+"/start", map[string]any{"attempt": 1}, auth)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("start: %d %s", rec.Code, rec.Body.String())
 	}
 
 	// Batched events are deduplicated by seq.
-	events := map[string]any{"events": []domain.RunnerTaskEvent{
+	events := map[string]any{"attempt": 1, "events": []domain.RunnerTaskEvent{
 		{Seq: 1, Type: "stdout", Data: "line-1"},
 		{Seq: 2, Type: "stdout", Data: "line-2"},
 	}}
@@ -383,7 +383,7 @@ func TestRunnerTaskEndToEnd(t *testing.T) {
 
 	// Complete.
 	exit := 0
-	rec = requestWithHeaders(t, h, http.MethodPost, "/api/runners/tasks/"+created.ID+"/complete", map[string]any{
+	rec = requestWithHeaders(t, h, http.MethodPost, "/api/runners/tasks/"+created.ID+"/complete", map[string]any{"attempt": 1,
 		"status":   "success",
 		"exitCode": exit,
 		"result":   "MOCK hello runner",
@@ -407,7 +407,7 @@ func TestRunnerTaskEndToEnd(t *testing.T) {
 func TestRunnerTaskCancelPropagatesThroughLease(t *testing.T) {
 	h := newRunnerTestServer(t)
 	_, session := registerTestRunner(t, h)
-	auth := map[string]string{"Authorization": "Bearer " + session}
+	auth := map[string]string{"Authorization": "Bearer " + session, "X-Runner-Task-Protocol": "2"}
 
 	created := requestJSON[domain.RunnerTask](t, h, http.MethodPost, "/api/runners/tasks", map[string]any{
 		"provider": "mock",
@@ -421,7 +421,7 @@ func TestRunnerTaskCancelPropagatesThroughLease(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("claim: %d %s", rec.Code, rec.Body.String())
 	}
-	_ = requestWithHeaders(t, h, http.MethodPost, "/api/runners/tasks/"+created.ID+"/start", map[string]any{}, auth)
+	_ = requestWithHeaders(t, h, http.MethodPost, "/api/runners/tasks/"+created.ID+"/start", map[string]any{"attempt": 1}, auth)
 
 	// Management cancel flags the live task.
 	_ = requestWithHeaders(t, h, http.MethodPost, "/api/runners/tasks/"+created.ID+"/cancel", map[string]any{}, nil)
@@ -430,7 +430,7 @@ func TestRunnerTaskCancelPropagatesThroughLease(t *testing.T) {
 	var renewed struct {
 		DesiredState string `json:"desiredState"`
 	}
-	rec = requestWithHeaders(t, h, http.MethodPost, "/api/runners/tasks/"+created.ID+"/lease/renew", map[string]any{}, auth)
+	rec = requestWithHeaders(t, h, http.MethodPost, "/api/runners/tasks/"+created.ID+"/lease/renew", map[string]any{"attempt": 1}, auth)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("renew: %d %s", rec.Code, rec.Body.String())
 	}
@@ -470,7 +470,7 @@ func TestRunnerObservationUploadIsIdempotent(t *testing.T) {
 	e := engine.New(s, runtime.NewManager(filepath.Join(root, "workspaces")))
 	h := New(s, e, tracker.NewService(), "", "")
 	runnerID, session := registerTestRunner(t, h)
-	auth := map[string]string{"Authorization": "Bearer " + session}
+	auth := map[string]string{"Authorization": "Bearer " + session, "X-Runner-Task-Protocol": "2"}
 	runID := "run-observable"
 	if err := s.PutRun(domain.Run{
 		ID: runID, Status: "running", Nodes: map[string]*domain.NodeRun{"work": {NodeID: "work", Status: "running"}},
@@ -480,7 +480,7 @@ func TestRunnerObservationUploadIsIdempotent(t *testing.T) {
 	}
 	task := domain.RunnerTask{
 		ID: "rt-observation", RunnerID: runnerID, Provider: "codex", Status: domain.RunnerTaskRunning,
-		LeaseOwner: runnerID, RunID: runID, NodeID: "work", MaxAttempts: 1,
+		Attempt: 1, LeaseUntil: func() *time.Time { t := time.Now().UTC().Add(time.Minute); return &t }(), LeaseOwner: runnerID, RunID: runID, NodeID: "work", MaxAttempts: 1,
 	}
 	if err := s.PutRunnerTask(task); err != nil {
 		t.Fatal(err)
@@ -495,7 +495,7 @@ func TestRunnerObservationUploadIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := map[string]any{"events": []domain.RunnerTaskEvent{{Seq: 1, Type: "observation", Data: string(raw), Ts: time.Now().UTC()}}}
+	body := map[string]any{"attempt": 1, "events": []domain.RunnerTaskEvent{{Seq: 1, Type: "observation", Data: string(raw), Ts: time.Now().UTC()}}}
 	for attempt := 0; attempt < 2; attempt++ {
 		rec := requestWithHeaders(t, h, http.MethodPost, "/api/runners/tasks/"+task.ID+"/events", body, auth)
 		if rec.Code != http.StatusOK {
@@ -534,7 +534,7 @@ func TestRunnerSessionRequiredForTaskAPI(t *testing.T) {
 func TestRunnerTaskClaimLongPollWaitsForNewTask(t *testing.T) {
 	h := newRunnerTestServer(t)
 	_, session := registerTestRunner(t, h)
-	auth := map[string]string{"Authorization": "Bearer " + session}
+	auth := map[string]string{"Authorization": "Bearer " + session, "X-Runner-Task-Protocol": "2"}
 
 	// Long poll in the background; it must not return 204 before the task
 	// arrives, and it should wake up shortly after creation.
@@ -577,7 +577,7 @@ func TestRunnerTaskClaimLongPollWaitsForNewTask(t *testing.T) {
 func TestRunnerTaskPreflightLeavesTaskQueued(t *testing.T) {
 	h := newRunnerTestServer(t)
 	runnerID, session := registerTestRunner(t, h)
-	auth := map[string]string{"Authorization": "Bearer " + session}
+	auth := map[string]string{"Authorization": "Bearer " + session, "X-Runner-Task-Protocol": "2"}
 	created := requestJSON[domain.RunnerTask](t, h, http.MethodPost, "/api/runners/tasks", map[string]any{
 		"provider": "mock", "prompt": "lazy update", "runnerId": runnerID,
 	}, http.StatusCreated)
@@ -621,7 +621,7 @@ func TestRunnerTaskClaimFindsTaskInsertedByAnotherProcess(t *testing.T) {
 	e := engine.New(s, runtime.NewManager(filepath.Join(t.TempDir(), "workspaces")))
 	h := New(s, e, tracker.NewService(), "", "")
 	_, session := registerTestRunner(t, h)
-	auth := map[string]string{"Authorization": "Bearer " + session}
+	auth := map[string]string{"Authorization": "Bearer " + session, "X-Runner-Task-Protocol": "2"}
 
 	done := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
@@ -745,7 +745,7 @@ func TestRunnerMachinePlaneNeedsNoUserIdentityButKeepsRunnerAuth(t *testing.T) {
 	if unauthorized.Code != http.StatusUnauthorized {
 		t.Fatalf("heartbeat without runner token: status=%d", unauthorized.Code)
 	}
-	auth := map[string]string{"Authorization": "Bearer " + session.Token}
+	auth := map[string]string{"Authorization": "Bearer " + session.Token, "X-Runner-Task-Protocol": "2"}
 	heartbeat := requestWithHeaders(t, h, http.MethodPost, "/runners/heartbeat", map[string]any{"runtimes": []domain.RunnerRuntime{{Provider: "terminal", Status: "online"}}}, auth)
 	if heartbeat.Code != http.StatusOK {
 		t.Fatalf("session heartbeat: status=%d body=%s", heartbeat.Code, heartbeat.Body.String())

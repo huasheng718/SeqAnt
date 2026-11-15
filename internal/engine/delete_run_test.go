@@ -185,7 +185,7 @@ func TestDeleteFailedRunnerRunQueuesRemoteCleanup(t *testing.T) {
 	if _, ok := st.Run(run.ID); ok {
 		t.Fatal("run record was not deleted")
 	}
-	task, ok := st.RunnerTask("rt-cleanup-" + run.ID)
+	task, ok := st.LatestRunnerTaskForRunAction(run.ID, domain.RunnerTaskActionCleanupRun)
 	if !ok {
 		t.Fatal("runner cleanup task was not queued")
 	}
@@ -220,7 +220,7 @@ func TestDeleteRunAfterExecutionRunnerWasUninstalled(t *testing.T) {
 	if _, ok := st.Run(run.ID); ok {
 		t.Fatal("run record was not deleted after the runner uninstall lifecycle completed")
 	}
-	if _, ok := st.RunnerTask("rt-cleanup-" + run.ID); ok {
+	if _, ok := st.LatestRunnerTaskForRunAction(run.ID, domain.RunnerTaskActionCleanupRun); ok {
 		t.Fatal("cleanup task was queued for a runner that no longer exists")
 	}
 }

@@ -126,6 +126,7 @@ func (e *Engine) startWorkflowDefinition(wf domain.WorkflowDefinition, input str
 	if len(repositories) > 0 {
 		firstRepository = repositories[0]
 	}
+	executionContext.DeliveryPolicy = e.DeliveryPolicy()
 	executionContext.RunID, executionContext.TraceID, executionContext.WorkflowID, executionContext.WorkflowVersion = id, id, workflowID, wf.Version
 	if executionContext.ParentRunID == "" {
 		executionContext.ExecutionRunnerID = e.repo.DefaultRunner(executionContext.ResponsibleUserID)
@@ -142,11 +143,16 @@ func (e *Engine) startWorkflowDefinition(wf domain.WorkflowDefinition, input str
 	}
 	if executionContext.ExecutionRunnerID != "" || executionContext.ExecutionPool == domain.ExecutionModeCloud {
 		executionContext.ExecutionMode = domain.ExecutionModeRunner
-		executionContext.RunnerWorkspaceLayout = domain.RunnerWorkspaceLayoutShared
+		if executionContext.RunnerWorkspaceLayout == "" {
+			executionContext.RunnerWorkspaceLayout = domain.RunnerWorkspaceLayoutShared
+		}
 	} else {
 		executionContext.ExecutionMode = domain.ExecutionModeCloud
 	}
 	if err := e.requireWorkBranchCapabilities(executionContext.ExecutionRunnerID, repositories); err != nil {
+		return domain.Run{}, err
+	}
+	if err := e.freezeWorkspaceIsolation(&executionContext, repositories, workspace); err != nil {
 		return domain.Run{}, err
 	}
 	wf.SandboxSnapshot = resolvedSandboxSnapshot(profile, resources)
@@ -166,9 +172,15 @@ func (e *Engine) startWorkflowDefinition(wf domain.WorkflowDefinition, input str
 		if !exists {
 			return domain.Run{}, fmt.Errorf("父 SOP 运行不存在")
 		}
+		if e.controlledRun(parent) {
+			r.ExecutionContext.DeliveryPolicy = domain.DeliveryPolicyControlledPR
+		}
 		if err := inheritSOPHandoff(parent, &r); err != nil {
 			return domain.Run{}, err
 		}
+	}
+	if err := e.validateDeliveryRepositories(r); err != nil {
+		return domain.Run{}, err
 	}
 	if workspace {
 		r.Kind = domain.RunKindWorkspace

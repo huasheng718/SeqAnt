@@ -149,7 +149,7 @@ func (e *Engine) MaterializeConversationWorkspace(ctx context.Context, id string
 	// Same checkout as an SOP node: the responsible user's Git Token, the
 	// frozen base branch, and a fresh work branch.
 	gitToken := env.credentialSnapshot().GitToken
-	ctx = withGitToken(e.withPreparationProgress(ctx, run.ID), gitToken)
+	ctx = withGitToken(e.deliveryContext(e.withPreparationProgress(ctx, run.ID), run), gitToken)
 	return env.prepareRepositoriesOnce(func() error {
 		if err := prepareRepositories(ctx, env.Workspace(), run.RepositoryContexts()); err != nil {
 			return explainGitAuthFailure(fmt.Errorf("repository checkout: %w", err), strings.TrimSpace(gitToken) != "")
@@ -256,7 +256,7 @@ func (e *Engine) ensureConversationWorkspace(ctx context.Context, id, token stri
 	}
 	var err error
 	if runner != "" {
-		if task, exists := e.repo.RunnerTask("rt-cleanup-" + safeRunnerPath(id)); exists {
+		if task, exists := e.repo.LatestRunnerTaskForRunAction(id, domain.RunnerTaskActionCleanupRun); exists {
 			if task.Status == domain.RunnerTaskQueued {
 				if err = e.repo.CancelRunnerTask(task.ID, time.Now().UTC()); err != nil {
 					return err

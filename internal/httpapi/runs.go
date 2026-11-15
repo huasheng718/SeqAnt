@@ -89,9 +89,11 @@ func (h *runsHandlers) runs(c *gin.Context) {
 	}
 	if r.Method == http.MethodPost {
 		var req struct {
-			WorkflowID string `json:"workflowId"`
-			Input      string `json:"input"`
-			ProjectID  string `json:"projectId"`
+			RunnerWorkspaceLayout string            `json:"runnerWorkspaceLayout,omitempty"`
+			WorkspaceBaseSHAs     map[string]string `json:"workspaceBaseSHAs,omitempty"`
+			WorkflowID            string            `json:"workflowId"`
+			Input                 string            `json:"input"`
+			ProjectID             string            `json:"projectId"`
 		}
 		if !decode(c, &req) {
 			return
@@ -138,7 +140,7 @@ func (h *runsHandlers) runs(c *gin.Context) {
 				PipelineProjectID: repoDef.PipelineProjectID, PipelineDefID: repoDef.PipelineDefID, PipelineURLPattern: repoDef.PipelineURLPattern,
 			}}
 		}
-		v, err := h.engine.StartWithRepositoriesContext(req.WorkflowID, req.Input, repositories, domain.TelemetryContext{ProjectID: req.ProjectID, ResponsibleUserID: responsibleUserID})
+		v, err := h.engine.StartWithRepositoriesContext(req.WorkflowID, req.Input, repositories, domain.TelemetryContext{ProjectID: req.ProjectID, ResponsibleUserID: responsibleUserID, RunnerWorkspaceLayout: req.RunnerWorkspaceLayout, WorkspaceBaseSHAs: req.WorkspaceBaseSHAs})
 		if err != nil {
 			respond(c, err)
 			return

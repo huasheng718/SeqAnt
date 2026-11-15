@@ -204,13 +204,14 @@ func TestPreviewAcceptUploadBranches(t *testing.T) {
 	if err := st.PutPreview(preview); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.AcceptUpload(context.Background(), preview.ID, "runner", token, bytes.NewReader(archive.Bytes())); err != nil {
+	task := claimPreviewUploadTask(t, st, preview)
+	if err := svc.AcceptUpload(context.Background(), preview.ID, "runner", task.ID, task.Attempt, token, bytes.NewReader(archive.Bytes())); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := st.Preview(preview.ID); got.Status != domain.PreviewReady {
 		t.Fatalf("uploaded preview = %#v", got)
 	}
-	if err := svc.AcceptUpload(context.Background(), "missing", "runner", token, bytes.NewReader(nil)); err == nil {
+	if err := svc.AcceptUpload(context.Background(), "missing", "runner", task.ID, task.Attempt, token, bytes.NewReader(nil)); err == nil {
 		t.Fatal("missing preview upload accepted")
 	}
 	for i, mutate := range []func(*domain.RunPreview){
@@ -226,7 +227,7 @@ func TestPreviewAcceptUploadBranches(t *testing.T) {
 		if err := st.PutPreview(p); err != nil {
 			t.Fatal(err)
 		}
-		if err := svc.AcceptUpload(context.Background(), p.ID, "runner", token, bytes.NewReader(nil)); err == nil {
+		if err := svc.AcceptUpload(context.Background(), p.ID, "runner", task.ID, task.Attempt, token, bytes.NewReader(nil)); err == nil {
 			t.Fatalf("invalid upload accepted: %#v", p)
 		}
 	}
@@ -235,7 +236,8 @@ func TestPreviewAcceptUploadBranches(t *testing.T) {
 	if err := st.PutPreview(limited); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.AcceptUpload(context.Background(), limited.ID, "runner", token, strings.NewReader("too large")); !errors.Is(err, ErrLimitExceeded) {
+	limitedTask := claimPreviewUploadTask(t, st, limited)
+	if err := svc.AcceptUpload(context.Background(), limited.ID, "runner", limitedTask.ID, limitedTask.Attempt, token, strings.NewReader("too large")); !errors.Is(err, ErrLimitExceeded) {
 		t.Fatalf("oversized upload = %v", err)
 	}
 }
@@ -849,5 +851,92 @@ func TestPreviewReconcileAndHelpers(t *testing.T) {
 	other := NewService(st, nil, Config{})
 	if got := other.PublicURL("t", req); got != "http://host.example/preview/t/" {
 		t.Fatalf("public URL = %q", got)
+	}
+}
+
+// A new logical archive has a new task identity; retry attempts share only that
+// identity, never a preview ID alone.
+func claimPreviewUploadTask(t *testing.T, st *repo.Store, p domain.RunPreview) domain.RunnerTask {
+	t.Helper()
+	task := domain.RunnerTask{ID: p.ID + "-task", RunID: p.RunID, RunnerID: "runner", Provider: "script", MaxAttempts: 3, Action: domain.RunnerTaskActionArchivePreview,
+		PreviewArchive: &domain.RunnerPreviewArchiveSpec{PreviewID: p.ID, RunID: p.RunID}}
+	if err := st.PutRunnerTask(task); err != nil {
+		t.Fatal(err)
+	}
+	claimed, ok, err := st.ClaimRunnerTask("runner", []string{"script"}, time.Now().UTC(), time.Minute)
+	if err != nil || !ok {
+		t.Fatalf("claim upload task: %v, %v", ok, err)
+	}
+	return claimed
+}
+
+type changingUploadReader struct {
+	source *bytes.Reader
+	change func()
+}
+
+func (r *changingUploadReader) Read(p []byte) (int, error) {
+	if r.change != nil {
+		f := r.change
+		r.change = nil
+		f()
+	}
+	return r.source.Read(p)
+}
+
+func TestPreviewUploadRechecksAttemptAtPublication(t *testing.T) {
+	for _, mode := range []string{"expired", "reclaimed", "canceled", "rotated-token"} {
+		t.Run(mode, func(t *testing.T) {
+			svc, st := cvSPreviewService(t)
+			workspace := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(workspace, "dist"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(workspace, "dist", "index.html"), []byte("old bundle"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			var archive bytes.Buffer
+			if _, err := ArchiveDir(workspace, "dist", "index.html", svc.limits(), &archive); err != nil {
+				t.Fatal(err)
+			}
+			now := time.Now().UTC()
+			svc.now = func() time.Time { return now }
+			p := domain.RunPreview{ID: "preview-race", RunID: "run-race", Status: domain.PreviewArchiving, EntryFile: "index.html", OwnerRunnerID: "runner", UploadTokenHash: hashToken("token"), UploadExpiresAt: now.Add(time.Hour)}
+			if err := st.PutPreview(p); err != nil {
+				t.Fatal(err)
+			}
+			task := claimPreviewUploadTask(t, st, p)
+			body := &changingUploadReader{source: bytes.NewReader(archive.Bytes()), change: func() {
+				switch mode {
+				case "expired", "reclaimed":
+					now = *task.LeaseUntil
+					if mode == "reclaimed" {
+						if _, err := st.ExpireRunnerTasks(now); err != nil {
+							t.Fatal(err)
+						}
+						current, ok, err := st.ClaimRunnerTask("runner", []string{"script"}, now, time.Minute)
+						if err != nil || !ok || current.Attempt != task.Attempt+1 {
+							t.Fatalf("reclaim: %+v %v %v", current, ok, err)
+						}
+					}
+				case "canceled":
+					if err := st.CancelRunnerTask(task.ID, now); err != nil {
+						t.Fatal(err)
+					}
+				case "rotated-token":
+					p.UploadTokenHash = hashToken("new token")
+					if err := st.PutPreview(p); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}}
+			if err := svc.AcceptUpload(context.Background(), p.ID, "runner", task.ID, task.Attempt, "token", body); !errors.Is(err, repo.ErrRunnerTaskLeaseLost) {
+				t.Fatalf("stale publication: %v", err)
+			}
+			got, _ := st.Preview(p.ID)
+			if got.Status != domain.PreviewArchiving || got.StorageKey != "" {
+				t.Fatalf("stale bundle published: %+v", got)
+			}
+		})
 	}
 }

@@ -20,6 +20,9 @@ func shouldSeedIntegrateBranch(r domain.RepositoryContext, b string) bool {
 }
 
 func publishIntegrateBranch(ctx context.Context, w, b string) error {
+	if controlledDeliveryContext(ctx) {
+		return ErrControlledDelivery
+	}
 	ensureGitIdentity(ctx, w)
 	if _, err := gitC(ctx, w, "checkout", "-B", b); err != nil {
 		return err
@@ -54,6 +57,9 @@ func (e *Engine) integrateScheduledRun(id string) (bool, error) {
 	r, ok := e.repo.RunState(id)
 	if !ok || strings.TrimSpace(r.ExecutionContext.ScheduleJobID) == "" {
 		return false, nil
+	}
+	if e.controlledRun(r) {
+		return false, ErrControlledDelivery
 	}
 	repositories := r.RepositoryContexts()
 	if len(repositories) == 0 {
@@ -155,6 +161,9 @@ func integrateLocally(ctx context.Context, r domain.Run, workspace string, rc do
 // integration branch through a Gongfeng MR, or with pushDirect when Gongfeng
 // is not configured.
 func (e *Engine) mergeWorkBranchIntoIntegrate(id string, r domain.Run, rc domain.RepositoryContext, work, integrate string, pushDirect func() error) error {
+	if e.controlledRun(r) {
+		return ErrControlledDelivery
+	}
 	if e.MergeIntoBranch != nil && strings.TrimSpace(rc.GongfengProjectID) != "" {
 		title := integrateMRTitle(r, rc, work, integrate)
 		ref, err := e.MergeIntoBranch(rc.GongfengProjectID, work, integrate, title, integrateMRDescription(r, work, integrate))

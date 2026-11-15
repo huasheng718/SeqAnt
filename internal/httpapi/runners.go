@@ -6,10 +6,11 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	stdsync "sync"
 	"time"
@@ -774,6 +775,7 @@ func (h *runnersHandlers) runnerTasksCollection(c *gin.Context) {
 			Status:      domain.RunnerTaskQueued,
 			MaxAttempts: input.MaxAttempts,
 		}
+		task.DeliveryPolicy = h.engine.DeliveryPolicy()
 		if err := h.repo.PutRunnerTask(task); err != nil {
 			c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
@@ -817,6 +819,11 @@ func (h *runnersHandlers) runnerTaskClaim(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if c.GetHeader("X-Runner-Task-Protocol") != "2" {
+		c.JSON(http.StatusUpgradeRequired, map[string]string{"error": "runner task protocol 2 required"})
+		return
+	}
+	c.Header("X-Runner-Task-Protocol", "2")
 	var input struct {
 		AvailableRuntimes []string `json:"availableRuntimes"`
 		Capacity          int      `json:"capacity"`
@@ -1007,7 +1014,17 @@ func (h *runnersHandlers) runnerTaskStart(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if err := h.repo.StartRunnerTask(c.Param("id"), runner.ID, time.Now().UTC()); err != nil {
+	var input struct {
+		Attempt int `json:"attempt"`
+	}
+	if !decode(c, &input) {
+		return
+	}
+	if input.Attempt <= 0 {
+		c.JSON(http.StatusBadRequest, map[string]string{"error": "positive attempt required"})
+		return
+	}
+	if err := h.repo.StartRunnerTask(c.Param("id"), runner.ID, input.Attempt, time.Now().UTC()); err != nil {
 		if err == repo.ErrRunnerTaskLeaseLost {
 			c.JSON(http.StatusConflict, map[string]string{"error": "task lease lost"})
 			return
@@ -1027,7 +1044,17 @@ func (h *runnersHandlers) runnerTaskLeaseRenew(c *gin.Context) {
 	if !ok {
 		return
 	}
-	desired, err := h.repo.RenewRunnerTaskLease(c.Param("id"), runner.ID, runnerTaskLeaseTTL, time.Now().UTC())
+	var input struct {
+		Attempt int `json:"attempt"`
+	}
+	if !decode(c, &input) {
+		return
+	}
+	if input.Attempt <= 0 {
+		c.JSON(http.StatusBadRequest, map[string]string{"error": "positive attempt required"})
+		return
+	}
+	desired, err := h.repo.RenewRunnerTaskLease(c.Param("id"), runner.ID, input.Attempt, runnerTaskLeaseTTL, time.Now().UTC())
 	if err != nil {
 		if err == repo.ErrRunnerTaskLeaseLost {
 			c.JSON(http.StatusConflict, map[string]string{"error": "task lease lost"})
@@ -1036,7 +1063,12 @@ func (h *runnersHandlers) runnerTaskLeaseRenew(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, map[string]any{"leaseUntil": time.Now().UTC().Add(runnerTaskLeaseTTL), "desiredState": desired})
+	task, exists := h.repo.RunnerTaskControl(c.Param("id"))
+	if !exists || task.LeaseOwner != runner.ID || task.Attempt != input.Attempt || task.LeaseUntil == nil || !task.LeaseUntil.After(time.Now().UTC()) || domain.ExecutionDeadlineExpired(task.ExecutionDeadline, time.Now().UTC()) {
+		c.JSON(http.StatusConflict, map[string]string{"error": "task lease lost"})
+		return
+	}
+	c.JSON(http.StatusOK, map[string]any{"leaseUntil": task.LeaseUntil, "desiredState": desired})
 }
 
 // runnerTaskEventsIngest accepts batched task events from the lease owner.
@@ -1049,25 +1081,15 @@ func (h *runnersHandlers) runnerTaskEventsIngest(c *gin.Context) {
 		return
 	}
 	taskID := c.Param("id")
-	task, exists := h.repo.RunnerTask(taskID)
-	if !exists {
-		c.Status(http.StatusNotFound)
-		return
-	}
-	// Events are accepted from the lease owner; retries after a lease loss
-	// are idempotent through (task_id, seq) anyway.
-	if task.LeaseOwner != runner.ID || (task.Status != domain.RunnerTaskLeased && task.Status != domain.RunnerTaskRunning) {
-		c.JSON(http.StatusConflict, map[string]string{"error": "task lease lost"})
-		return
-	}
 	var input struct {
-		Events []domain.RunnerTaskEvent `json:"events"`
+		Attempt int                      `json:"attempt"`
+		Events  []domain.RunnerTaskEvent `json:"events"`
 	}
 	if !decode(c, &input) {
 		return
 	}
-	if len(input.Events) == 0 {
-		c.JSON(http.StatusOK, map[string]int{"accepted": 0})
+	if input.Attempt <= 0 {
+		c.JSON(http.StatusBadRequest, map[string]string{"error": "positive attempt required"})
 		return
 	}
 	if len(input.Events) > 500 {
@@ -1075,6 +1097,14 @@ func (h *runnersHandlers) runnerTaskEventsIngest(c *gin.Context) {
 		return
 	}
 	for i := range input.Events {
+		if input.Events[i].Attempt != 0 && input.Events[i].Attempt != input.Attempt {
+			c.JSON(http.StatusBadRequest, map[string]string{"error": "event attempt must match request attempt"})
+			return
+		}
+		if input.Events[i].Seq <= 0 {
+			c.JSON(http.StatusBadRequest, map[string]string{"error": "positive event seq required"})
+			return
+		}
 		if input.Events[i].Type == "" {
 			input.Events[i].Type = "stdout"
 		}
@@ -1082,8 +1112,12 @@ func (h *runnersHandlers) runnerTaskEventsIngest(c *gin.Context) {
 			input.Events[i].Ts = time.Now().UTC()
 		}
 	}
-	accepted, err := h.repo.AppendRunnerTaskEvents(taskID, input.Events)
+	accepted, err := h.repo.AppendRunnerTaskEvents(taskID, runner.ID, input.Attempt, input.Events, time.Now().UTC())
 	if err != nil {
+		if err == repo.ErrRunnerTaskLeaseLost {
+			c.JSON(http.StatusConflict, map[string]string{"error": "task lease lost"})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
@@ -1100,6 +1134,7 @@ func (h *runnersHandlers) runnerTaskComplete(c *gin.Context) {
 		return
 	}
 	var input struct {
+		Attempt   int                       `json:"attempt"`
 		Status    string                    `json:"status"`
 		ExitCode  *int                      `json:"exitCode"`
 		Result    string                    `json:"result"`
@@ -1108,6 +1143,10 @@ func (h *runnersHandlers) runnerTaskComplete(c *gin.Context) {
 		Outputs   *domain.RunnerTaskOutputs `json:"outputs"`
 	}
 	if !decode(c, &input) {
+		return
+	}
+	if input.Attempt <= 0 {
+		c.JSON(http.StatusBadRequest, map[string]string{"error": "positive attempt required"})
 		return
 	}
 	if input.Status == "" {
@@ -1127,7 +1166,11 @@ func (h *runnersHandlers) runnerTaskComplete(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, map[string]string{"error": message})
 		return
 	}
-	if err := h.repo.CompleteRunnerTask(c.Param("id"), runner.ID, input.Status, input.ExitCode, input.Result, input.Error, input.Artifacts, input.Outputs, time.Now().UTC()); err != nil {
+	if err := h.repo.CompleteRunnerTask(c.Param("id"), runner.ID, input.Attempt, input.Status, input.ExitCode, input.Result, input.Error, input.Artifacts, input.Outputs, time.Now().UTC()); err != nil {
+		if errors.Is(err, repo.ErrRunnerContributionInvalid) || errors.Is(err, repo.ErrRunnerContributionConflict) || errors.Is(err, repo.ErrRunnerContributionTooLarge) {
+			writeContributionError(c, err)
+			return
+		}
 		if err == repo.ErrRunnerTaskLeaseLost {
 			c.JSON(http.StatusConflict, map[string]string{"error": "task lease lost"})
 			return
@@ -1151,12 +1194,17 @@ func (h *runnersHandlers) runnerTaskControl(c *gin.Context) {
 	if !ok {
 		return
 	}
+	attempt, err := strconv.Atoi(c.Query("attempt"))
+	if err != nil || attempt <= 0 {
+		c.JSON(http.StatusBadRequest, map[string]string{"error": "positive attempt required"})
+		return
+	}
 	task, exists := h.repo.RunnerTaskControl(c.Param("id"))
 	if !exists {
 		c.Status(http.StatusNotFound)
 		return
 	}
-	if task.LeaseOwner != runner.ID {
+	if task.LeaseOwner != runner.ID || task.Attempt != attempt || (task.Status != domain.RunnerTaskLeased && task.Status != domain.RunnerTaskRunning) || task.LeaseUntil == nil || !task.LeaseUntil.After(time.Now().UTC()) || domain.ExecutionDeadlineExpired(task.ExecutionDeadline, time.Now().UTC()) {
 		c.JSON(http.StatusConflict, map[string]string{"error": "task lease lost"})
 		return
 	}
@@ -1252,8 +1300,17 @@ func (h *runnersHandlers) runnerPreviewContent(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, map[string]string{"error": "preview upload token required"})
 		return
 	}
+	attempt, err := strconv.Atoi(c.GetHeader("X-Runner-Task-Attempt"))
+	if err != nil || attempt <= 0 || c.GetHeader("X-Runner-Task-ID") == "" {
+		c.JSON(http.StatusBadRequest, map[string]string{"error": "task ID and positive attempt required"})
+		return
+	}
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, svc.Config().MaxCompressed+1)
-	if err := svc.AcceptUpload(c.Request.Context(), c.Param("previewId"), runner.ID, token, c.Request.Body); err != nil {
+	if err := svc.AcceptUpload(c.Request.Context(), c.Param("previewId"), runner.ID, c.GetHeader("X-Runner-Task-ID"), attempt, token, c.Request.Body); err != nil {
+		if err == repo.ErrRunnerTaskLeaseLost {
+			c.JSON(http.StatusConflict, map[string]string{"error": "task lease lost"})
+			return
+		}
 		c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
@@ -1264,6 +1321,5 @@ func (h *runnersHandlers) runnerPreviewComplete(c *gin.Context) {
 	if _, ok := h.runnerSessionAuth(c); !ok {
 		return
 	}
-	_, _ = io.Copy(io.Discard, io.LimitReader(c.Request.Body, 1<<20))
-	c.JSON(http.StatusOK, map[string]bool{"ok": true})
+	c.JSON(http.StatusGone, map[string]string{"error": "preview completion is committed by the fenced content upload"})
 }

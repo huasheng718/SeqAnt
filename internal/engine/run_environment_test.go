@@ -26,8 +26,13 @@ func TestAcquireRunEnvironmentRefreshesGitTokenWithoutReplacingWorkspace(t *test
 		t.Fatal(err)
 	}
 	e := leaseEngine(t, s, "worker")
+	_ = e.ConfigureDeliveryPolicy(domain.DeliveryPolicyLegacy)
 	e.leaseTTL = time.Minute
 	run := leaseRun(t, s, "run-refresh-token", "running", "pending")
+	run.ExecutionContext.DeliveryPolicy = domain.DeliveryPolicyLegacy
+	if err := s.PutRun(run); err != nil {
+		t.Fatal(err)
+	}
 	owned, err := e.acquireLease(run)
 	if err != nil {
 		t.Fatal(err)

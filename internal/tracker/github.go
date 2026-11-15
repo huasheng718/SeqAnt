@@ -2,6 +2,7 @@ package tracker
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -18,6 +19,13 @@ import (
 type githubClient struct {
 	base, path, token string
 	http              *http.Client
+}
+
+// githubHTTPStatusError preserves only the status, never provider response bodies.
+type githubHTTPStatusError struct{ StatusCode int }
+
+func (e *githubHTTPStatusError) Error() string {
+	return fmt.Sprintf("GitHub returned HTTP %d; check the project owner's Git token and repository permissions", e.StatusCode)
 }
 
 func (s *Service) githubClient(project string) (*githubClient, error) {
@@ -48,6 +56,10 @@ func (s *Service) githubClient(project string) (*githubClient, error) {
 }
 
 func (g *githubClient) request(method, suffix string, input, output any) error {
+	return g.requestContext(context.Background(), method, suffix, input, output)
+}
+
+func (g *githubClient) requestContext(ctx context.Context, method, suffix string, input, output any) error {
 	var body io.Reader
 	if input != nil {
 		b, err := json.Marshal(input)
@@ -56,7 +68,7 @@ func (g *githubClient) request(method, suffix string, input, output any) error {
 		}
 		body = bytes.NewReader(b)
 	}
-	r, err := http.NewRequest(method, g.base+"/repos/"+g.path+suffix, body)
+	r, err := http.NewRequestWithContext(ctx, method, g.base+"/repos/"+g.path+suffix, body)
 	if err != nil {
 		return err
 	}
@@ -68,17 +80,26 @@ func (g *githubClient) request(method, suffix string, input, output any) error {
 	}
 	res, err := g.http.Do(r)
 	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		return fmt.Errorf("GitHub request failed")
 	}
 	defer res.Body.Close()
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return fmt.Errorf("GitHub returned HTTP %d; check the project owner's Git token and repository permissions", res.StatusCode)
+		return &githubHTTPStatusError{StatusCode: res.StatusCode}
 	}
 	if output == nil {
 		_, err = io.Copy(io.Discard, io.LimitReader(res.Body, 4<<20))
 		return err
 	}
-	return json.NewDecoder(io.LimitReader(res.Body, 8<<20)).Decode(output)
+	if err := json.NewDecoder(io.LimitReader(res.Body, 8<<20)).Decode(output); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return fmt.Errorf("invalid GitHub response")
+	}
+	return nil
 }
 
 type githubPull struct {

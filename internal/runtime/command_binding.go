@@ -30,6 +30,28 @@ func upsertEnv(env []string, key, value string) []string {
 	return out
 }
 
+// ClearHostCodexSession detaches a privately authenticated CLI from the host
+// desktop's IPC and task identity. A private HOME alone does not remove these
+// inherited capabilities. Keep runtime paths and explicitly bound credentials.
+func ClearHostCodexSession(environment map[string]string) {
+	keys := make(map[string]bool)
+	for _, kv := range os.Environ() {
+		key, _, _ := strings.Cut(kv, "=")
+		keys[key] = true
+	}
+	for key := range environment {
+		keys[key] = true
+	}
+	for key := range keys {
+		if strings.HasPrefix(key, "CODEX_APP_") || key == "CODEX_INTERNAL_ORIGINATOR_OVERRIDE" ||
+			key == "CODEX_PERMISSION_PROFILE" || key == "CODEX_SESSION_ID" ||
+			key == "CODEX_THREAD_ID" || key == "CODEX_TOOL_CALL_ID" ||
+			key == "CODEX_TASK_WORKSPACE_VERIFYING_IDENTITY" {
+			environment[key] = ""
+		}
+	}
+}
+
 func bindCommand(sandbox Sandbox, workspace string, command CommandSpec, credentials RunCredentials) (CommandSpec, error) {
 	bound := command
 	bound.environment = make(map[string]string, len(command.environment)+16)
@@ -138,6 +160,9 @@ func bindCommand(sandbox Sandbox, workspace string, command CommandSpec, credent
 		bound.environment["OTEL_RESOURCE_ATTRIBUTES"] = fmt.Sprintf("agentflow.run_id=%s,agentflow.node_id=%s,service.name=agentflow-codebuddy", runID, nodeID)
 	}
 	if command.PrivateHome {
+		if command.Provider == "codex" {
+			ClearHostCodexSession(bound.environment)
+		}
 		provider := PrivateHomeName(command)
 		hostHome := filepath.Join(workspace, ".agentflow", "private-home", provider)
 		hostTmp := filepath.Join(workspace, ".agentflow", "tmp", provider)

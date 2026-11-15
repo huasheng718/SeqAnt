@@ -56,7 +56,9 @@ func TestPreviewArchiveSuccessAndFailures(t *testing.T) {
 }
 
 func TestWorkBranchDispatchWithoutRepositories(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
 	defer server.Close()
 	d := &Daemon{cfg: Config{DefaultWorkspaceRoot: t.TempDir()}, client: NewClient(server.URL)}
 	for _, action := range []string{domain.RunnerTaskActionPushWorkBranch, domain.RunnerTaskActionPullWorkBranch} {
@@ -112,6 +114,10 @@ func TestControlLoopReceivesSignalsAndWorkspaceRequests(t *testing.T) {
 	upgrader := websocket.Upgrader{}
 	workspaceResponse := make(chan controlMessage, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/control") {
+			_ = json.NewEncoder(w).Encode(RenewResponse{DesiredState: domain.RunnerTaskDesiredCancel})
+			return
+		}
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			return
@@ -135,10 +141,10 @@ func TestControlLoopReceivesSignalsAndWorkspaceRequests(t *testing.T) {
 	d := &Daemon{
 		cfg:             Config{DefaultWorkspaceRoot: t.TempDir()},
 		client:          NewClient(server.URL),
-		controls:        map[string]chan string{},
-		pendingControls: map[string]string{},
+		controls:        map[taskAttemptKey]chan string{},
+		pendingControls: map[taskAttemptKey]string{},
 	}
-	control := d.registerTaskControl("task")
+	control := d.registerTaskControl("task", 0)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { d.controlLoop(ctx); close(done) }()
@@ -164,7 +170,7 @@ func TestControlLoopReceivesSignalsAndWorkspaceRequests(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("control loop did not stop")
 	}
-	d.unregisterTaskControl("task")
+	d.unregisterTaskControl("task", 0)
 }
 
 func TestRunnerCredentialArtifactAndRepositoryHelpers(t *testing.T) {
@@ -262,7 +268,9 @@ func TestDaemonReregisterAndSessionBranches(t *testing.T) {
 }
 
 func TestExecuteBuiltinInvocation(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
 	defer server.Close()
 	root := t.TempDir()
 	d := &Daemon{
@@ -297,7 +305,9 @@ func TestExecuteWorkBranchPushAndPull(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(workspace, "change.txt"), []byte("change\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
 	defer server.Close()
 	d := &Daemon{cfg: Config{DefaultWorkspaceRoot: t.TempDir()}, client: NewClient(server.URL)}
 	task := domain.RunnerTask{

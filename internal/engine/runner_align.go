@@ -20,6 +20,9 @@ func (e *Engine) AlignBaseline(repository domain.RepositoryContext, gitToken str
 	if !ShouldAlignIntegrate(repository) {
 		return nil
 	}
+	if domain.ControlledDelivery(e.DeliveryPolicy()) {
+		return ErrControlledDelivery
+	}
 	runner, ok := e.alignRunner(repository)
 	if !ok {
 		return AlignIntegrateBaseline(repository, gitToken, e.repo)
@@ -47,6 +50,10 @@ func (e *Engine) AlignBaseline(repository domain.RepositoryContext, gitToken str
 			IntegrateBranch: integrate,
 			DefaultBranch:   strings.TrimSpace(repository.DefaultBranch),
 		}}},
+	}
+	task.DeliveryPolicy = e.DeliveryPolicy()
+	if err := domain.ValidateRunnerDelivery(task); err != nil {
+		return err
 	}
 	if err := e.repo.PutRunnerTask(task); err != nil {
 		return err

@@ -147,7 +147,11 @@ func TestCIncludesOutputOnFailure(t *testing.T) {
 
 func TestGitDiscoveryStopsBeforeParentRepository(t *testing.T) {
 	ctx := context.Background()
-	parent := t.TempDir()
+	// Git reports physical paths (for example /private/var on macOS).
+	parent, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := C(ctx, parent, "init", "-q"); err != nil {
 		t.Fatal(err)
 	}

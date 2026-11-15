@@ -57,6 +57,9 @@ func (e *Engine) nodeFailedAt(runID string, node domain.WorkflowNode, attempt, g
 		}
 		nr.Error = err.Error()
 		nr.FinishedAt = time.Now().UTC()
+		if errors.Is(err, domain.ErrExecutionDeadlineExceeded) {
+			e.event(r, node.ID, "node.timeout", domain.ErrExecutionDeadlineExceeded.Error())
+		}
 		reworkBudget := node.RejectTo != "" && r.Nodes[node.RejectTo] != nil && r.Nodes[node.RejectTo].ReworkCount >= max(1, node.MaxReworks)
 		if shouldRetryFailedAttempt(node, nr.Attempt, err) && !gateReworkReject(allowReject, nr) {
 			// The retry gets a clean workspace, so carry the concrete failure into
@@ -87,7 +90,7 @@ func (e *Engine) nodeFailedAt(runID string, node domain.WorkflowNode, attempt, g
 }
 
 func shouldRetryFailedAttempt(node domain.WorkflowNode, attempt int, err error) bool {
-	if errors.Is(err, ErrWorkspaceControlConfiguration) {
+	if errors.Is(err, ErrWorkspaceControlConfiguration) || errors.Is(err, domain.ErrExecutionDeadlineExceeded) {
 		return false
 	}
 	if err != nil && (isMaxTurnsErr(err) || strings.Contains(err.Error(), "verification ") || runtime.IsCwdMountFailure(err)) {
@@ -378,7 +381,7 @@ func (e *Engine) finishAt(id string, generation int, status, msg string) {
 		return
 	}
 	// Resolving MRs calls Gongfeng, so it runs outside the run state lock.
-	if delivered != nil {
+	if delivered != nil && !e.controlledRun(*delivered) {
 		_ = e.repo.MarkIssueDeliveredFromSOPMRs(delivered.ExecutionContext.IssueID, e.deliveryMRsFromRun(*delivered), deliveredAt)
 	}
 	// Failed runs can be retried in the same workspace. Successful and

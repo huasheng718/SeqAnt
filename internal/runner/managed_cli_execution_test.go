@@ -41,7 +41,7 @@ func TestManagedExecutionUsesPinnedBinaryForSimpleAndWorkflowTasks(t *testing.T)
 					}
 				}
 				d, _, completed := managedTestDaemon(t, root, tasks, nil, nil)
-				// Legacy preflight can itself lease work and needs the same protection.
+				// Exercise protocol preflight followed by a fenced claim.
 				d.cfg.DisableAutoUpdate = false
 				for i := range tasks {
 					if i == 1 {

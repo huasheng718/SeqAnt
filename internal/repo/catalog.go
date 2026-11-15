@@ -492,6 +492,9 @@ func (r *CatalogRepo) publishStoredWorkflow(id string) (domain.WorkflowDefinitio
 }
 
 func (r *CatalogRepo) putWorkflow(v domain.WorkflowDefinition, publishing bool) error {
+	if err := domain.ValidateWorkflowExecutionLimits(v); err != nil {
+		return err
+	}
 	if strings.TrimSpace(v.ID) == "" || strings.TrimSpace(v.Name) == "" {
 		return errors.New("workflow id and name are required")
 	}

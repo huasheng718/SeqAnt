@@ -17,7 +17,7 @@ import (
 // this machine. These explicit actions remain supported for compatibility;
 // ordinary workflow nodes keep their changes local until delivery.
 func (d *Daemon) executeWorkBranchSync(ctx context.Context, task domain.RunnerTask) execResult {
-	if err := d.client.StartTask(ctx, task.ID); err != nil {
+	if err := d.client.StartTask(ctx, task.ID, task.Attempt); err != nil {
 		return execResult{status: domain.RunnerTaskFailed, errMsg: fmt.Sprintf("start: %v", err)}
 	}
 	push := task.Action == domain.RunnerTaskActionPushWorkBranch
@@ -39,7 +39,7 @@ func (d *Daemon) executeWorkBranchSync(ctx context.Context, task domain.RunnerTa
 		lines = append(lines, domain.RunnerTaskEvent{Seq: int64(i + 1), Type: "system", Data: data, Ts: time.Now().UTC()})
 	}
 	if len(lines) > 0 {
-		_ = d.client.SendEvents(ctx, task.ID, lines)
+		_ = d.client.SendEvents(ctx, task.ID, task.Attempt, lines)
 	}
 	if err != nil {
 		return execResult{status: domain.RunnerTaskFailed, exitCode: 1, errMsg: err.Error()}

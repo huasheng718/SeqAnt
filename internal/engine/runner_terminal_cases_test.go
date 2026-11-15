@@ -106,17 +106,20 @@ func TestRunnerScriptAndCommandTerminalResults(t *testing.T) {
 func TestRunnerIntegrateAndConversationTerminalResults(t *testing.T) {
 	rc := domain.RepositoryContext{RepositoryID: "repo", Name: "Repo", CloneURL: "https://example.invalid/repo.git", WorkspaceDir: "repo", BaseBranch: "main", WorkBranch: "work", IntegrateBranch: "integration"}
 	run := cvERunnerRun("terminal-integrate", "runner-terminal")
+	run.ExecutionContext.DeliveryPolicy = domain.DeliveryPolicyLegacy
 	run.Repositories = []domain.RepositoryContext{rc}
 	run.ExecutionContext.RunnerWorkspaceLayout = domain.RunnerWorkspaceLayoutShared
 
 	integrationJSON := `[{"repositoryId":"repo","name":"Repo","workBranch":"work","integrateBranch":"integration","head":"abc","conflicts":["one.go"],"pushedIntegrate":true}]`
 	e, runner := cvETerminalEngine(t, domain.RunnerTaskSuccess, integrationJSON, "", nil)
+	_ = e.ConfigureDeliveryPolicy(domain.DeliveryPolicyLegacy)
 	conflicts, err := e.integrateOnRunner(context.Background(), runner, run, rc, true)
 	if err != nil || len(conflicts) != 1 || conflicts[0] != "one.go" {
 		t.Fatalf("conflicts=%v err=%v", conflicts, err)
 	}
 
 	e, runner = cvETerminalEngine(t, domain.RunnerTaskSuccess, "{", "", nil)
+	_ = e.ConfigureDeliveryPolicy(domain.DeliveryPolicyLegacy)
 	if _, err := e.integrateOnRunner(context.Background(), runner, run, rc, false); err == nil || !strings.Contains(err.Error(), "decode") {
 		t.Fatalf("invalid integrate result err=%v", err)
 	}
@@ -126,6 +129,7 @@ func TestRunnerIntegrateAndConversationTerminalResults(t *testing.T) {
 		{domain.RunnerTaskFailed, "integration broke", "integration broke"},
 	} {
 		e, runner = cvETerminalEngine(t, tc.status, "", tc.errText, nil)
+		_ = e.ConfigureDeliveryPolicy(domain.DeliveryPolicyLegacy)
 		if _, err := e.integrateOnRunner(context.Background(), runner, run, rc, false); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Fatalf("integrate status=%s err=%v", tc.status, err)
 		}
@@ -133,15 +137,18 @@ func TestRunnerIntegrateAndConversationTerminalResults(t *testing.T) {
 
 	headsJSON := `[{"repositoryId":"repo","name":"Repo","workBranch":"work","head":"def"}]`
 	e, _ = cvETerminalEngine(t, domain.RunnerTaskSuccess, headsJSON, "", nil)
+	_ = e.ConfigureDeliveryPolicy(domain.DeliveryPolicyLegacy)
 	heads, err := e.pushConversationOnRunner(context.Background(), "runner-terminal", run, []domain.RepositoryContext{rc}, "token", "User", "user@example.com", "message", "")
 	if err != nil || len(heads) != 1 {
 		t.Fatalf("heads=%v err=%v", heads, err)
 	}
 	e, _ = cvETerminalEngine(t, domain.RunnerTaskSuccess, "{", "", nil)
+	_ = e.ConfigureDeliveryPolicy(domain.DeliveryPolicyLegacy)
 	if _, err := e.pushConversationOnRunner(context.Background(), "runner-terminal", run, []domain.RepositoryContext{rc}, "", "", "", "message", ""); err == nil || !strings.Contains(err.Error(), "decode") {
 		t.Fatalf("invalid push result err=%v", err)
 	}
 	e, _ = cvETerminalEngine(t, domain.RunnerTaskFailed, "", "", nil)
+	_ = e.ConfigureDeliveryPolicy(domain.DeliveryPolicyLegacy)
 	if _, err := e.pushConversationOnRunner(context.Background(), "runner-terminal", run, []domain.RepositoryContext{rc}, "", "", "", "message", ""); err == nil {
 		t.Fatal("failed push succeeded")
 	}
@@ -163,6 +170,7 @@ func TestRunnerAlignTerminalResults(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e, _ := cvETerminalEngine(t, tc.status, tc.result, tc.errText, nil)
+			_ = e.ConfigureDeliveryPolicy(domain.DeliveryPolicyLegacy)
 			runner, ok := e.repo.Runner("runner-terminal")
 			if !ok {
 				t.Fatal("runner missing")

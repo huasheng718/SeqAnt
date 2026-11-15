@@ -13,7 +13,7 @@ import (
 )
 
 func (d *Daemon) executePreviewArchive(ctx context.Context, task domain.RunnerTask) execResult {
-	if err := d.client.StartTask(ctx, task.ID); err != nil {
+	if err := d.client.StartTask(ctx, task.ID, task.Attempt); err != nil {
 		return execResult{status: domain.RunnerTaskFailed, errMsg: fmt.Sprintf("start preview archive: %v", err)}
 	}
 	spec := task.PreviewArchive
@@ -42,7 +42,7 @@ func (d *Daemon) executePreviewArchive(ctx context.Context, task domain.RunnerTa
 		_ = pw.CloseWithError(archiveErr)
 		errCh <- archiveErr
 	}()
-	uploadErr := d.client.UploadPreview(ctx, spec.PreviewID, spec.UploadToken, pr)
+	uploadErr := d.client.UploadPreview(ctx, task, spec.PreviewID, spec.UploadToken, pr)
 	archiveErr := <-errCh
 	if archiveErr != nil {
 		return execResult{status: domain.RunnerTaskFailed, errMsg: archiveErr.Error()}
@@ -50,7 +50,6 @@ func (d *Daemon) executePreviewArchive(ctx context.Context, task domain.RunnerTa
 	if uploadErr != nil {
 		return execResult{status: domain.RunnerTaskFailed, errMsg: uploadErr.Error()}
 	}
-	_ = d.client.CompletePreview(ctx, spec.PreviewID)
-	_ = d.client.SendEvents(ctx, task.ID, []domain.RunnerTaskEvent{{Seq: 1, Type: "system", Data: "preview archive uploaded", Ts: time.Now().UTC()}})
+	_ = d.client.SendEvents(ctx, task.ID, task.Attempt, []domain.RunnerTaskEvent{{Seq: 1, Type: "system", Data: "preview archive uploaded", Ts: time.Now().UTC()}})
 	return execResult{status: domain.RunnerTaskSuccess, exitCode: 0, result: "preview archived"}
 }

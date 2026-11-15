@@ -1,6 +1,7 @@
 package repo
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,23 +23,28 @@ var (
 )
 
 type runnerTaskPayload struct {
-	Prompt            string                           `json:"prompt"`
-	Workspace         string                           `json:"workspace,omitempty"`
-	Args              []string                         `json:"args,omitempty"`
-	ExitCode          *int                             `json:"exitCode,omitempty"`
-	Result            string                           `json:"result,omitempty"`
-	Error             string                           `json:"error,omitempty"`
-	StartedAt         *runnerTaskTime                  `json:"startedAt,omitempty"`
-	CompletedAt       *runnerTaskTime                  `json:"completedAt,omitempty"`
-	RunID             string                           `json:"runId,omitempty"`
-	NodeID            string                           `json:"nodeId,omitempty"`
-	Invocation        *domain.RunnerInvocation         `json:"invocation,omitempty"`
-	Sandbox           *domain.RunnerSandboxSpec        `json:"sandbox,omitempty"`
-	Command           string                           `json:"command,omitempty"`
-	Action            string                           `json:"action,omitempty"`
-	PreviewArchive    *domain.RunnerPreviewArchiveSpec `json:"previewArchive,omitempty"`
-	WorkBranchMessage string                           `json:"workBranchMessage,omitempty"`
-	IntegrationLabel  string                           `json:"integrationLabel,omitempty"`
+	ExecutionDeadline     *runnerTaskTime                    `json:"executionDeadline,omitempty"`
+	ContributionSpecs     []domain.RunnerContributionSpec    `json:"contributionSpecs,omitempty"`
+	PendingContributions  []domain.RunnerContributionReceipt `json:"pendingContributions,omitempty"`
+	AcceptedContributions []domain.RunnerContributionReceipt `json:"acceptedContributions,omitempty"`
+	DeliveryPolicy        string                             `json:"deliveryPolicy,omitempty"`
+	Prompt                string                             `json:"prompt"`
+	Workspace             string                             `json:"workspace,omitempty"`
+	Args                  []string                           `json:"args,omitempty"`
+	ExitCode              *int                               `json:"exitCode,omitempty"`
+	Result                string                             `json:"result,omitempty"`
+	Error                 string                             `json:"error,omitempty"`
+	StartedAt             *runnerTaskTime                    `json:"startedAt,omitempty"`
+	CompletedAt           *runnerTaskTime                    `json:"completedAt,omitempty"`
+	RunID                 string                             `json:"runId,omitempty"`
+	NodeID                string                             `json:"nodeId,omitempty"`
+	Invocation            *domain.RunnerInvocation           `json:"invocation,omitempty"`
+	Sandbox               *domain.RunnerSandboxSpec          `json:"sandbox,omitempty"`
+	Command               string                             `json:"command,omitempty"`
+	Action                string                             `json:"action,omitempty"`
+	PreviewArchive        *domain.RunnerPreviewArchiveSpec   `json:"previewArchive,omitempty"`
+	WorkBranchMessage     string                             `json:"workBranchMessage,omitempty"`
+	IntegrationLabel      string                             `json:"integrationLabel,omitempty"`
 	// Artifacts holds artifact content uploaded by the runner at completion
 	// (name → file content) so the engine can write them into the run
 	// workspace and reuse the existing verification/handoff pipeline.
@@ -106,6 +112,17 @@ func runnerTaskFromRow(row runnerTaskRow) domain.RunnerTask {
 	}
 	var p runnerTaskPayload
 	if json.Unmarshal(row.Payload, &p) == nil {
+		t.ExecutionDeadline = p.ExecutionDeadline.toTime()
+		t.ContributionSpecs = p.ContributionSpecs
+		t.PendingContributions = p.PendingContributions
+		t.AcceptedContributions = p.AcceptedContributions
+		for i := range t.PendingContributions {
+			t.PendingContributions[i].StorageKey = t.PendingContributions[i].SHA256
+		}
+		for i := range t.AcceptedContributions {
+			t.AcceptedContributions[i].StorageKey = t.AcceptedContributions[i].SHA256
+		}
+		t.DeliveryPolicy = p.DeliveryPolicy
 		t.Prompt = p.Prompt
 		t.Workspace = p.Workspace
 		t.Args = p.Args
@@ -131,7 +148,10 @@ func runnerTaskFromRow(row runnerTaskRow) domain.RunnerTask {
 
 func runnerTaskPayloadBytes(v domain.RunnerTask) []byte {
 	return mustJSON(runnerTaskPayload{
-		Prompt: v.Prompt, Workspace: v.Workspace, Args: v.Args, ExitCode: v.ExitCode,
+		ExecutionDeadline: newRunnerTaskTime(v.ExecutionDeadline),
+		ContributionSpecs: v.ContributionSpecs, PendingContributions: v.PendingContributions, AcceptedContributions: v.AcceptedContributions,
+		DeliveryPolicy: v.DeliveryPolicy,
+		Prompt:         v.Prompt, Workspace: v.Workspace, Args: v.Args, ExitCode: v.ExitCode,
 		Result: v.Result, Error: v.Error, StartedAt: newRunnerTaskTime(v.StartedAt),
 		CompletedAt: newRunnerTaskTime(v.CompletedAt), RunID: v.RunID, NodeID: v.NodeID,
 		Invocation: v.Invocation, Sandbox: v.Sandbox, Command: v.Command, Action: v.Action,
@@ -444,12 +464,28 @@ func (r *RunnersRepo) MarkRunnerOffline(id string, now time.Time) error {
 
 // ---------- Runner tasks ----------
 
+// PutRunnerTask creates a task or edits an unclaimed queued definition.
+// Existing execution identities must be mutated through their lease methods.
 func (r *RunnersRepo) PutRunnerTask(v domain.RunnerTask) error {
+	v, err := prepareRunnerTask(v)
+	if err != nil {
+		return err
+	}
+	return r.DB.Transaction(func(tx *gorm.DB) error { return putPreparedRunnerTask(tx, v) })
+}
+
+func prepareRunnerTask(v domain.RunnerTask) (domain.RunnerTask, error) {
+	if v.ExecutionDeadline != nil && v.ExecutionDeadline.IsZero() {
+		return v, fmt.Errorf("executionDeadline must be a nonzero absolute timestamp")
+	}
+	if len(v.PendingContributions) != 0 || len(v.AcceptedContributions) != 0 {
+		return v, invalidContribution("receipt metadata is owned by staged upload and successful completion")
+	}
 	if strings.TrimSpace(v.ID) == "" {
-		return fmt.Errorf("runner task id is required")
+		return v, fmt.Errorf("runner task id is required")
 	}
 	if strings.TrimSpace(v.Provider) == "" {
-		return fmt.Errorf("runner task provider is required")
+		return v, fmt.Errorf("runner task provider is required")
 	}
 	now := time.Now().UTC()
 	if v.CreatedAt.IsZero() {
@@ -462,7 +498,95 @@ func (r *RunnersRepo) PutRunnerTask(v domain.RunnerTask) error {
 		v.MaxAttempts = 1
 	}
 	v.UpdatedAt = now
-	return upsert(r.DB, "runner_tasks", runnerTaskRowValues(v))
+	return v, nil
+}
+
+func putPreparedRunnerTask(tx *gorm.DB, v domain.RunnerTask) error {
+	inserted, err := insertIgnore(tx, "runner_tasks", runnerTaskRowValues(v))
+	if err != nil || inserted {
+		return err
+	}
+	// A task ID is a durable execution identity. Only unclaimed queued
+	// definitions can be edited; retries use ClaimRunnerTask, while new
+	// logical work must use a fresh ID rather than resetting its generation.
+	if v.Attempt != 0 || v.Status != domain.RunnerTaskQueued {
+		return ErrRunnerTaskLeaseLost
+	}
+	res := tx.Model(&runnerTaskRow{}).Where("id = ? AND attempt = 0 AND status = ?", v.ID, domain.RunnerTaskQueued).Updates(runnerTaskRowValues(v))
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return ErrRunnerTaskLeaseLost
+	}
+	return nil
+}
+
+// QueueRunnerMaintenanceTask serializes maintenance creation on the durable
+// Run row. Concurrent API/worker processes reuse one active task per action;
+// after it ends, new work receives its caller-supplied fresh ID and retry budget.
+func (r *RunnersRepo) QueueRunnerMaintenanceTask(v domain.RunnerTask) (domain.RunnerTask, bool, error) {
+	v, err := prepareRunnerTask(v)
+	if err != nil {
+		return domain.RunnerTask{}, false, err
+	}
+	if strings.TrimSpace(v.RunID) == "" || (v.Action != domain.RunnerTaskActionCleanupRun && v.Action != domain.RunnerTaskActionArchivePreview) || v.Status != domain.RunnerTaskQueued || v.Attempt != 0 {
+		return domain.RunnerTask{}, false, fmt.Errorf("maintenance requires a run, supported action and new queued task")
+	}
+	var task domain.RunnerTask
+	created := false
+	var txOptions []*sql.TxOptions
+	if r.isMySQL() {
+		// Run-row locks serialize the same logical queue. READ COMMITTED
+		// prevents unrelated Runs' JSON-filtered empty lookups from taking
+		// overlapping next-key gaps and deadlocking on their first inserts.
+		txOptions = append(txOptions, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	}
+	err = r.DB.Transaction(func(tx *gorm.DB) error {
+		var run runRow
+		if err := r.locking(tx).Select("id").Where("id = ?", v.RunID).Take(&run).Error; err != nil {
+			return err
+		}
+		var active []runnerTaskRow
+		// Re-read current tasks after waiting for the Run lock, and keep any
+		// reused active task stable until this transaction finishes.
+		if err := r.locking(r.runnerTasksForRunAction(tx, v.RunID, v.Action)).Where("status IN ?", []string{domain.RunnerTaskQueued, domain.RunnerTaskLeased, domain.RunnerTaskRunning}).Order("created_at DESC").Limit(1).Find(&active).Error; err != nil {
+			return err
+		}
+		if len(active) > 0 {
+			task = runnerTaskFromRow(active[0])
+			return nil
+		}
+		// Unlike PutRunnerTask this path must never update a reused identity.
+		inserted, err := insertIgnore(tx, "runner_tasks", runnerTaskRowValues(v))
+		if err != nil {
+			return err
+		}
+		if !inserted {
+			return ErrRunnerTaskLeaseLost
+		}
+		task, created = v, true
+		return nil
+	}, txOptions...)
+	if err != nil {
+		return domain.RunnerTask{}, false, err
+	}
+	return task, created, nil
+}
+
+func (r *RunnersRepo) runnerTasksForRunAction(tx *gorm.DB, runID, action string) *gorm.DB {
+	return tx.Model(&runnerTaskRow{}).Where(r.sqlJSONText("$.runId")+" = ? AND "+r.sqlJSONText("$.action")+" = ?", "$.runId", runID, "$.action", action)
+}
+
+// LatestRunnerTaskForRunAction includes terminal history and legacy task IDs.
+func (r *RunnersRepo) LatestRunnerTaskForRunAction(runID, action string) (domain.RunnerTask, bool) {
+	var row runnerTaskRow
+	if err := r.runnerTasksForRunAction(r.DB, runID, action).
+		Order("CASE WHEN status IN ('queued', 'leased', 'running') THEN 0 ELSE 1 END").
+		Order("created_at DESC").Order("id DESC").Take(&row).Error; err != nil {
+		return domain.RunnerTask{}, false
+	}
+	return runnerTaskFromRow(row), true
 }
 
 func (r *RunnersRepo) RunnerTask(id string) (domain.RunnerTask, bool) {
@@ -476,11 +600,25 @@ func (r *RunnersRepo) RunnerTask(id string) (domain.RunnerTask, bool) {
 // RunnerTaskControl reads only the lease and state polled by active runners.
 // Prompt, invocation, results and artifact bodies are not needed by this API.
 func (r *RunnersRepo) RunnerTaskControl(id string) (domain.RunnerTask, bool) {
-	var row runnerTaskRow
-	if err := r.DB.Select("id", "desired_state", "status", "lease_owner").Where("id = ?", id).Take(&row).Error; err != nil {
+	var row struct {
+		ID                string
+		DesiredState      string
+		Status            string
+		LeaseOwner        string
+		Attempt           int
+		LeaseUntil        *time.Time
+		ExecutionDeadline *string
+	}
+	selectSQL := "id, desired_state, status, lease_owner, attempt, lease_until, " + r.sqlJSONText("$.executionDeadline") + " AS execution_deadline"
+	if err := r.DB.Model(&runnerTaskRow{}).Select(selectSQL, "$.executionDeadline").Where("id = ?", id).Take(&row).Error; err != nil {
 		return domain.RunnerTask{}, false
 	}
-	return domain.RunnerTask{ID: row.ID, DesiredState: row.DesiredState, Status: row.Status, LeaseOwner: row.LeaseOwner}, true
+	var deadline *time.Time
+	if row.ExecutionDeadline != nil {
+		parsed, _ := time.Parse(time.RFC3339Nano, *row.ExecutionDeadline)
+		deadline = &parsed
+	}
+	return domain.RunnerTask{ID: row.ID, DesiredState: row.DesiredState, Status: row.Status, LeaseOwner: row.LeaseOwner, Attempt: row.Attempt, LeaseUntil: row.LeaseUntil, ExecutionDeadline: deadline}, true
 }
 
 func (r *RunnersRepo) RunnerTasks() []domain.RunnerTask {
@@ -548,11 +686,23 @@ func (r *RunnersRepo) ClaimRunnerTask(runnerID string, providers []string, now t
 			return nil
 		}
 		taskID := rows[0].ID
+		queued := runnerTaskFromRow(rows[0])
+		if domain.ExecutionDeadlineExpired(queued.ExecutionDeadline, leaseCheckTime(tx, now)) {
+			queued.Status, queued.Error = domain.RunnerTaskFailed, domain.ErrExecutionDeadlineExceeded.Error()
+			completed := leaseCheckTime(tx, now)
+			queued.CompletedAt, queued.UpdatedAt = &completed, completed
+			scrubRunnerTaskCredentials(&queued)
+			return tx.Model(&runnerTaskRow{}).Where("id = ?", taskID).Updates(runnerTaskRowValues(queued)).Error
+		}
+		leaseUntil := now.Add(leaseTTL)
+		if queued.ExecutionDeadline != nil && queued.ExecutionDeadline.Before(leaseUntil) {
+			leaseUntil = *queued.ExecutionDeadline
+		}
 		res := tx.Model(&runnerTaskRow{}).
 			Where("id = ? AND status = ?", taskID, domain.RunnerTaskQueued).
 			Updates(map[string]any{
 				"status": domain.RunnerTaskLeased, "lease_owner": runnerID,
-				"lease_until": now.Add(leaseTTL), "attempt": rows[0].Attempt + 1,
+				"lease_until": leaseUntil, "attempt": rows[0].Attempt + 1,
 				"desired_state": "", "updated_at": now,
 			})
 		if res.Error != nil {
@@ -576,9 +726,9 @@ func (r *RunnersRepo) ClaimRunnerTask(runnerID string, providers []string, now t
 }
 
 // StartRunnerTask moves a leased task into running.
-func (r *RunnersRepo) StartRunnerTask(id, runnerID string, now time.Time) error {
+func (r *RunnersRepo) StartRunnerTask(id, runnerID string, attempt int, now time.Time) error {
 	return r.DB.Transaction(func(tx *gorm.DB) error {
-		row, ok := r.takeRunnerTaskForLease(tx, id, runnerID)
+		row, ok := r.takeRunnerTaskForLease(tx, id, runnerID, attempt, now)
 		if !ok {
 			return ErrRunnerTaskLeaseLost
 		}
@@ -595,12 +745,33 @@ func (r *RunnersRepo) StartRunnerTask(id, runnerID string, now time.Time) error 
 	})
 }
 
-// takeRunnerTaskForLease loads a task that must currently be leased by runnerID.
-func (r *RunnersRepo) takeRunnerTaskForLease(tx *gorm.DB, id, runnerID string) (runnerTaskRow, bool) {
+// leaseCheckTime rechecks time after a row-lock wait. Gorm's per-DB clock is
+// injectable in tests; the request timestamp remains a lower bound so a
+// deterministic future expiry test never moves authority backwards.
+func leaseCheckTime(tx *gorm.DB, requested time.Time) time.Time {
+	actual := tx.NowFunc().UTC()
+	if actual.After(requested) {
+		return actual
+	}
+	return requested
+}
+
+// takeRunnerTaskForLease locks the exact live attempt. A matching Runner ID
+// alone is insufficient when that Runner has reclaimed the same task.
+func (r *RunnersRepo) takeRunnerTaskForLease(tx *gorm.DB, id, runnerID string, attempt int, now time.Time) (runnerTaskRow, bool) {
+	if attempt < 1 || strings.TrimSpace(id) == "" || strings.TrimSpace(runnerID) == "" {
+		return runnerTaskRow{}, false
+	}
 	var row runnerTaskRow
 	if err := r.locking(tx).
-		Where("id = ? AND lease_owner = ? AND status IN ?", id, runnerID, []string{domain.RunnerTaskLeased, domain.RunnerTaskRunning}).
+		Where("id = ? AND lease_owner = ? AND attempt = ? AND status IN ? AND lease_until > ?", id, runnerID, attempt, []string{domain.RunnerTaskLeased, domain.RunnerTaskRunning}, now).
 		Take(&row).Error; err != nil {
+		return runnerTaskRow{}, false
+	}
+	if row.LeaseUntil == nil || !row.LeaseUntil.After(leaseCheckTime(tx, now)) {
+		return runnerTaskRow{}, false
+	}
+	if domain.ExecutionDeadlineExpired(runnerTaskFromRow(row).ExecutionDeadline, leaseCheckTime(tx, now)) {
 		return runnerTaskRow{}, false
 	}
 	return row, true
@@ -608,15 +779,19 @@ func (r *RunnersRepo) takeRunnerTaskForLease(tx *gorm.DB, id, runnerID string) (
 
 // RenewRunnerTaskLease extends the lease and returns the desired state so a
 // cancel can travel on the same response without extra polling.
-func (r *RunnersRepo) RenewRunnerTaskLease(id, runnerID string, ttl time.Duration, now time.Time) (string, error) {
+func (r *RunnersRepo) RenewRunnerTaskLease(id, runnerID string, attempt int, ttl time.Duration, now time.Time) (string, error) {
 	var desired string
 	err := r.DB.Transaction(func(tx *gorm.DB) error {
-		row, ok := r.takeRunnerTaskForLease(tx, id, runnerID)
+		row, ok := r.takeRunnerTaskForLease(tx, id, runnerID, attempt, now)
 		if !ok {
 			return ErrRunnerTaskLeaseLost
 		}
+		until := now.Add(ttl)
+		if deadline := runnerTaskFromRow(row).ExecutionDeadline; deadline != nil && deadline.Before(until) {
+			until = *deadline
+		}
 		if err := tx.Model(&runnerTaskRow{}).Where("id = ?", id).Updates(map[string]any{
-			"lease_until": now.Add(ttl), "updated_at": now,
+			"lease_until": until, "updated_at": now,
 		}).Error; err != nil {
 			return err
 		}
@@ -629,16 +804,26 @@ func (r *RunnersRepo) RenewRunnerTaskLease(id, runnerID string, ttl time.Duratio
 // CompleteRunnerTask finalizes a task. Only the lease owner may complete it.
 // artifacts (legacy, by contract name) and outputs carry what the runner
 // reported about its workspace; either may be nil.
-func (r *RunnersRepo) CompleteRunnerTask(id, runnerID, status string, exitCode *int, result, errMsg string, artifacts map[string]string, outputs *domain.RunnerTaskOutputs, now time.Time) error {
+func (r *RunnersRepo) CompleteRunnerTask(id, runnerID string, attempt int, status string, exitCode *int, result, errMsg string, artifacts map[string]string, outputs *domain.RunnerTaskOutputs, now time.Time) error {
 	if status != domain.RunnerTaskSuccess && status != domain.RunnerTaskFailed && status != domain.RunnerTaskCanceled {
 		return fmt.Errorf("invalid final task status %q", status)
 	}
 	return r.DB.Transaction(func(tx *gorm.DB) error {
-		row, ok := r.takeRunnerTaskForLease(tx, id, runnerID)
+		row, ok := r.takeRunnerTaskForLease(tx, id, runnerID, attempt, now)
 		if !ok {
 			return ErrRunnerTaskLeaseLost
 		}
+		if row.DesiredState == domain.RunnerTaskDesiredCancel && status != domain.RunnerTaskCanceled {
+			return ErrRunnerTaskLeaseLost
+		}
 		task := runnerTaskFromRow(row)
+		if status == domain.RunnerTaskSuccess {
+			if err := acceptRunnerContributions(tx, &task, outputs, now); err != nil {
+				return err
+			}
+		} else {
+			task.AcceptedContributions = nil
+		}
 		task.Status = status
 		task.ExitCode = exitCode
 		task.Result = result
@@ -719,13 +904,27 @@ func (r *RunnersRepo) ExpireRunnerTasks(now time.Time) ([]domain.RunnerTask, err
 	err := r.DB.Transaction(func(tx *gorm.DB) error {
 		var rows []runnerTaskRow
 		if err := r.locking(tx).
-			Where("status IN ? AND lease_until IS NOT NULL AND lease_until < ?", []string{domain.RunnerTaskLeased, domain.RunnerTaskRunning}, now).
+			Where("(status IN ? AND lease_until IS NOT NULL AND lease_until <= ?) OR (status IN ? AND "+r.sqlJSONText("$.executionDeadline")+" IS NOT NULL)", []string{domain.RunnerTaskLeased, domain.RunnerTaskRunning}, now, []string{domain.RunnerTaskQueued, domain.RunnerTaskLeased, domain.RunnerTaskRunning}, "$.executionDeadline").
 			Find(&rows).Error; err != nil {
 			return err
 		}
 		for _, row := range rows {
 			task := runnerTaskFromRow(row)
-			if task.Attempt < task.MaxAttempts {
+			deadlineExpired := domain.ExecutionDeadlineExpired(task.ExecutionDeadline, leaseCheckTime(tx, now))
+			if !deadlineExpired && (row.LeaseUntil == nil || row.LeaseUntil.After(now)) {
+				continue
+			}
+			if deadlineExpired {
+				task.Status, task.Error = domain.RunnerTaskFailed, domain.ErrExecutionDeadlineExceeded.Error()
+				completed := now
+				task.CompletedAt = &completed
+				scrubRunnerTaskCredentials(&task)
+			} else if task.DesiredState == domain.RunnerTaskDesiredCancel {
+				task.Status = domain.RunnerTaskCanceled
+				completed := now
+				task.CompletedAt = &completed
+				scrubRunnerTaskCredentials(&task)
+			} else if task.Attempt < task.MaxAttempts {
 				task.Status = domain.RunnerTaskQueued
 			} else {
 				task.Status = domain.RunnerTaskFailed
@@ -748,21 +947,25 @@ func (r *RunnersRepo) ExpireRunnerTasks(now time.Time) ([]domain.RunnerTask, err
 	return recovered, err
 }
 
-// AppendRunnerTaskEvents stores batched runner output. (task_id, seq) is the
-// idempotency key: an HTTP retry resends the same seq and is ignored.
-func (r *RunnersRepo) AppendRunnerTaskEvents(taskID string, events []domain.RunnerTaskEvent) (int, error) {
-	if taskID = strings.TrimSpace(taskID); taskID == "" {
-		return 0, fmt.Errorf("task id is required")
-	}
-	if len(events) == 0 {
-		return 0, nil
-	}
+// AppendRunnerTaskEvents stores output under a locked, live lease. The
+// (task_id, attempt, seq) key makes retries idempotent within one attempt.
+func (r *RunnersRepo) AppendRunnerTaskEvents(taskID, runnerID string, attempt int, events []domain.RunnerTaskEvent, now time.Time) (int, error) {
 	accepted := 0
 	err := r.DB.Transaction(func(tx *gorm.DB) error {
-		accepted = 0
+		if _, ok := r.takeRunnerTaskForLease(tx, taskID, runnerID, attempt, now); !ok {
+			return ErrRunnerTaskLeaseLost
+		}
+		for _, ev := range events {
+			if ev.Seq < 1 {
+				return fmt.Errorf("runner task event sequence must be positive")
+			}
+			if ev.Attempt != 0 && ev.Attempt != attempt {
+				return fmt.Errorf("runner task event attempt does not match lease")
+			}
+		}
 		for _, ev := range events {
 			inserted, err := insertIgnore(tx, "runner_task_events", map[string]any{
-				"task_id": taskID, "seq": ev.Seq, "type": ev.Type, "data": ev.Data, "ts": timePtr(ev.Ts),
+				"task_id": taskID, "attempt": attempt, "seq": ev.Seq, "type": ev.Type, "data": ev.Data, "ts": timePtr(ev.Ts),
 			})
 			if err != nil {
 				return err
@@ -773,24 +976,37 @@ func (r *RunnersRepo) AppendRunnerTaskEvents(taskID string, events []domain.Runn
 		}
 		return nil
 	})
+	if err != nil {
+		return 0, err
+	}
 	return accepted, err
 }
 
+// RunnerTaskEvents is the management history reader, including legacy attempt
+// zero records whose generation is unknown. Engine playback must use the
+// attempt-scoped RunnerTaskEventsAfter reader instead.
 func (r *RunnersRepo) RunnerTaskEvents(taskID string) []domain.RunnerTaskEvent {
-	return r.RunnerTaskEventsAfter(taskID, 0)
+	return runnerTaskEventsFromQuery(r.DB.Where("task_id = ?", taskID).Order("attempt").Order("seq"))
 }
 
 // RunnerTaskEventsAfter returns only events newer than the last sequence the
 // worker has bridged. This keeps live observability polling proportional to
 // new output instead of repeatedly loading an entire CLI transcript.
-func (r *RunnersRepo) RunnerTaskEventsAfter(taskID string, after int64) []domain.RunnerTaskEvent {
+func (r *RunnersRepo) RunnerTaskEventsAfter(taskID string, attempt int, after int64) []domain.RunnerTaskEvent {
+	if attempt < 1 {
+		return []domain.RunnerTaskEvent{}
+	}
+	return runnerTaskEventsFromQuery(r.DB.Where("task_id = ? AND attempt = ? AND seq > ?", taskID, attempt, after).Order("seq"))
+}
+
+func runnerTaskEventsFromQuery(query *gorm.DB) []domain.RunnerTaskEvent {
 	var rows []runnerTaskEventRow
-	if err := r.DB.Where("task_id = ? AND seq > ?", taskID, after).Order("seq").Find(&rows).Error; err != nil {
+	if err := query.Find(&rows).Error; err != nil {
 		return []domain.RunnerTaskEvent{}
 	}
 	out := make([]domain.RunnerTaskEvent, 0, len(rows))
 	for _, row := range rows {
-		ev := domain.RunnerTaskEvent{Seq: row.Seq, Type: row.Type, Data: row.Data}
+		ev := domain.RunnerTaskEvent{Attempt: row.Attempt, Seq: row.Seq, Type: row.Type, Data: row.Data}
 		if row.Ts != nil {
 			ev.Ts = *row.Ts
 		}

@@ -37,14 +37,14 @@ type Daemon struct {
 	running              int32
 	registerMu           sync.Mutex
 	controlMu            sync.RWMutex
-	controls             map[string]chan string
-	pendingControls      map[string]string
+	controls             map[taskAttemptKey]chan string
+	pendingControls      map[taskAttemptKey]string
 	wsOnline             atomic.Bool
 	updateMu             sync.RWMutex
 	updateReady          atomic.Bool
 	runSandboxMu         sync.Mutex
 	runSandboxes         map[string]*runSandbox
-	managedTasks         map[string]*managedTask
+	managedTasks         map[taskAttemptKey]*managedTask
 	workspacePreparing   sync.Map // run ID -> active environment preflight, not historical file stamp
 	workspacePreparation sync.Map
 	workspaceTerminals   runtime.TerminalPool
@@ -125,7 +125,7 @@ func New(cfg Config) (*Daemon, error) {
 		host, _ := os.Hostname()
 		cfg.Name = host
 	}
-	return &Daemon{cfg: cfg, client: NewClient(cfg.ServerURL), executor: runtime.NewExecutorRunner(), controls: map[string]chan string{}, pendingControls: map[string]string{}}, nil
+	return &Daemon{cfg: cfg, client: NewClient(cfg.ServerURL), executor: runtime.NewExecutorRunner(), controls: map[taskAttemptKey]chan string{}, pendingControls: map[taskAttemptKey]string{}}, nil
 }
 
 func trimTrailingSlash(s string) string {
@@ -476,14 +476,10 @@ func (d *Daemon) claimLoop(ctx context.Context) error {
 func (d *Daemon) claimTaskUncoordinated(ctx context.Context, providers []string, capacity int) (*domain.RunnerTask, bool, error) {
 	if !d.cfg.DisableAutoUpdate {
 		waitCtx, cancel := context.WithTimeout(ctx, d.cfg.LongPollTimeout+15*time.Second)
-		ready, legacyTask, err := d.client.WaitForTask(waitCtx, ClaimRequest{AvailableRuntimes: providers, Capacity: capacity})
+		ready, _, err := d.client.WaitForTask(waitCtx, ClaimRequest{AvailableRuntimes: providers, Capacity: capacity})
 		cancel()
 		if err != nil || !ready {
 			return nil, false, err
-		}
-		if legacyTask != nil {
-			atomic.AddInt32(&d.running, 1)
-			return legacyTask, true, nil
 		}
 		d.checkUpdatesBeforeClaim(ctx)
 		if d.updateReady.Load() {
@@ -508,7 +504,12 @@ func (d *Daemon) claimTaskUncoordinated(ctx context.Context, providers []string,
 
 func (d *Daemon) executeTask(ctx context.Context, task domain.RunnerTask) {
 	defer atomic.AddInt32(&d.running, -1)
-	defer d.releaseManagedTask(task.ID)
+	defer d.releaseManagedTask(task.ID, task.Attempt)
+	if task.ExecutionDeadline != nil {
+		var stopDeadline context.CancelFunc
+		ctx, stopDeadline = context.WithDeadline(ctx, *task.ExecutionDeadline)
+		defer stopDeadline()
+	}
 	// A claim already owns a lease. Keep it alive while waiting for workspace
 	// locks, cloning repositories, creating sandboxes and collecting outputs too.
 	ctx, stopLease := d.keepTaskLease(ctx, task, leaseRenewInterval)
@@ -517,20 +518,26 @@ func (d *Daemon) executeTask(ctx context.Context, task domain.RunnerTask) {
 	// sees this task terminal (and lets a paused run continue), a follow-up
 	// preparation or snapshot must not still find the gate held.
 	releaseGate := func() {}
+	var workspaceGateErr error
 	if task.RunID != "" {
-		gate := d.workspaceGate(d.taskGateKey(task))
-		gate.RLock()
-		releaseGate = onceRelease(gate.RUnlock)
+		releaseGate, workspaceGateErr = d.waitTaskWorkspaceGate(ctx, d.taskGateKey(task))
 	}
 	defer releaseGate()
-	d.registerTaskControl(task.ID)
-	defer d.unregisterTaskControl(task.ID)
+	d.registerTaskControl(task.ID, task.Attempt)
+	defer d.unregisterTaskControl(task.ID, task.Attempt)
 	log.Printf("task %s claimed (provider=%s attempt=%d)", task.ID, task.Provider, task.Attempt)
 
 	var result execResult
 	var artifacts map[string]string
-	managed := d.managedTaskState(task.ID)
+	managed := d.managedTaskState(task.ID, task.Attempt)
+	policyErr := domain.ValidateRunnerDelivery(task)
 	switch {
+	case domain.ExecutionDeadlineExpired(task.ExecutionDeadline, time.Now().UTC()):
+		result = execResult{status: domain.RunnerTaskFailed, errMsg: domain.ErrExecutionDeadlineExceeded.Error(), exitCode: 1}
+	case workspaceGateErr != nil:
+		result = execResult{status: domain.RunnerTaskCanceled, errMsg: workspaceGateErr.Error()}
+	case policyErr != nil:
+		result = execResult{status: domain.RunnerTaskFailed, errMsg: policyErr.Error()}
 	case managed != nil && managed.err != nil:
 		result = execResult{status: domain.RunnerTaskFailed, errMsg: fmt.Sprintf("pin managed CLI inventory: %v", managed.err)}
 	case task.Action == domain.RunnerTaskActionCleanupRun:
@@ -574,6 +581,19 @@ func (d *Daemon) executeTask(ctx context.Context, task domain.RunnerTask) {
 		}
 	}
 
+	if result.status == domain.RunnerTaskSuccess && !domain.ExecutionDeadlineExpired(task.ExecutionDeadline, time.Now().UTC()) && len(task.ContributionSpecs) > 0 {
+		var err error
+		result.outputs, err = d.exportTaskContributions(ctx, task, result.outputs)
+		if err != nil {
+			result.status = domain.RunnerTaskFailed
+			result.exitCode = 1
+			result.errMsg = fmt.Sprintf("collect immutable contribution: %v", err)
+		}
+	}
+	if domain.ExecutionDeadlineExpired(task.ExecutionDeadline, time.Now().UTC()) {
+		result.status, result.errMsg, result.exitCode = domain.RunnerTaskFailed, domain.ErrExecutionDeadlineExceeded.Error(), 1
+		result.outputs = nil
+	}
 	releaseGate()
 	completeCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -582,14 +602,15 @@ func (d *Daemon) executeTask(ctx context.Context, task domain.RunnerTask) {
 		exit := result.exitCode
 		req.ExitCode = &exit
 	}
-	if err := d.client.Complete(completeCtx, task.ID, req); err != nil {
-		log.Printf("task %s complete report: %v", task.ID, err)
+	if err := d.client.Complete(completeCtx, task.ID, task.Attempt, req); err != nil {
+		log.Printf("task %s attempt %d completion rejected: %v", task.ID, task.Attempt, err)
+		return
 	}
 	log.Printf("task %s finished (%s)", task.ID, result.status)
 }
 
 func (d *Daemon) executeRunCleanup(ctx context.Context, task domain.RunnerTask) execResult {
-	if err := d.client.StartTask(ctx, task.ID); err != nil {
+	if err := d.client.StartTask(ctx, task.ID, task.Attempt); err != nil {
 		return execResult{status: domain.RunnerTaskFailed, errMsg: fmt.Sprintf("start cleanup: %v", err)}
 	}
 	root, err := filepath.Abs(d.cfg.DefaultWorkspaceRoot)
@@ -602,6 +623,12 @@ func (d *Daemon) executeRunCleanup(ctx context.Context, task domain.RunnerTask) 
 	}
 	rel, err := filepath.Rel(root, target)
 	expected := filepath.Join("runs", task.RunID)
+	if filepath.ToSlash(rel) == domain.IsolatedRunWorkspaceRel(task.RunID) {
+		if err := verifyIsolatedRunCleanup(root, task.RunID); err != nil {
+			return execResult{status: domain.RunnerTaskFailed, errMsg: err.Error()}
+		}
+		expected = filepath.FromSlash(domain.IsolatedRunWorkspaceRel(task.RunID))
+	}
 	if err != nil || task.RunID == "" || filepath.Clean(rel) != filepath.Clean(expected) || rel == "." || strings.HasPrefix(rel, "..") {
 		return execResult{status: domain.RunnerTaskFailed, errMsg: fmt.Sprintf("refusing unsafe runner workspace cleanup %q", target)}
 	}
@@ -614,7 +641,7 @@ func (d *Daemon) executeRunCleanup(ctx context.Context, task domain.RunnerTask) 
 	if err := os.RemoveAll(target); err != nil {
 		return execResult{status: domain.RunnerTaskFailed, errMsg: fmt.Sprintf("remove runner workspace: %v", err)}
 	}
-	_ = d.client.SendEvents(ctx, task.ID, []domain.RunnerTaskEvent{{Seq: 1, Type: "system", Data: "run sandbox and workspace removed", Ts: time.Now().UTC()}})
+	_ = d.client.SendEvents(ctx, task.ID, task.Attempt, []domain.RunnerTaskEvent{{Seq: 1, Type: "system", Data: "run sandbox and workspace removed", Ts: time.Now().UTC()}})
 	return execResult{status: domain.RunnerTaskSuccess, exitCode: 0, result: "run sandbox and workspace removed"}
 }
 
@@ -694,6 +721,11 @@ func workspaceContainsPath(workspace, candidate string) bool {
 // relative path shared by the node's CLI runs and gate commands; manual
 // tasks fall back to a per-task directory.
 func (d *Daemon) taskWorkspace(task domain.RunnerTask) string {
+	if isolatedTask(task) {
+		if descriptor, err := domain.IsolatedWorkspaceDescriptor(task); err == nil {
+			return filepath.Join(d.cfg.DefaultWorkspaceRoot, filepath.FromSlash(descriptor.WorkspaceRel))
+		}
+	}
 	ws := strings.TrimSpace(task.Workspace)
 	if ws == "" {
 		return d.defaultWorkspace(task.ID)
@@ -709,11 +741,14 @@ func (d *Daemon) taskWorkspace(task domain.RunnerTask) string {
 // and verification gates.
 func (d *Daemon) executeTerminal(ctx context.Context, task domain.RunnerTask) execResult {
 	workspace := d.taskWorkspace(task)
+	if err := d.prepareTaskWorkspace(task); err != nil {
+		return execResult{status: domain.RunnerTaskFailed, errMsg: err.Error()}
+	}
 	if err := os.MkdirAll(workspace, 0o755); err != nil {
 		return execResult{status: domain.RunnerTaskFailed, errMsg: fmt.Sprintf("workspace %s: %v", workspace, err)}
 	}
 	if task.Invocation != nil {
-		if err := checkoutInvocationRepositories(ctx, workspace, task.Invocation, runnerTaskSandboxDriver(task)); err != nil {
+		if err := d.checkoutTaskRepositories(ctx, task); err != nil {
 			return execResult{status: domain.RunnerTaskFailed, errMsg: fmt.Sprintf("repository checkout: %v", err)}
 		}
 		if err := writeRunnerHumanContext(workspace, task.Invocation.HumanContext); err != nil {
@@ -785,10 +820,13 @@ func (d *Daemon) mcpTarget(requireCredentials bool, gitTokens ...string) runtime
 func (d *Daemon) executeInvocation(ctx context.Context, task domain.RunnerTask) (execResult, map[string]string) {
 	inv := task.Invocation
 	workspace := d.taskWorkspace(task)
+	if err := d.prepareTaskWorkspace(task); err != nil {
+		return execResult{status: domain.RunnerTaskFailed, errMsg: err.Error()}, nil
+	}
 	if err := os.MkdirAll(workspace, 0o755); err != nil {
 		return execResult{status: domain.RunnerTaskFailed, errMsg: fmt.Sprintf("workspace %s: %v", workspace, err)}, nil
 	}
-	if err := checkoutInvocationRepositories(ctx, workspace, inv, runnerTaskSandboxDriver(task)); err != nil {
+	if err := d.checkoutTaskRepositories(ctx, task); err != nil {
 		return execResult{status: domain.RunnerTaskFailed, errMsg: fmt.Sprintf("repository checkout: %v", err)}, nil
 	}
 	if err := writeRunnerHumanContext(workspace, inv.HumanContext); err != nil {
@@ -835,10 +873,10 @@ func (d *Daemon) executeInvocation(ctx context.Context, task domain.RunnerTask) 
 	}
 	if prepared.Builtin {
 		// Builtin executors (mock) need no CLI process.
-		if err := d.client.StartTask(ctx, task.ID); err != nil {
+		if err := d.client.StartTask(ctx, task.ID, task.Attempt); err != nil {
 			return execResult{status: domain.RunnerTaskFailed, errMsg: fmt.Sprintf("start: %v", err)}, nil
 		}
-		_ = d.client.SendEvents(ctx, task.ID, []domain.RunnerTaskEvent{{Seq: 1, Type: "system", Data: "builtin executor completed in-process", Ts: time.Now().UTC()}})
+		_ = d.client.SendEvents(ctx, task.ID, task.Attempt, []domain.RunnerTaskEvent{{Seq: 1, Type: "system", Data: "builtin executor completed in-process", Ts: time.Now().UTC()}})
 		return execResult{status: domain.RunnerTaskSuccess, exitCode: 0, result: prepared.BuiltinResult, outputs: collectTaskOutputs(workspace, inv)}, collectRunnerInvocationArtifacts(workspace, inv)
 	}
 	argv := prepared.Command.Argv
@@ -992,6 +1030,7 @@ func bindSandboxPrivateHome(workspace, driver, provider string, env map[string]s
 	}
 	switch provider {
 	case "codex":
+		runtime.ClearHostCodexSession(env)
 		if err := os.MkdirAll(filepath.Join(home, ".codex"), 0o700); err != nil {
 			return nil, err
 		}
@@ -1368,7 +1407,7 @@ func resolveCommandPath(argv []string) []string {
 // full register/claim/execute/complete loop works without a real Agent CLI.
 func (d *Daemon) executeMock(ctx context.Context, task domain.RunnerTask) execResult {
 	batcher := newEventBatcher(task, d.client)
-	if err := d.client.StartTask(ctx, task.ID); err != nil {
+	if err := d.client.StartTask(ctx, task.ID, task.Attempt); err != nil {
 		return execResult{status: domain.RunnerTaskFailed, errMsg: fmt.Sprintf("start: %v", err)}
 	}
 	batcher.addLine("stdout", "MOCK "+task.Prompt)
@@ -1381,7 +1420,7 @@ func (d *Daemon) defaultWorkspace(taskID string) string {
 }
 
 // runnerVersion is reported at registration; it matches the module build.
-var runnerVersion = "0.9.2"
+var runnerVersion = "0.10.0"
 
 // Version returns the runner build version reported at registration.
 func Version() string { return runnerVersion }

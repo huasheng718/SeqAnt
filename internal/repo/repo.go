@@ -126,10 +126,12 @@ type RunnersRepo struct {
 // DeliveryRepo owns MR delivery state and the delivery locking that follows.
 type DeliveryRepo struct {
 	*deps
-	issues  *IssuesRepo
-	tasks   *TasksRepo
-	catalog *CatalogRepo
-	runs    *RunsRepo
+	deliveryPolicyMu sync.RWMutex
+	deliveryPolicy   string
+	issues           *IssuesRepo
+	tasks            *TasksRepo
+	catalog          *CatalogRepo
+	runs             *RunsRepo
 }
 
 // AnalyticsRepo owns the read-only operational analytics view.

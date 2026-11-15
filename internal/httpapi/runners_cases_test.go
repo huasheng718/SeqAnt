@@ -45,7 +45,7 @@ func TestRunnerManagementAndMachineLifecycle(t *testing.T) {
 		}
 	}
 
-	auth := map[string]string{"Authorization": "Bearer " + session}
+	auth := map[string]string{"Authorization": "Bearer " + session, "X-Runner-Task-Protocol": "2"}
 	for _, tc := range []struct {
 		method, path string
 		body         any
@@ -53,7 +53,7 @@ func TestRunnerManagementAndMachineLifecycle(t *testing.T) {
 	}{
 		{http.MethodPost, "/runners/heartbeat", map[string]any{"version": "1.2.3", "runtimes": []any{map[string]any{"provider": "mock", "status": "online"}}}, 200},
 		{http.MethodPut, "/runners/previews/missing/content", nil, 404},
-		{http.MethodPost, "/runners/previews/missing/complete", map[string]any{"ignored": true}, 200},
+		{http.MethodPost, "/runners/previews/missing/complete", map[string]any{"ignored": true}, 410},
 	} {
 		rec := requestWithHeaders(t, f.h, tc.method, tc.path, tc.body, auth)
 		if rec.Code != tc.want {
@@ -81,13 +81,13 @@ func TestRunnerManagementAndMachineLifecycle(t *testing.T) {
 		want         int
 	}{
 		{http.MethodGet, "/api/runners/tasks/" + task.ID, nil, 200},
-		{http.MethodPost, "/runners/tasks/" + task.ID + "/start", nil, 200},
-		{http.MethodPost, "/runners/tasks/" + task.ID + "/lease/renew", nil, 200},
-		{http.MethodPost, "/runners/tasks/" + task.ID + "/events", map[string]any{"events": []any{}}, 200},
-		{http.MethodPost, "/runners/tasks/" + task.ID + "/events", map[string]any{"events": []any{map[string]any{"seq": 1, "data": "hello"}}}, 200},
+		{http.MethodPost, "/runners/tasks/" + task.ID + "/start", map[string]any{"attempt": 1}, 200},
+		{http.MethodPost, "/runners/tasks/" + task.ID + "/lease/renew", map[string]any{"attempt": 1}, 200},
+		{http.MethodPost, "/runners/tasks/" + task.ID + "/events", map[string]any{"attempt": 1, "events": []any{}}, 200},
+		{http.MethodPost, "/runners/tasks/" + task.ID + "/events", map[string]any{"attempt": 1, "events": []any{map[string]any{"seq": 1, "data": "hello"}}}, 200},
 		{http.MethodGet, "/api/runners/tasks/" + task.ID + "/events", nil, 200},
-		{http.MethodGet, "/runners/tasks/" + task.ID + "/control", nil, 200},
-		{http.MethodPost, "/runners/tasks/" + task.ID + "/complete", map[string]any{"status": "success", "result": "done", "outputs": map[string]any{"files": map[string]string{"out.txt": "ok"}}}, 200},
+		{http.MethodGet, "/runners/tasks/" + task.ID + "/control?attempt=1", nil, 200},
+		{http.MethodPost, "/runners/tasks/" + task.ID + "/complete", map[string]any{"attempt": 1, "status": "success", "result": "done", "outputs": map[string]any{"files": map[string]string{"out.txt": "ok"}}}, 200},
 	}
 	for i, tc := range machineCases {
 		rec := requestWithHeaders(t, f.h, tc.method, tc.path, tc.body, auth)
@@ -119,7 +119,7 @@ func TestRunnerNormalizationAndBindCodeBranches(t *testing.T) {
 func TestRunnerErrorAndRegistrationBranches(t *testing.T) {
 	f := cvBNewHTTPFixture(t)
 	runnerID, session := registerTestRunner(t, f.h)
-	auth := map[string]string{"Authorization": "Bearer " + session}
+	auth := map[string]string{"Authorization": "Bearer " + session, "X-Runner-Task-Protocol": "2"}
 	owned, _ := f.s.Runner(runnerID)
 	owned.OwnerUserID = f.user.ID
 	if err := f.s.PutRunner(owned); err != nil {
@@ -163,11 +163,11 @@ func TestRunnerErrorAndRegistrationBranches(t *testing.T) {
 		{http.MethodPost, "/runners/tasks/claim", map[string]any{"availableRuntimes": []string{"none"}, "preflight": true, "noWait": true}, 204},
 		{http.MethodGet, "/api/runners/tasks/missing", nil, 404},
 		{http.MethodGet, "/api/runners/tasks/missing/events", nil, 404},
-		{http.MethodPost, "/runners/tasks/missing/start", nil, 409},
-		{http.MethodPost, "/runners/tasks/missing/lease/renew", nil, 409},
-		{http.MethodPost, "/runners/tasks/missing/events", map[string]any{"events": []any{}}, 404},
-		{http.MethodPost, "/runners/tasks/missing/complete", map[string]any{}, 409},
-		{http.MethodGet, "/runners/tasks/missing/control", nil, 404},
+		{http.MethodPost, "/runners/tasks/missing/start", map[string]any{"attempt": 1}, 409},
+		{http.MethodPost, "/runners/tasks/missing/lease/renew", map[string]any{"attempt": 1}, 409},
+		{http.MethodPost, "/runners/tasks/missing/events", map[string]any{"attempt": 1, "events": []any{}}, 409},
+		{http.MethodPost, "/runners/tasks/missing/complete", map[string]any{"attempt": 1}, 409},
+		{http.MethodGet, "/runners/tasks/missing/control?attempt=1", nil, 404},
 	} {
 		rec := requestWithHeaders(t, f.h, tc.method, tc.path, tc.body, auth)
 		if rec.Code != tc.want {
@@ -222,8 +222,8 @@ func TestRunnerTaskValidationAndVisibilityBranches(t *testing.T) {
 	f := cvBNewHTTPFixture(t)
 	runnerID, session := registerTestRunner(t, f.h)
 	otherID, otherSession := registerTestRunner(t, f.h)
-	auth := map[string]string{"Authorization": "Bearer " + session}
-	otherAuth := map[string]string{"Authorization": "Bearer " + otherSession}
+	auth := map[string]string{"Authorization": "Bearer " + session, "X-Runner-Task-Protocol": "2"}
+	otherAuth := map[string]string{"Authorization": "Bearer " + otherSession, "X-Runner-Task-Protocol": "2"}
 
 	create := func(idSuffix string) domain.RunnerTask {
 		rec := cvBRequest(t, f, http.MethodPost, "/api/runners/tasks", map[string]any{
@@ -241,10 +241,10 @@ func TestRunnerTaskValidationAndVisibilityBranches(t *testing.T) {
 			t.Errorf("foreign visibility %s = %d", path, rec.Code)
 		}
 	}
-	if rec := requestWithHeaders(t, f.h, http.MethodPost, "/runners/tasks/"+task.ID+"/events", map[string]any{"events": []any{}}, auth); rec.Code != 409 {
+	if rec := requestWithHeaders(t, f.h, http.MethodPost, "/runners/tasks/"+task.ID+"/events", map[string]any{"attempt": 1, "events": []any{}}, auth); rec.Code != 409 {
 		t.Errorf("unleased events = %d: %s", rec.Code, rec.Body.String())
 	}
-	if rec := requestWithHeaders(t, f.h, http.MethodGet, "/runners/tasks/"+task.ID+"/control", nil, auth); rec.Code != 409 {
+	if rec := requestWithHeaders(t, f.h, http.MethodGet, "/runners/tasks/"+task.ID+"/control?attempt=1", nil, auth); rec.Code != 409 {
 		t.Errorf("unleased control = %d: %s", rec.Code, rec.Body.String())
 	}
 
@@ -256,10 +256,10 @@ func TestRunnerTaskValidationAndVisibilityBranches(t *testing.T) {
 	for i := range events {
 		events[i] = map[string]any{"seq": i + 1}
 	}
-	if rec := requestWithHeaders(t, f.h, http.MethodPost, "/runners/tasks/"+task.ID+"/events", map[string]any{"events": events}, auth); rec.Code != 400 {
+	if rec := requestWithHeaders(t, f.h, http.MethodPost, "/runners/tasks/"+task.ID+"/events", map[string]any{"attempt": 1, "events": events}, auth); rec.Code != 400 {
 		t.Errorf("large events = %d", rec.Code)
 	}
-	if rec := requestWithHeaders(t, f.h, http.MethodPost, "/runners/tasks/"+task.ID+"/events", map[string]any{"events": []any{map[string]any{"seq": 1}}}, auth); rec.Code != 200 {
+	if rec := requestWithHeaders(t, f.h, http.MethodPost, "/runners/tasks/"+task.ID+"/events", map[string]any{"attempt": 1, "events": []any{map[string]any{"seq": 1}}}, auth); rec.Code != 200 {
 		t.Errorf("default event fields = %d: %s", rec.Code, rec.Body.String())
 	}
 	manyArtifacts := map[string]string{}
@@ -267,21 +267,21 @@ func TestRunnerTaskValidationAndVisibilityBranches(t *testing.T) {
 		manyArtifacts[strconv.Itoa(i)] = "x"
 	}
 	for _, body := range []any{
-		map[string]any{"artifacts": manyArtifacts},
-		map[string]any{"artifacts": map[string]string{"x": strings.Repeat("x", (1<<20)+1)}},
-		map[string]any{"outputs": map[string]any{"recovered": make([]any, 65)}},
+		map[string]any{"attempt": 1, "artifacts": manyArtifacts},
+		map[string]any{"attempt": 1, "artifacts": map[string]string{"x": strings.Repeat("x", (1<<20)+1)}},
+		map[string]any{"attempt": 1, "outputs": map[string]any{"recovered": make([]any, 65)}},
 	} {
 		if rec := requestWithHeaders(t, f.h, http.MethodPost, "/runners/tasks/"+task.ID+"/complete", body, auth); rec.Code != 400 {
 			t.Errorf("invalid completion = %d: %s", rec.Code, rec.Body.String())
 		}
 	}
-	if rec := requestWithHeaders(t, f.h, http.MethodPost, "/runners/tasks/"+task.ID+"/lease/renew", nil, otherAuth); rec.Code != 409 {
+	if rec := requestWithHeaders(t, f.h, http.MethodPost, "/runners/tasks/"+task.ID+"/lease/renew", map[string]any{"attempt": 1}, otherAuth); rec.Code != 409 {
 		t.Errorf("foreign renew = %d", rec.Code)
 	}
 	if rec := cvBRequest(t, f, http.MethodPost, "/api/runners/tasks/"+task.ID+"/cancel", nil, true); rec.Code != 200 {
 		t.Errorf("cancel = %d: %s", rec.Code, rec.Body.String())
 	}
-	if rec := requestWithHeaders(t, f.h, http.MethodPost, "/runners/tasks/"+task.ID+"/lease/renew", nil, auth); rec.Code != 200 {
+	if rec := requestWithHeaders(t, f.h, http.MethodPost, "/runners/tasks/"+task.ID+"/lease/renew", map[string]any{"attempt": 1}, auth); rec.Code != 200 {
 		t.Errorf("cancelled renew = %d: %s", rec.Code, rec.Body.String())
 	}
 	_ = otherID
@@ -328,7 +328,7 @@ func TestRunnerLongPollAndPreflightBranches(t *testing.T) {
 	t.Setenv("AGENTFLOW_RUNNER_DB_POLL_INTERVAL", "5ms")
 	f := cvBNewHTTPFixture(t)
 	_, session := registerTestRunner(t, f.h)
-	auth := map[string]string{"Authorization": "Bearer " + session}
+	auth := map[string]string{"Authorization": "Bearer " + session, "X-Runner-Task-Protocol": "2"}
 	if rec := requestWithHeaders(t, f.h, http.MethodPost, "/runners/tasks/claim", map[string]any{
 		"availableRuntimes": []string{"absent"}, "capacity": 1,
 	}, auth); rec.Code != 204 {

@@ -279,25 +279,30 @@ type RunnerRuntime struct {
 }
 
 type RunnerTask struct {
-	ID           string     `json:"id"`
-	RunnerID     string     `json:"runnerId,omitempty"` // empty = any compatible runner
-	Provider     string     `json:"provider"`
-	Prompt       string     `json:"prompt"`
-	Workspace    string     `json:"workspace,omitempty"` // relative to the runner workspace root, or an absolute path
-	Args         []string   `json:"args,omitempty"`      // optional extra CLI args before the prompt
-	Status       string     `json:"status"`
-	DesiredState string     `json:"desiredState,omitempty"`
-	LeaseOwner   string     `json:"leaseOwner,omitempty"`
-	LeaseUntil   *time.Time `json:"leaseUntil,omitempty"`
-	Attempt      int        `json:"attempt"`
-	MaxAttempts  int        `json:"maxAttempts"`
-	ExitCode     *int       `json:"exitCode,omitempty"`
-	Result       string     `json:"result,omitempty"`
-	Error        string     `json:"error,omitempty"`
-	StartedAt    *time.Time `json:"startedAt,omitempty"`
-	CompletedAt  *time.Time `json:"completedAt,omitempty"`
-	CreatedAt    time.Time  `json:"createdAt"`
-	UpdatedAt    time.Time  `json:"updatedAt"`
+	ExecutionDeadline     *time.Time                  `json:"executionDeadline,omitempty"`
+	ContributionSpecs     []RunnerContributionSpec    `json:"contributionSpecs,omitempty"`
+	PendingContributions  []RunnerContributionReceipt `json:"pendingContributions,omitempty"`
+	AcceptedContributions []RunnerContributionReceipt `json:"acceptedContributions,omitempty"`
+	DeliveryPolicy        string                      `json:"deliveryPolicy,omitempty"`
+	ID                    string                      `json:"id"`
+	RunnerID              string                      `json:"runnerId,omitempty"` // empty = any compatible runner
+	Provider              string                      `json:"provider"`
+	Prompt                string                      `json:"prompt"`
+	Workspace             string                      `json:"workspace,omitempty"` // relative to the runner workspace root, or an absolute path
+	Args                  []string                    `json:"args,omitempty"`      // optional extra CLI args before the prompt
+	Status                string                      `json:"status"`
+	DesiredState          string                      `json:"desiredState,omitempty"`
+	LeaseOwner            string                      `json:"leaseOwner,omitempty"`
+	LeaseUntil            *time.Time                  `json:"leaseUntil,omitempty"`
+	Attempt               int                         `json:"attempt"`
+	MaxAttempts           int                         `json:"maxAttempts"`
+	ExitCode              *int                        `json:"exitCode,omitempty"`
+	Result                string                      `json:"result,omitempty"`
+	Error                 string                      `json:"error,omitempty"`
+	StartedAt             *time.Time                  `json:"startedAt,omitempty"`
+	CompletedAt           *time.Time                  `json:"completedAt,omitempty"`
+	CreatedAt             time.Time                   `json:"createdAt"`
+	UpdatedAt             time.Time                   `json:"updatedAt"`
 	// RunID/NodeID link a task to a workflow execution. Runner events for a
 	// linked task are bridged into the run timeline (adapter runner-v1).
 	RunID      string            `json:"runId,omitempty"`
@@ -401,15 +406,18 @@ func PublicRunnerTask(task RunnerTask) RunnerTask {
 // credentials are included only when the runtime selects personal credentials
 // and are scrubbed from durable storage when the task finishes.
 type RunnerInvocation struct {
-	ArchivedFiles   []WorkspaceArtifactFile `json:"archivedFiles,omitempty"`
-	RunID           string                  `json:"runId,omitempty"`
-	NodeID          string                  `json:"nodeId,omitempty"`
-	InvocationID    string                  `json:"invocationId,omitempty"`
-	ResumeSessionID string                  `json:"resumeSessionId,omitempty"`
-	GateResultPath  string                  `json:"gateResultPath,omitempty"`
-	Executor        ExecutorDefinition      `json:"executor"`
-	Agent           AgentDefinition         `json:"agent"`
-	Assets          AgentAssetBundle        `json:"assets"`
+	// WorkspaceIsolation is frozen by the Engine. Its version requires a
+	// capable Runner and a fresh, task/attempt-owned checkout.
+	WorkspaceIsolation *RunnerWorkspaceIsolation `json:"workspaceIsolation,omitempty"`
+	ArchivedFiles      []WorkspaceArtifactFile   `json:"archivedFiles,omitempty"`
+	RunID              string                    `json:"runId,omitempty"`
+	NodeID             string                    `json:"nodeId,omitempty"`
+	InvocationID       string                    `json:"invocationId,omitempty"`
+	ResumeSessionID    string                    `json:"resumeSessionId,omitempty"`
+	GateResultPath     string                    `json:"gateResultPath,omitempty"`
+	Executor           ExecutorDefinition        `json:"executor"`
+	Agent              AgentDefinition           `json:"agent"`
+	Assets             AgentAssetBundle          `json:"assets"`
 	// Artifacts are the node's artifact contracts: the runner uploads the
 	// content of each declared path when it completes, and the engine writes
 	// them into the run workspace so verification and handoff keep working.
@@ -460,6 +468,9 @@ type RunnerInvocation struct {
 // GitToken is only set for private remotes and is cleared from the stored
 // payload once the task completes.
 type RunnerRepository struct {
+	// BaseSHA pins isolated execution to an exact commit; Ref is only the
+	// acquisition selector and must never silently supply a missing pin.
+	BaseSHA      string `json:"baseSHA,omitempty"`
 	RepositoryID string `json:"repositoryId,omitempty"`
 	Name         string `json:"name,omitempty"`
 	CloneURL     string `json:"cloneUrl,omitempty"`
@@ -502,6 +513,7 @@ type RunnerInputFile struct {
 // RunnerTaskOutputs is what a runner reports about the task workspace after
 // an invocation or script.
 type RunnerTaskOutputs struct {
+	ContributionReceipts []string `json:"contributionReceipts,omitempty"`
 	// Files maps a workspace-relative OutputFiles path to its content. Missing
 	// files and non-regular files are absent; oversized ones are in TooLarge.
 	Files    map[string]string `json:"files,omitempty"`
@@ -556,13 +568,14 @@ type RunnerWorkBranchHead struct {
 }
 
 // RunnerTaskEvent is one batched output record reported by the runner. Seq is
-// assigned by the runner and used with the task id for idempotency, so an
+// assigned by the runner and used with the task id and attempt for idempotency, so an
 // HTTP retry never duplicates log data.
 type RunnerTaskEvent struct {
-	Seq  int64     `json:"seq"`
-	Type string    `json:"type"` // stdout, stderr, system, observation
-	Data string    `json:"data"`
-	Ts   time.Time `json:"ts"`
+	Attempt int       `json:"attempt"`
+	Seq     int64     `json:"seq"`
+	Type    string    `json:"type"` // stdout, stderr, system, observation
+	Data    string    `json:"data"`
+	Ts      time.Time `json:"ts"`
 }
 
 // SafeWorkspaceRelPath reports whether p is a clean, slash-separated path

@@ -21,6 +21,7 @@ import (
 func TestClientEndpointsAndErrors(t *testing.T) {
 	var paths []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Runner-Task-Protocol", "2")
 		paths = append(paths, r.Method+" "+r.URL.Path)
 		switch r.URL.Path {
 		case "/runners/register":
@@ -34,9 +35,9 @@ func TestClientEndpointsAndErrors(t *testing.T) {
 			var body ClaimRequest
 			_ = json.NewDecoder(r.Body).Decode(&body)
 			if body.Preflight {
-				_, _ = io.WriteString(w, `{"taskAvailable":true,"task":{"id":"t1"}}`)
+				_, _ = io.WriteString(w, `{"taskAvailable":true}`)
 			} else {
-				_, _ = io.WriteString(w, `{"task":{"id":"t2"}}`)
+				_, _ = io.WriteString(w, `{"task":{"id":"t2","attempt":1}}`)
 			}
 		case "/runners/tasks/lost/start":
 			w.WriteHeader(http.StatusConflict)
@@ -65,7 +66,7 @@ func TestClientEndpointsAndErrors(t *testing.T) {
 		t.Fatalf("heartbeat=%+v err=%v", hb, err)
 	}
 	available, task, err := c.WaitForTask(ctx, ClaimRequest{})
-	if err != nil || !available || task.ID != "t1" {
+	if err != nil || !available || task != nil {
 		t.Fatalf("wait=%v %+v %v", available, task, err)
 	}
 	task, ok, err := c.Claim(ctx, ClaimRequest{})
@@ -78,7 +79,7 @@ func TestClientEndpointsAndErrors(t *testing.T) {
 	if err := c.Disconnect(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.StartTask(ctx, "lost"); !errors.Is(err, ErrTaskLeaseLost) {
+	if err := c.StartTask(ctx, "lost", 1); !errors.Is(err, ErrTaskLeaseLost) {
 		t.Fatalf("lease error=%v", err)
 	}
 	if err := c.do(ctx, http.MethodGet, "/unauthorized", nil, nil); !errors.Is(err, ErrUnauthorized) {
@@ -92,11 +93,10 @@ func TestClientEndpointsAndErrors(t *testing.T) {
 		t.Fatal("invalid response accepted")
 	}
 	for _, call := range []func() error{
-		func() error { _, err := c.RenewLease(ctx, "x"); return err },
-		func() error { _, err := c.TaskControl(ctx, "x"); return err },
-		func() error { return c.SendEvents(ctx, "x", nil) },
-		func() error { return c.Complete(ctx, "x", CompleteRequest{}) },
-		func() error { return c.CompletePreview(ctx, "p") },
+		func() error { _, err := c.RenewLease(ctx, "x", 1); return err },
+		func() error { _, err := c.TaskControl(ctx, "x", 1); return err },
+		func() error { return c.SendEvents(ctx, "x", 1, nil) },
+		func() error { return c.Complete(ctx, "x", 1, CompleteRequest{}) },
 	} {
 		if err := call(); err != nil {
 			t.Fatal(err)
@@ -109,10 +109,15 @@ func TestClientEndpointsAndErrors(t *testing.T) {
 
 func TestClientPreviewUpload(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("X-Preview-Upload-Token") != "upload" || r.Header.Get("Authorization") != "Bearer session" {
+		if r.Header.Get("X-Preview-Upload-Token") != "upload" || r.Header.Get("Authorization") != "Bearer session" || r.Header.Get("X-Runner-Task-ID") != "task" || r.Header.Get("X-Runner-Task-Attempt") != "1" {
 			t.Errorf("headers=%v", r.Header)
 		}
 		body, _ := io.ReadAll(r.Body)
+		if string(body) == "lease-lost" {
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{"error":"task lease lost"}`))
+			return
+		}
 		if string(body) == "fail" {
 			http.Error(w, "rejected", http.StatusBadRequest)
 		}
@@ -120,11 +125,14 @@ func TestClientPreviewUpload(t *testing.T) {
 	defer server.Close()
 	c := NewClient(server.URL)
 	c.SetSession("session")
-	if err := c.UploadPreview(context.Background(), "p", "upload", strings.NewReader("ok")); err != nil {
+	if err := c.UploadPreview(context.Background(), domain.RunnerTask{ID: "task", Attempt: 1}, "p", "upload", strings.NewReader("ok")); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.UploadPreview(context.Background(), "p", "upload", strings.NewReader("fail")); err == nil {
+	if err := c.UploadPreview(context.Background(), domain.RunnerTask{ID: "task", Attempt: 1}, "p", "upload", strings.NewReader("fail")); err == nil {
 		t.Fatal("failed upload accepted")
+	}
+	if err := c.UploadPreview(context.Background(), domain.RunnerTask{ID: "task", Attempt: 1}, "p", "upload", strings.NewReader("lease-lost")); !errors.Is(err, ErrTaskLeaseLost) {
+		t.Fatalf("upload lease loss=%v", err)
 	}
 }
 
@@ -355,6 +363,7 @@ func TestDetectionProviderAndDaemonBasics(t *testing.T) {
 
 func TestEventBatcherAndExecHelpers(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Runner-Task-Protocol", "2")
 		if strings.HasSuffix(r.URL.Path, "/events") {
 			w.WriteHeader(http.StatusNoContent)
 			return

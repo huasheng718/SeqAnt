@@ -172,6 +172,9 @@ func (e *Engine) acquireRunEnvironment(ctx context.Context, run domain.Run, prof
 	if !ok || current.Generation != run.Generation || !e.ownsRun(current) {
 		return nil, false, repo.ErrRunLeaseLost
 	}
+	if err := e.validateDeliveryRepositories(current); err != nil {
+		return nil, false, err
+	}
 	if err := e.adoptForeignWorkspace(current); err != nil {
 		return nil, false, err
 	}
@@ -193,6 +196,10 @@ func (e *Engine) acquireRunEnvironment(ctx context.Context, run domain.Run, prof
 		if err != nil {
 			return nil, false, err
 		}
+	}
+	if e.controlledRun(current) {
+		profile.Environment = domain.RestrictDeliveryEnvironment(profile.Environment)
+		resources.Environment.Variables = domain.RestrictDeliveryEnvironment(resources.Environment.Variables)
 	}
 	sandbox, err := e.sandboxes.AcquireRunIn(ctx, run.ID, workspaceRunID(current), profile, requirements, credentials, resources)
 	if err != nil {
@@ -231,6 +238,10 @@ func (e *Engine) resolveRunCredentials(run domain.Run) runtime.RunCredentials {
 		credentials.Codex = runtime.ProviderCredential{APIKey: user.CodexAPIKey, BaseURL: user.CodexBaseURL}
 		credentials.ClaudeCode = runtime.ProviderCredential{APIKey: user.ClaudeCodeAPIKey, BaseURL: user.ClaudeCodeBaseURL}
 		credentials.AgentCLI = runtime.AgentCLIUserCredentials(user)
+	}
+	if e.controlledRun(run) {
+		credentials.GitToken = ""
+		return credentials
 	}
 	scriptAssets, _, _ := runtime.PrepareMCPServers(e.resolveScriptMCPAssets(run.ExecutionContext.ProjectID, userID), runtime.MCPTarget{GitToken: credentials.GitToken})
 	credentials.MCPServers = scriptAssets.MCPServers

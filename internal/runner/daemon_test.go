@@ -184,8 +184,13 @@ func TestDeleteFailedRunCleansRunnerWorkspace(t *testing.T) {
 		t.Fatal("run record was not deleted")
 	}
 	waitFor(t, 10*time.Second, "runner workspace cleanup after delete", func() bool {
-		task, ok := s.RunnerTask("rt-cleanup-" + run.ID)
-		if !ok || task.Status != domain.RunnerTaskSuccess {
+		completed := false
+		for _, task := range s.RunnerTasks() {
+			if task.RunID == run.ID && task.Action == domain.RunnerTaskActionCleanupRun && task.Status == domain.RunnerTaskSuccess {
+				completed = true
+			}
+		}
+		if !completed {
 			return false
 		}
 		_, statErr := os.Stat(workspace)
@@ -538,7 +543,7 @@ func TestDaemonExecuteProcessRunsRealCommand(t *testing.T) {
 	if strings.Contains(result.result, "file already closed") {
 		t.Fatalf("stream error leaked into result %q", result.result)
 	}
-	if err := s.CompleteRunnerTask("rt-echo", daemon.runnerID(), domain.RunnerTaskSuccess, &result.exitCode, result.result, result.errMsg, nil, nil, time.Now().UTC()); err != nil {
+	if err := s.CompleteRunnerTask("rt-echo", daemon.runnerID(), claimed.Attempt, domain.RunnerTaskSuccess, &result.exitCode, result.result, result.errMsg, nil, nil, time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
 	final, _ := s.RunnerTask("rt-echo")
@@ -589,7 +594,7 @@ func TestExecuteProcessCapturesFastCommandStdout(t *testing.T) {
 		if strings.Contains(result.result, "file already closed") {
 			t.Fatalf("iter %d leaked stream error into result: %q", i, result.result)
 		}
-		if err := s.CompleteRunnerTask(id, daemon.runnerID(), domain.RunnerTaskSuccess, &result.exitCode, result.result, result.errMsg, nil, nil, time.Now().UTC()); err != nil {
+		if err := s.CompleteRunnerTask(id, daemon.runnerID(), claimed.Attempt, domain.RunnerTaskSuccess, &result.exitCode, result.result, result.errMsg, nil, nil, time.Now().UTC()); err != nil {
 			t.Fatal(err)
 		}
 	}

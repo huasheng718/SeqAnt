@@ -11,6 +11,27 @@ import (
 	"gorm.io/gorm"
 )
 
+// ConfigureDeliveryPolicy sets the deployment bound for background delivery
+// reconciliation. Missing policy defaults to controlled; frozen Runs cannot
+// be weakened by opting the deployment into legacy later.
+func (r *DeliveryRepo) ConfigureDeliveryPolicy(raw string) error {
+	policy, err := domain.ParseDeliveryPolicy(raw)
+	if err != nil {
+		return err
+	}
+	r.deliveryPolicyMu.Lock()
+	r.deliveryPolicy = policy
+	r.deliveryPolicyMu.Unlock()
+	return nil
+}
+
+func (r *DeliveryRepo) controlledDeliveryRun(run domain.Run) bool {
+	r.deliveryPolicyMu.RLock()
+	policy := r.deliveryPolicy
+	r.deliveryPolicyMu.RUnlock()
+	return domain.ControlledDelivery(policy) || domain.ControlledDelivery(run.ExecutionContext.DeliveryPolicy)
+}
+
 // ---------- MR delivery states ( Gongfeng MCP delivery analytics ) ----------
 
 func (r mrDeliveryStateRow) toDomain() domain.MRDeliveryState {
@@ -360,7 +381,7 @@ func (r *DeliveryRepo) ReconcileCompletedDeliveries() error {
 			continue
 		}
 		run, ok := r.runs.Run(task.RunID)
-		if !ok || run.Status != "succeeded" {
+		if !ok || run.Status != "succeeded" || r.controlledDeliveryRun(run) {
 			continue
 		}
 		at := run.UpdatedAt
@@ -530,7 +551,7 @@ func (r *DeliveryRepo) recoverUnlinkedDeliveryMRs(issue domain.Issue) []domain.D
 		return nil
 	}
 	run, ok := r.runs.Run(task.RunID)
-	if !ok || run.Status != "succeeded" {
+	if !ok || run.Status != "succeeded" || r.controlledDeliveryRun(run) {
 		return nil
 	}
 	return domain.ResolveRunDeliveryMRs(run, nil)

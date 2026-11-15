@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,18 +18,23 @@ import (
 func TestWorkspacePreparationDoesNotBlockTaskControl(t *testing.T) {
 	d, request, root := runnerPreparationFixture(t)
 	request.Workflow.Nodes[0].Script = "touch preparation-started; sleep 2"
-	d.controls = map[string]chan string{}
-	d.pendingControls = map[string]string{}
-	control := d.registerTaskControl("active-task")
-	defer d.unregisterTaskControl("active-task")
+	d.controls = map[taskAttemptKey]chan string{}
+	d.pendingControls = map[taskAttemptKey]string{}
+	control := d.registerTaskControl("active-task", 0)
+	defer d.unregisterTaskControl("active-task", 0)
 	connections := make(chan *websocket.Conn, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/control") {
+			_ = json.NewEncoder(w).Encode(RenewResponse{DesiredState: domain.RunnerTaskDesiredCancel})
+			return
+		}
 		conn, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
 		if err == nil {
 			connections <- conn
 		}
 	}))
 	defer server.Close()
+	d.client = NewClient(server.URL)
 	client, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
 	if err != nil {
 		t.Fatal(err)

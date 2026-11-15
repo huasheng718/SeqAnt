@@ -534,6 +534,7 @@ func TestScriptNodeCanCallProjectMCP(t *testing.T) {
 		t.Fatal(err)
 	}
 	e := New(s, runtime.NewManagerWithLimit(t.TempDir(), 1))
+	_ = e.ConfigureDeliveryPolicy(domain.DeliveryPolicyLegacy)
 	run, err := e.StartWithExecutionContext(wf.ID, "", domain.RepositoryContext{}, domain.TelemetryContext{ProjectID: "dns", ResponsibleUserID: 9})
 	if err != nil {
 		t.Fatal(err)
@@ -592,6 +593,7 @@ func TestVerificationGateCanCallProjectMCP(t *testing.T) {
 		t.Fatal(err)
 	}
 	e := New(s, runtime.NewManagerWithLimit(t.TempDir(), 1))
+	_ = e.ConfigureDeliveryPolicy(domain.DeliveryPolicyLegacy)
 	run, err := e.StartWithExecutionContext(wf.ID, "", domain.RepositoryContext{}, domain.TelemetryContext{ProjectID: "dns", ResponsibleUserID: 9})
 	if err != nil {
 		t.Fatal(err)

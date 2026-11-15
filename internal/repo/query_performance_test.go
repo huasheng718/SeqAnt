@@ -310,17 +310,22 @@ func TestUnchangedMRLinkDoesNotWrite(t *testing.T) {
 func TestRunnerControlDoesNotLoadPayload(t *testing.T) {
 	s := queryTestStore(t)
 	id := fmt.Sprintf("runner-control-query-%d", time.Now().UnixNano())
-	if err := s.PutRunnerTask(domain.RunnerTask{ID: id, Provider: "mock", Status: "running", DesiredState: "cancelled", LeaseOwner: "owner", Prompt: strings.Repeat("large prompt", 100000)}); err != nil {
+	deadline := time.Now().UTC().Add(time.Minute)
+	if err := s.PutRunnerTask(domain.RunnerTask{ID: id, Provider: "mock", Status: "running", DesiredState: "cancelled", LeaseOwner: "owner", Prompt: strings.Repeat("large prompt", 100000), ExecutionDeadline: &deadline}); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { s.DB.Exec("DELETE FROM runner_tasks WHERE id=?", id) })
 	recorder := &queryRecorder{Interface: logger.Default}
 	s.DB.Logger = recorder
 	got, ok := s.RunnerTaskControl(id)
-	if !ok || got.LeaseOwner != "owner" || got.DesiredState != "cancelled" || got.Status != "running" || got.Prompt != "" {
+	if !ok || got.LeaseOwner != "owner" || got.DesiredState != "cancelled" || got.Status != "running" || got.Prompt != "" || got.ExecutionDeadline == nil || !got.ExecutionDeadline.Equal(deadline) {
 		t.Fatal("control state changed")
 	}
-	if len(recorder.queries) != 1 || strings.Contains(recorder.queries[0], "payload") || strings.Contains(recorder.queries[0], "SELECT *") {
+	// A server-side JSON scalar projection does not transfer the large payload
+	// or its prompt/credentials. Continue rejecting any bare payload selection.
+	query := strings.ToLower(strings.Join(recorder.queries, " "))
+	query = strings.ReplaceAll(query, "json_extract(payload,", "json_extract(deadline_source,")
+	if len(recorder.queries) != 1 || strings.Contains(query, "payload") || strings.Contains(query, "select *") {
 		t.Fatal("control loaded payload")
 	}
 }

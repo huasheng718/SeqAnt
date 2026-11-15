@@ -42,7 +42,7 @@ func TestSucceededRunnerWorkspaceQueuesImmediateDurableCleanup(t *testing.T) {
 	if cleaned.WorkspaceCleanedAt.IsZero() {
 		t.Fatal("succeeded runner workspace was not marked unavailable")
 	}
-	task, ok := store.RunnerTask("rt-cleanup-" + run.ID)
+	task, ok := store.LatestRunnerTaskForRunAction(run.ID, domain.RunnerTaskActionCleanupRun)
 	if !ok || task.Action != domain.RunnerTaskActionCleanupRun || task.RunnerID != runner.ID {
 		t.Fatalf("durable runner cleanup was not queued: %+v", task)
 	}
@@ -90,16 +90,12 @@ func TestRetryCancelsQueuedRunnerCleanupAndAllowsLaterCleanup(t *testing.T) {
 	if got.Status != "running" || !got.WorkspaceCleanedAt.IsZero() || task.Status != domain.RunnerTaskCanceled {
 		t.Fatalf("replayed run = %+v, cleanup = %+v", got, task)
 	}
-	// A previous completed cleanup must not suppress cleanup after this replay.
-	task.Status = domain.RunnerTaskSuccess
-	if err := store.PutRunnerTask(task); err != nil {
-		t.Fatal(err)
-	}
+	// A terminal cleanup must not suppress a new cleanup after this replay.
 	if err := e.queueRunnerRunCleanup(got); err != nil {
 		t.Fatal(err)
 	}
-	task, _ = store.RunnerTask(cleanupID)
-	if task.Status != domain.RunnerTaskQueued {
+	task, _ = store.LatestRunnerTaskForRunAction(run.ID, domain.RunnerTaskActionCleanupRun)
+	if task.ID == cleanupID || task.Status != domain.RunnerTaskQueued {
 		t.Fatalf("later cleanup = %+v", task)
 	}
 }

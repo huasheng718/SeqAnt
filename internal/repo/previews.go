@@ -123,6 +123,73 @@ func (r *PreviewsRepo) MarkPreviewReadyIfArchiving(p domain.RunPreview) (bool, e
 	return result.RowsAffected == 1, nil
 }
 
+// runnerPreviewUpload locks the task before the preview. Keep this order for
+// both the initial authorization and final publish, so an upload spanning lease
+// expiry/reclaim cannot make a stale bundle visible.
+func (r *PreviewsRepo) runnerPreviewUpload(tx *gorm.DB, previewID, runnerID, taskID string, attempt int, tokenHash string, now time.Time) error {
+	if attempt < 1 || taskID == "" || runnerID == "" || tokenHash == "" {
+		return ErrRunnerTaskLeaseLost
+	}
+	var taskRow runnerTaskRow
+	if err := r.locking(tx).Where("id = ? AND lease_owner = ? AND attempt = ? AND status IN ? AND lease_until > ?",
+		taskID, runnerID, attempt, []string{domain.RunnerTaskLeased, domain.RunnerTaskRunning}, now).Take(&taskRow).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrRunnerTaskLeaseLost
+		}
+		return err
+	}
+	if taskRow.LeaseUntil == nil || !taskRow.LeaseUntil.After(leaseCheckTime(tx, now)) {
+		return ErrRunnerTaskLeaseLost
+	}
+	task := runnerTaskFromRow(taskRow)
+	if task.DesiredState == domain.RunnerTaskDesiredCancel || task.Action != domain.RunnerTaskActionArchivePreview || task.PreviewArchive == nil || task.PreviewArchive.PreviewID != previewID {
+		return ErrRunnerTaskLeaseLost
+	}
+	var preview runPreviewRow
+	if err := r.locking(tx).Where("id = ? AND status IN ? AND upload_token_hash = ? AND (upload_expires_at IS NULL OR upload_expires_at > ?)",
+		previewID, []string{domain.PreviewPending, domain.PreviewArchiving}, tokenHash, now).Take(&preview).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrRunnerTaskLeaseLost
+		}
+		return err
+	}
+	checkedAt := leaseCheckTime(tx, now)
+	if taskRow.LeaseUntil == nil || !taskRow.LeaseUntil.After(checkedAt) || (preview.UploadExpiresAt != nil && !preview.UploadExpiresAt.After(checkedAt)) || preview.OwnerRunnerID != runnerID || preview.RunID != task.RunID || task.PreviewArchive.RunID != preview.RunID {
+		return ErrRunnerTaskLeaseLost
+	}
+	return nil
+}
+
+// ValidateRunnerPreviewUpload authorizes receipt without holding a transaction
+// open while a potentially slow request body streams.
+func (r *PreviewsRepo) ValidateRunnerPreviewUpload(previewID, runnerID, taskID string, attempt int, tokenHash string, now time.Time) error {
+	return r.DB.Transaction(func(tx *gorm.DB) error {
+		return r.runnerPreviewUpload(tx, previewID, runnerID, taskID, attempt, tokenHash, now)
+	})
+}
+
+// MarkRunnerPreviewReady rechecks lease and the original token under the same
+// transaction as publication. Blob storage is content addressed; a rejected
+// upload can leave an unreferenced blob, but cannot publish it.
+func (r *PreviewsRepo) MarkRunnerPreviewReady(p domain.RunPreview, runnerID, taskID string, attempt int, tokenHash string, now time.Time) (bool, error) {
+	err := r.DB.Transaction(func(tx *gorm.DB) error {
+		if err := r.runnerPreviewUpload(tx, p.ID, runnerID, taskID, attempt, tokenHash, now); err != nil {
+			return err
+		}
+		p.Status = domain.PreviewReady
+		p.UpdatedAt = now
+		p.ArchiveLeaseUntil = time.Time{}
+		p.ErrorText = ""
+		p.UploadTokenHash = ""
+		values := previewRowValues(p)
+		delete(values, "id")
+		delete(values, "run_id")
+		delete(values, "created_at")
+		return tx.Model(&runPreviewRow{}).Where("id = ?", p.ID).Updates(values).Error
+	})
+	return err == nil, err
+}
+
 // FailPreviewIfOpen records a failure only while the preview is still pending
 // or archiving. Ready/expired/deleted rows stay untouched.
 func (r *PreviewsRepo) FailPreviewIfOpen(id, errText string, now time.Time) (bool, error) {

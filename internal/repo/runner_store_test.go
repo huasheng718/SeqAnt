@@ -171,24 +171,24 @@ func TestRunnerTaskLeaseLifecycle(t *testing.T) {
 	}
 
 	// Renewal from a different runner must be rejected.
-	if _, err := s.RenewRunnerTaskLease(task.ID, "runner-b", time.Minute, now); err != ErrRunnerTaskLeaseLost {
+	if _, err := s.RenewRunnerTaskLease(task.ID, "runner-b", task.Attempt, time.Minute, now); err != ErrRunnerTaskLeaseLost {
 		t.Fatalf("renew by non-owner err = %v, want ErrRunnerTaskLeaseLost", err)
 	}
 	// Cancellation travels on the renewal response.
 	if err := s.CancelRunnerTask(task.ID, now); err != nil {
 		t.Fatal(err)
 	}
-	desired, err := s.RenewRunnerTaskLease(task.ID, "runner-a", time.Minute, now)
+	desired, err := s.RenewRunnerTaskLease(task.ID, "runner-a", task.Attempt, time.Minute, now)
 	if err != nil || desired != domain.RunnerTaskDesiredCancel {
 		t.Fatalf("renew desired=%q err=%v", desired, err)
 	}
 
 	exit := 0
-	if err := s.CompleteRunnerTask(task.ID, "runner-a", domain.RunnerTaskSuccess, &exit, "done", "", map[string]string{"plan": "# plan"}, nil, now); err != nil {
+	if err := s.CompleteRunnerTask(task.ID, "runner-a", task.Attempt, domain.RunnerTaskCanceled, &exit, "done", "", map[string]string{"plan": "# plan"}, nil, now); err != nil {
 		t.Fatal(err)
 	}
 	final, ok := s.RunnerTask(task.ID)
-	if !ok || final.Status != domain.RunnerTaskSuccess || final.LeaseOwner != "" || final.ExitCode == nil || *final.ExitCode != 0 {
+	if !ok || final.Status != domain.RunnerTaskCanceled || final.LeaseOwner != "" || final.ExitCode == nil || *final.ExitCode != 0 {
 		t.Fatalf("unexpected final task: %+v", final)
 	}
 	if final.Artifacts["plan"] != "# plan" {
@@ -198,7 +198,7 @@ func TestRunnerTaskLeaseLifecycle(t *testing.T) {
 		t.Fatalf("task credentials survived completion: %+v", final.Invocation)
 	}
 	// Completing twice is rejected.
-	if err := s.CompleteRunnerTask(task.ID, "runner-a", domain.RunnerTaskFailed, nil, "", "", nil, nil, now); err != ErrRunnerTaskLeaseLost {
+	if err := s.CompleteRunnerTask(task.ID, "runner-a", task.Attempt, domain.RunnerTaskFailed, nil, "", "", nil, nil, now); err != ErrRunnerTaskLeaseLost {
 		t.Fatalf("double complete err = %v", err)
 	}
 }
@@ -265,11 +265,16 @@ func TestRunnerTaskEventsIdempotent(t *testing.T) {
 	s := newTestRunner(t)
 	putQueuedTask(t, s, "rt-1", "codex", "", 0)
 
+	now := time.Now().UTC()
+	task, claimed, err := s.ClaimRunnerTask("runner-a", []string{"codex"}, now, time.Minute)
+	if err != nil || !claimed {
+		t.Fatalf("claim: %v %v", claimed, err)
+	}
 	events := []domain.RunnerTaskEvent{
 		{Seq: 1, Type: "stdout", Data: "line-1"},
 		{Seq: 2, Type: "stdout", Data: "line-2"},
 	}
-	if n, err := s.AppendRunnerTaskEvents("rt-1", events); err != nil || n != 2 {
+	if n, err := s.AppendRunnerTaskEvents("rt-1", "runner-a", task.Attempt, events, now); err != nil || n != 2 {
 		t.Fatalf("append n=%d err=%v", n, err)
 	}
 	// A retried batch with the same seq numbers must be ignored.
@@ -277,7 +282,7 @@ func TestRunnerTaskEventsIdempotent(t *testing.T) {
 		{Seq: 1, Type: "stdout", Data: "line-1"},
 		{Seq: 3, Type: "stdout", Data: "line-3"},
 	}
-	if n, err := s.AppendRunnerTaskEvents("rt-1", duplicate); err != nil || n != 1 {
+	if n, err := s.AppendRunnerTaskEvents("rt-1", "runner-a", task.Attempt, duplicate, now); err != nil || n != 1 {
 		t.Fatalf("retry append n=%d err=%v", n, err)
 	}
 	stored := s.RunnerTaskEvents("rt-1")

@@ -28,6 +28,9 @@ func (e *Engine) PushConversationWorkspace(ctx context.Context, runID, gitToken,
 	if !ok {
 		return nil, fmt.Errorf("运行不存在")
 	}
+	if e.controlledRun(run) {
+		return nil, ErrControlledDelivery
+	}
 	if WorkspaceRunID(run) != run.ID {
 		return nil, fmt.Errorf("子 SOP 共享父任务工作区，请从父任务提交")
 	}
@@ -106,6 +109,9 @@ func (e *Engine) PushConversationWorkspace(ctx context.Context, runID, gitToken,
 }
 
 func (e *Engine) pushConversationOnRunner(ctx context.Context, runnerID string, run domain.Run, repositories []domain.RepositoryContext, gitToken, gitUserName, gitUserEmail, message, sharedTarget string) ([]domain.RunnerWorkBranchHead, error) {
+	if e.controlledRun(run) {
+		return nil, ErrControlledDelivery
+	}
 	if run.ExecutionContext.RunnerWorkspaceLayout != domain.RunnerWorkspaceLayoutShared {
 		return nil, fmt.Errorf("该任务的执行机器工作区不是共享布局，暂不支持直接提交 MR")
 	}
@@ -144,6 +150,9 @@ func (e *Engine) pushConversationOnRunner(ctx context.Context, runnerID string, 
 		RunID:             run.ID,
 		NodeID:            conversationPushNode,
 		Invocation:        invocation,
+	}
+	if err := e.applyRunnerTaskPolicy(run, &task); err != nil {
+		return nil, err
 	}
 	if err := e.repo.PutRunnerTask(task); err != nil {
 		return nil, err

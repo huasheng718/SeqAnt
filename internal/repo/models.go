@@ -506,11 +506,12 @@ type runnerTaskRow struct {
 func (runnerTaskRow) TableName() string { return "runner_tasks" }
 
 type runnerTaskEventRow struct {
-	TaskID string     `gorm:"column:task_id;primaryKey;size:64"`
-	Seq    int64      `gorm:"column:seq;primaryKey"`
-	Type   string     `gorm:"column:type;size:32"`
-	Data   string     `gorm:"column:data;type:text"`
-	Ts     *time.Time `gorm:"column:ts"`
+	TaskID  string     `gorm:"column:task_id;primaryKey;size:64"`
+	Attempt int        `gorm:"column:attempt;primaryKey;not null;default:0"`
+	Seq     int64      `gorm:"column:seq;primaryKey"`
+	Type    string     `gorm:"column:type;size:32"`
+	Data    string     `gorm:"column:data;type:text"`
+	Ts      *time.Time `gorm:"column:ts"`
 }
 
 func (runnerTaskEventRow) TableName() string { return "runner_task_events" }
@@ -687,8 +688,8 @@ func allModels() []any {
 		issueRow{}, issueCommentRow{}, taskRow{},
 		runAdmissionLockRow{}, runRow{}, runNodeRow{}, runEventRow{}, runTelemetryRow{}, runLogRow{}, runArtifactRow{}, runEvalRow{},
 		runPreviewRow{}, previewSessionRow{}, previewBlobRow{}, WorkspaceCheckpoint{}, workspaceCheckpointChunk{},
-		mrDeliveryStateRow{}, definitionRevisionRow{},
-		runnerRow{}, runnerTaskRow{}, runnerTaskEventRow{}, userRunnerPrefRow{},
+		mrDeliveryStateRow{}, contributionIntegrationRow{}, contributionPublicationRow{}, definitionRevisionRow{},
+		runnerRow{}, runnerTaskRow{}, runnerTaskEventRow{}, runnerContributionBlobRow{}, userRunnerPrefRow{},
 		assistantSessionRow{}, assistantTaskRow{}, assistantGenerationRow{}, assistantSessionReadRow{},
 		chatRoomRow{}, chatMessageRow{},
 		requirementSpaceRow{}, spaceMemberRow{}, spaceArtifactRow{}, spaceArtifactRevisionRow{}, spaceThreadRow{},

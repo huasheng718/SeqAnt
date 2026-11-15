@@ -176,6 +176,8 @@ func newWithNotifications(s *repo.Store, e *engine.Engine, syncSvc *tracker.Serv
 	if syncSvc != nil {
 		e.MergeIntoBranch = syncSvc.EnsureAndMergeBranchMR
 		e.FindBranchMR = syncSvc.FindBranchMR
+		e.CreateContributionPR = syncSvc.EnsureOpenBranchPRAtSHA
+		e.PublishContributionObjects = syncSvc.PublishContributionObjects
 	}
 	// Wake long-polling CLI runners the moment the engine queues a task.
 	e.SetRunnerDispatchNotify(func(provider string) { api.runners.runnerWaiters.notify([]string{provider}) })
@@ -495,6 +497,11 @@ func newWithNotifications(s *repo.Store, e *engine.Engine, syncSvc *tracker.Serv
 	// --- runs ---
 	g.GET("/api/runs", api.runs.runs)
 	g.POST("/api/runs", api.runs.runs)
+	g.POST("/api/runs/:id/contributions/integrate", api.runs.integrateContributions)
+	g.GET("/api/runs/:id/contributions/:integrationId/content", api.runs.integrationContent)
+	g.POST("/api/runs/:id/contributions/:integrationId/gates", api.runs.recordContributionGate)
+	g.POST("/api/runs/:id/contributions/:integrationId/publish", api.runs.publishContribution)
+	g.GET("/api/runs/:id/contributions/:integrationId/publication", api.runs.contributionPublication)
 	g.GET("/api/runs/:id", api.runs.run)
 	g.DELETE("/api/runs/:id", api.runs.run)
 	g.GET("/api/runs/:id/telemetry", api.runs.run)
@@ -603,6 +610,7 @@ func newWithNotifications(s *repo.Store, e *engine.Engine, syncSvc *tracker.Serv
 	g.POST("/runners/tasks/:id/lease/renew", api.runners.runnerTaskLeaseRenew)
 	g.POST("/runners/tasks/:id/events", api.runners.runnerTaskEventsIngest)
 	g.POST("/runners/tasks/:id/complete", api.runners.runnerTaskComplete)
+	g.PUT("/runners/tasks/:id/contributions/:repositoryId/content", api.runners.runnerContributionContent)
 	g.GET("/runners/tasks/:id/control", api.runners.runnerTaskControl)
 	g.Any(knowledge.ProxyPath, api.know.proxyMCP)
 	g.PUT("/runners/previews/:previewId/content", api.runners.runnerPreviewContent)

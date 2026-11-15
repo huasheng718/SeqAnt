@@ -502,12 +502,17 @@ func (e *Engine) retryContext(ctx context.Context, runID, nodeID, reason, humanC
 		r, _ = e.repo.RunState(runID)
 
 		if runnerID := e.defaultExecutionRunner(r); runnerID != "" {
-			cleanupID := "rt-cleanup-" + safeRunnerPath(runID)
-			if task, exists := e.repo.RunnerTask(cleanupID); exists {
+			if task, exists := e.repo.LatestRunnerTaskForRunAction(runID, domain.RunnerTaskActionCleanupRun); exists {
 				switch task.Status {
 				case domain.RunnerTaskQueued:
-					if err := e.repo.CancelRunnerTask(cleanupID, time.Now().UTC()); err != nil {
+					if err := e.repo.CancelRunnerTask(task.ID, time.Now().UTC()); err != nil {
 						return err
+					}
+					// A claim racing cancellation leaves a live task with a
+					// cancellation request. Do not resume writes until it ends.
+					task, _ = e.repo.RunnerTask(task.ID)
+					if task.Status == domain.RunnerTaskLeased || task.Status == domain.RunnerTaskRunning {
+						return fmt.Errorf("run workspace cleanup is still active; retry after it finishes")
 					}
 				case domain.RunnerTaskLeased, domain.RunnerTaskRunning:
 					return fmt.Errorf("run workspace cleanup is still active; retry after it finishes")

@@ -178,7 +178,7 @@ func (e *Engine) cleanupWorkspace(run domain.Run, now time.Time) {
 		if runnerID == "" {
 			return
 		}
-		task, exists := e.repo.RunnerTask("rt-cleanup-" + safeRunnerPath(run.ID))
+		task, exists := e.repo.LatestRunnerTaskForRunAction(run.ID, domain.RunnerTaskActionCleanupRun)
 		if !exists {
 			// A removed Runner has already cleaned its workspace as part of
 			// deregistration; otherwise allow the request to be queued again.

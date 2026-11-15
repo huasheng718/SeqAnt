@@ -291,7 +291,7 @@ func (s *Service) ArchiveLocal(ctx context.Context, run domain.Run, preview doma
 	return s.markReady(preview, result, run)
 }
 
-func (s *Service) AcceptUpload(ctx context.Context, previewID, runnerID, token string, body io.Reader) error {
+func (s *Service) AcceptUpload(ctx context.Context, previewID, runnerID, taskID string, attempt int, token string, body io.Reader) error {
 	preview, ok := s.repo.Preview(previewID)
 	if !ok {
 		return errors.New("preview not found")
@@ -308,6 +308,9 @@ func (s *Service) AcceptUpload(ctx context.Context, previewID, runnerID, token s
 	}
 	if preview.Status != domain.PreviewPending && preview.Status != domain.PreviewArchiving {
 		return errors.New("preview is not accepting uploads")
+	}
+	if err := s.repo.ValidateRunnerPreviewUpload(previewID, runnerID, taskID, attempt, preview.UploadTokenHash, now); err != nil {
+		return err
 	}
 	s.event(preview.RunID, "preview.archive.uploading", "receiving preview bundle")
 	tmp, err := os.CreateTemp("", "preview-upload-*.tar.zst")
@@ -340,10 +343,16 @@ func (s *Service) AcceptUpload(ctx context.Context, previewID, runnerID, token s
 		return err
 	}
 	run, _ := s.repo.Run(preview.RunID)
-	return s.markReady(preview, result, run)
+	return s.markReadyUsing(preview, result, run, func(p domain.RunPreview) (bool, error) {
+		return s.repo.MarkRunnerPreviewReady(p, runnerID, taskID, attempt, preview.UploadTokenHash, s.clock())
+	})
 }
 
 func (s *Service) markReady(preview domain.RunPreview, result Result, run domain.Run) error {
+	return s.markReadyUsing(preview, result, run, s.repo.MarkPreviewReadyIfArchiving)
+}
+
+func (s *Service) markReadyUsing(preview domain.RunPreview, result Result, run domain.Run, commit func(domain.RunPreview) (bool, error)) error {
 	now := s.clock()
 	retention := s.cfg.DefaultRetention
 	if run.WorkflowSnapshot.Preview != nil {
@@ -366,7 +375,7 @@ func (s *Service) markReady(preview domain.RunPreview, result Result, run domain
 	preview.ArchiveLeaseUntil = time.Time{}
 	preview.ExpiresAt = now.Add(retention)
 	preview.UpdatedAt = now
-	ok, err := s.repo.MarkPreviewReadyIfArchiving(preview)
+	ok, err := commit(preview)
 	if err != nil {
 		return err
 	}

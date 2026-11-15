@@ -223,6 +223,9 @@ func (s *processSandbox) Exec(ctx context.Context, command CommandSpec, sink Eve
 	if err != nil {
 		return "", err
 	}
+	if s.driver == "seatbelt" {
+		return runNativeCommand(cmd, sink)
+	}
 	return runCommand(cmd, sink)
 }
 

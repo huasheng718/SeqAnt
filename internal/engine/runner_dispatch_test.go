@@ -48,7 +48,7 @@ func TestGateCommandInvocationCarriesResponsibleGitToken(t *testing.T) {
 	}
 	run := domain.Run{
 		ID: "run-gate",
-		ExecutionContext: domain.TelemetryContext{
+		ExecutionContext: domain.TelemetryContext{DeliveryPolicy: domain.DeliveryPolicyLegacy,
 			ProjectID:         "skillhub",
 			ResponsibleUserID: 3,
 		},
@@ -61,7 +61,7 @@ func TestGateCommandInvocationCarriesResponsibleGitToken(t *testing.T) {
 			WorkspaceDir: "skillhub",
 		}},
 	}
-	invocation := (&Engine{repo: s}).gateCommandInvocation(run, "fix")
+	invocation := (&Engine{repo: s, deliveryPolicy: domain.DeliveryPolicyLegacy}).gateCommandInvocation(run, "fix")
 	if invocation == nil || len(invocation.Repositories) != 1 {
 		t.Fatalf("invocation = %+v", invocation)
 	}

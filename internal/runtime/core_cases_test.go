@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -396,8 +398,24 @@ func TestProcessSandboxPathsProfilesAndCommands(t *testing.T) {
 	if _, err := sb.command(context.Background(), CommandSpec{Argv: []string{"true"}}, nil); err == nil {
 		t.Fatal("unknown driver accepted")
 	}
-	if _, err := createSeatbelt("x", workspace, domain.SandboxProfile{}, SandboxRequirements{}); err == nil {
-		t.Fatal("seatbelt unexpectedly available on linux")
+	binary, lookupErr := exec.LookPath("sandbox-exec")
+	seatbelt, err := createSeatbelt("x", workspace, domain.SandboxProfile{}, SandboxRequirements{})
+	if goruntime.GOOS == "darwin" && lookupErr == nil {
+		if err != nil {
+			t.Fatalf("seatbelt unavailable with sandbox-exec installed: %v", err)
+		}
+		process, ok := seatbelt.(*processSandbox)
+		if !ok || process.driver != "seatbelt" || process.binary != binary || process.workspace != workspace {
+			t.Fatalf("seatbelt=%+v", seatbelt)
+		}
+	} else if err == nil {
+		t.Fatalf("seatbelt unexpectedly available on %s without sandbox-exec", goruntime.GOOS)
+	}
+	if goruntime.GOOS == "darwin" {
+		t.Setenv("PATH", t.TempDir())
+		if _, err := createSeatbelt("x", workspace, domain.SandboxProfile{}, SandboxRequirements{}); err == nil {
+			t.Fatal("seatbelt accepted missing sandbox-exec")
+		}
 	}
 }
 

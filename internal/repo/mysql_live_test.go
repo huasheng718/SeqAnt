@@ -5,11 +5,126 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"agentflow/internal/domain"
 )
+
+func TestMySQLRunnerMaintenanceTaskQueueIsAtomic(t *testing.T) {
+	dsn := os.Getenv("AGENTFLOW_TEST_MYSQL_DSN")
+	if dsn == "" {
+		t.Skip("AGENTFLOW_TEST_MYSQL_DSN is not set")
+	}
+	s, err := Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	suffix := time.Now().UTC().UnixNano()
+	for index, action := range []string{domain.RunnerTaskActionCleanupRun, domain.RunnerTaskActionArchivePreview} {
+		t.Run(action, func(t *testing.T) {
+			runID := fmt.Sprintf("atomic-maintenance-%d-%d", suffix, index)
+			if err := s.PutRun(domain.Run{ID: runID}); err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				_ = s.runnerTasksForRunAction(s.DB, runID, action).Delete(&runnerTaskRow{}).Error
+				_ = s.DB.Where("id = ?", runID).Delete(&runRow{}).Error
+			}()
+			var wg sync.WaitGroup
+			start := make(chan struct{})
+			results := make(chan domain.RunnerTask, 16)
+			created := make(chan bool, 16)
+			for i := 0; i < 16; i++ {
+				wg.Add(1)
+				go func(i int) {
+					defer wg.Done()
+					<-start
+					task, fresh, err := s.QueueRunnerMaintenanceTask(domain.RunnerTask{ID: fmt.Sprintf("am-%d-%d-%d", suffix, index, i), RunID: runID, Provider: "terminal", Action: action, MaxAttempts: 3})
+					if err != nil {
+						t.Errorf("concurrent MySQL queue: %v", err)
+						return
+					}
+					results <- task
+					created <- fresh
+				}(i)
+			}
+			close(start)
+			wg.Wait()
+			close(results)
+			close(created)
+			id, count, freshCount := "", 0, 0
+			for fresh := range created {
+				if fresh {
+					freshCount++
+				}
+			}
+			for task := range results {
+				count++
+				if id == "" {
+					id = task.ID
+				}
+				if task.ID != id {
+					t.Errorf("concurrent task identities: %s / %s", id, task.ID)
+				}
+			}
+			if count != 16 || freshCount != 1 {
+				t.Fatalf("results=%d created=%d, want 16/1", count, freshCount)
+			}
+			var rows int64
+			if err := s.runnerTasksForRunAction(s.DB, runID, action).Count(&rows).Error; err != nil || rows != 1 {
+				t.Fatalf("stored tasks=%d err=%v", rows, err)
+			}
+			if err := s.CancelRunnerTask(id, time.Now().UTC()); err != nil {
+				t.Fatal(err)
+			}
+			next, fresh, err := s.QueueRunnerMaintenanceTask(domain.RunnerTask{ID: fmt.Sprintf("am-next-%d-%d", suffix, index), RunID: runID, Provider: "terminal", Action: action, MaxAttempts: 3})
+			if err != nil || !fresh || next.ID == id || next.Attempt != 0 || next.MaxAttempts != 3 {
+				t.Fatalf("next=%+v fresh=%v err=%v", next, fresh, err)
+			}
+			if latest, ok := s.LatestRunnerTaskForRunAction(runID, action); !ok || latest.ID != next.ID {
+				t.Fatalf("latest=%+v ok=%v", latest, ok)
+			}
+		})
+	}
+	t.Run("different-runs", func(t *testing.T) {
+		for round := 0; round < 5; round++ {
+			runIDs := []string{fmt.Sprintf("atomic-cross-%d-%d-a", suffix, round), fmt.Sprintf("atomic-cross-%d-%d-b", suffix, round)}
+			for _, runID := range runIDs {
+				if err := s.PutRun(domain.Run{ID: runID}); err != nil {
+					t.Fatal(err)
+				}
+				defer func(runID string) {
+					_ = s.runnerTasksForRunAction(s.DB, runID, domain.RunnerTaskActionCleanupRun).Delete(&runnerTaskRow{}).Error
+					_ = s.DB.Where("id = ?", runID).Delete(&runRow{}).Error
+				}(runID)
+			}
+			var wg sync.WaitGroup
+			start := make(chan struct{})
+			for i := 0; i < 16; i++ {
+				wg.Add(1)
+				go func(i int) {
+					defer wg.Done()
+					<-start
+					_, _, err := s.QueueRunnerMaintenanceTask(domain.RunnerTask{ID: fmt.Sprintf("ac-%d-%d-%d", suffix, round, i), RunID: runIDs[i%2], Provider: "terminal", Action: domain.RunnerTaskActionCleanupRun, MaxAttempts: 3})
+					if err != nil {
+						t.Errorf("round=%d independent run queue: %v", round, err)
+					}
+				}(i)
+			}
+			close(start)
+			wg.Wait()
+			for _, runID := range runIDs {
+				var rows int64
+				if err := s.runnerTasksForRunAction(s.DB, runID, domain.RunnerTaskActionCleanupRun).Count(&rows).Error; err != nil || rows != 1 {
+					t.Fatalf("round=%d run=%s stored=%d err=%v", round, runID, rows, err)
+				}
+			}
+		}
+	})
+}
 
 func TestMySQLReadsObserveExternalChangesWithoutReload(t *testing.T) {
 	dsn := os.Getenv("AGENTFLOW_TEST_MYSQL_DSN")
@@ -184,7 +299,7 @@ func TestMySQLRunnerTaskCompletionScrubsCredentials(t *testing.T) {
 	if claimed.Sandbox == nil || claimed.Sandbox.Profile.Driver != "docker" {
 		t.Fatalf("claimed task lost runner sandbox: %+v", claimed.Sandbox)
 	}
-	if err := s.CompleteRunnerTask(claimed.ID, runnerID, domain.RunnerTaskSuccess, nil, "done", "", nil, nil, time.Now().UTC()); err != nil {
+	if err := s.CompleteRunnerTask(claimed.ID, runnerID, claimed.Attempt, domain.RunnerTaskSuccess, nil, "done", "", nil, nil, time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
 	var payload string
