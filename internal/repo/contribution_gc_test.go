@@ -89,6 +89,38 @@ func TestDeleteUnreferencedContributionBlobsRequiresCutoff(t *testing.T) {
 	}
 }
 
+func TestPrepareContributionIntegrationRequiresDurableBlobMetadata(t *testing.T) {
+	s := newTestRunner(t)
+	integration := domain.ContributionIntegration{
+		ID:             strings.Repeat("a", 64),
+		ManifestSHA256: strings.Repeat("a", 64),
+		RunID:          "gc-run",
+		RepositoryID:   "repo",
+		BaseSHA:        strings.Repeat("1", 40),
+		ResultSHA:      strings.Repeat("2", 40),
+		ContextSHA256:  strings.Repeat("c", 64),
+		BundleSHA256:   strings.Repeat("b", 64),
+		BundleSize:     7,
+		Inputs:         []domain.RunnerContributionReceipt{{SHA256: strings.Repeat("b", 64), Size: 7}},
+		State:          "prepared",
+	}
+	if _, err := s.PrepareContributionIntegration(integration); err == nil {
+		t.Fatal("missing durable bundle accepted")
+	}
+	raw := []byte("durable")
+	sum := sha256.Sum256(raw)
+	integration.BundleSHA256 = hex.EncodeToString(sum[:])
+	integration.Inputs[0].SHA256 = integration.BundleSHA256
+	if err := s.PutRunnerContributionBlob(integration.BundleSHA256, raw); err != nil {
+		t.Fatal(err)
+	}
+	integration.BundleSize++
+	integration.Inputs[0].Size = integration.BundleSize
+	if _, err := s.PrepareContributionIntegration(integration); err == nil {
+		t.Fatal("size-mismatched durable bundle accepted")
+	}
+}
+
 func TestContributionBlobReferencesFailClosedOnMalformedRunnerTaskPayload(t *testing.T) {
 	s := newTestRunner(t)
 	now := time.Now().UTC()
