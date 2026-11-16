@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -78,6 +79,90 @@ func removeDockerSandbox(ctx context.Context, container, image string) {
 }
 
 const dockerTeardownTimeout = 60 * time.Second
+
+const (
+	dockerHardenedEnv     = "AGENTFLOW_SANDBOX_HARDENED"
+	dockerMemoryLimitEnv  = "AGENTFLOW_SANDBOX_MEMORY_LIMIT"
+	dockerCPULimitEnv     = "AGENTFLOW_SANDBOX_CPU_LIMIT"
+	dockerPIDsLimitEnv    = "AGENTFLOW_SANDBOX_PIDS_LIMIT"
+	dockerStorageLimitEnv = "AGENTFLOW_SANDBOX_STORAGE_LIMIT"
+	dockerTmpfsLimitEnv   = "AGENTFLOW_SANDBOX_TMPFS_LIMIT"
+	dockerDefaultMemory   = "4g"
+	dockerDefaultCPU      = "2"
+	dockerDefaultPIDs     = 512
+	dockerDefaultStorage  = "8g"
+	dockerDefaultTmpfs    = "1g"
+)
+
+// dockerResourceLimits is an adapter-owned deployment contract. It is
+// deliberately opt-in because existing local/native profiles have legacy
+// semantics and cannot be retroactively described as hostile-code boundaries.
+type dockerResourceLimits struct {
+	memory, cpus, storage, tmpfs string
+	pids                         int
+}
+
+func dockerResourceLimitsFromEnv() (dockerResourceLimits, error) {
+	if strings.TrimSpace(os.Getenv(dockerHardenedEnv)) != "1" {
+		return dockerResourceLimits{}, nil
+	}
+	limits := dockerResourceLimits{
+		memory:  dockerDefaultMemory,
+		cpus:    dockerDefaultCPU,
+		pids:    dockerDefaultPIDs,
+		storage: dockerDefaultStorage,
+		tmpfs:   dockerDefaultTmpfs,
+	}
+	for name, target := range map[string]*string{
+		dockerMemoryLimitEnv:  &limits.memory,
+		dockerCPULimitEnv:     &limits.cpus,
+		dockerStorageLimitEnv: &limits.storage,
+		dockerTmpfsLimitEnv:   &limits.tmpfs,
+	} {
+		if raw := strings.TrimSpace(os.Getenv(name)); raw != "" {
+			if !validDockerResourceSize(raw) {
+				return dockerResourceLimits{}, fmt.Errorf("%s must be a positive Docker size", name)
+			}
+			*target = raw
+		}
+	}
+	if raw := strings.TrimSpace(os.Getenv(dockerPIDsLimitEnv)); raw != "" {
+		value, err := strconv.Atoi(raw)
+		if err != nil || value < 1 || value > 1_000_000 {
+			return dockerResourceLimits{}, fmt.Errorf("%s must be an integer from 1 to 1000000", dockerPIDsLimitEnv)
+		}
+		limits.pids = value
+	}
+	if value, err := strconv.ParseFloat(limits.cpus, 64); err != nil || value <= 0 || value > 1024 {
+		return dockerResourceLimits{}, fmt.Errorf("%s must be a positive CPU quantity", dockerCPULimitEnv)
+	}
+	return limits, nil
+}
+
+func validDockerResourceSize(raw string) bool {
+	raw = strings.ToLower(strings.TrimSpace(raw))
+	if raw == "" {
+		return false
+	}
+	unit := raw[len(raw)-1]
+	if unit == 'b' || unit == 'k' || unit == 'm' || unit == 'g' || unit == 't' {
+		raw = raw[:len(raw)-1]
+	}
+	value, err := strconv.ParseUint(raw, 10, 64)
+	return err == nil && value > 0
+}
+
+func appendDockerResourceLimitArgs(args []string, limits dockerResourceLimits) []string {
+	if limits.memory == "" {
+		return args
+	}
+	return append(args,
+		"--memory", limits.memory,
+		"--cpus", limits.cpus,
+		"--pids-limit", strconv.Itoa(limits.pids),
+		"--storage-opt", "size="+limits.storage,
+	)
+}
 
 // dockerAvailable keeps run teardown from spawning processes on control planes
 // that only ever use the local driver. Cleanup runs per finished run and on a
@@ -639,6 +724,13 @@ func (s *dockerSandbox) ensureStarted(ctx context.Context) error {
 	image := built
 	s.builtImage = built
 	args := []string{"create", "--name", name, "--init", "--cap-drop=ALL", "--security-opt", "no-new-privileges", "-v", workspace + ":/workspace"}
+	limits, err := dockerResourceLimitsFromEnv()
+	if err != nil {
+		dropEphemeralDockerImage(s.builtImage)
+		s.builtImage = ""
+		return fmt.Errorf("read hardened Docker resource limits: %w", err)
+	}
+	args = appendDockerResourceLimitArgs(args, limits)
 	// Native installs own private (0700) workspaces as the service user.
 	// A root image without DAC capabilities cannot access another UID's bind.
 	// Run default/root images as that user; retain explicit non-root image users.
@@ -672,7 +764,13 @@ func (s *dockerSandbox) ensureStarted(ctx context.Context) error {
 		args = append(args, "--mount", "type=bind,src="+cliDir+",dst="+cliDir+",readonly")
 	}
 	if p.ReadOnlyRootFS {
-		args = append(args, "--read-only", "--tmpfs", "/tmp:rw,noexec,nosuid,size=256m")
+		tmpfs := "256m"
+		if limits.tmpfs != "" {
+			tmpfs = limits.tmpfs
+		}
+		args = append(args, "--read-only", "--tmpfs", "/tmp:rw,noexec,nosuid,size="+tmpfs)
+	} else if limits.tmpfs != "" {
+		args = append(args, "--tmpfs", "/tmp:rw,noexec,nosuid,size="+limits.tmpfs)
 	}
 	if image == isolatedRuntimeImage(s.dockerfile) {
 		args = append(args, "--entrypoint", "sh", image, "-lc", "trap : TERM INT; sleep infinity & wait")

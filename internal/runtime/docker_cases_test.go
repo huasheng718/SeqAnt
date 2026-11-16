@@ -139,6 +139,33 @@ func TestDockerArgumentAndErrorBranches(t *testing.T) {
 	}
 }
 
+func TestHardenedDockerResourceLimitsAreExplicitAndFailClosed(t *testing.T) {
+	if limits, err := dockerResourceLimitsFromEnv(); err != nil || limits.memory != "" {
+		t.Fatalf("legacy Docker path unexpectedly hardened: %+v err=%v", limits, err)
+	}
+	t.Setenv(dockerHardenedEnv, "1")
+	limits, err := dockerResourceLimitsFromEnv()
+	if err != nil || limits.memory != dockerDefaultMemory || limits.cpus != dockerDefaultCPU || limits.pids != dockerDefaultPIDs || limits.storage != dockerDefaultStorage || limits.tmpfs != dockerDefaultTmpfs {
+		t.Fatalf("default hardened limits=%+v err=%v", limits, err)
+	}
+	args := appendDockerResourceLimitArgs([]string{"create"}, limits)
+	text := strings.Join(args, " ")
+	for _, needle := range []string{"--memory 4g", "--cpus 2", "--pids-limit 512", "--storage-opt size=8g"} {
+		if !strings.Contains(text, needle) {
+			t.Fatalf("hardened Docker args missing %q: %v", needle, args)
+		}
+	}
+	t.Setenv(dockerPIDsLimitEnv, "0")
+	if _, err := dockerResourceLimitsFromEnv(); err == nil {
+		t.Fatal("invalid PID limit did not fail closed")
+	}
+	t.Setenv(dockerPIDsLimitEnv, "512")
+	t.Setenv(dockerMemoryLimitEnv, "not-a-size")
+	if _, err := dockerResourceLimitsFromEnv(); err == nil {
+		t.Fatal("invalid memory limit did not fail closed")
+	}
+}
+
 func TestDockerMasksAndManagerPaths(t *testing.T) {
 	workspace := t.TempDir()
 	cvRInstallFakeDocker(t, workspace)
