@@ -251,6 +251,9 @@ func (e *Engine) dispatchRunnerTask(ctx context.Context, runnerID string, run do
 		NodeID:      node.ID,
 		Invocation:  invocation,
 	}
+	if err := e.preparePlacedExecutionTask(run, &task, domain.NodeTaskRoleAuthor); err != nil {
+		return "", err
+	}
 	sandboxSpec, err := e.runnerSandboxSpec(run)
 	if err != nil {
 		return "", err
@@ -262,7 +265,7 @@ func (e *Engine) dispatchRunnerTask(ctx context.Context, runnerID string, run do
 	if err := validateSOPHandoffRunnerPayload(run, task); err != nil {
 		return "", err
 	}
-	if err := e.repo.PutRunnerTask(task); err != nil {
+	if err := e.queuePlacedOrLegacyTask(task); err != nil {
 		return "", err
 	}
 	e.notifyRunnerDispatch(ex.Kind)
@@ -415,6 +418,9 @@ func (e *Engine) dispatchRunnerScript(ctx context.Context, runnerID string, run 
 		NodeID:      nodeID,
 		Invocation:  invocation,
 	}
+	if err := e.preparePlacedExecutionTask(run, &task, domain.NodeTaskRoleAuthor); err != nil {
+		return "", err
+	}
 	var err error
 	task.Sandbox, err = e.runnerSandboxSpec(run)
 	if err != nil {
@@ -426,7 +432,7 @@ func (e *Engine) dispatchRunnerScript(ctx context.Context, runnerID string, run 
 	if err := validateSOPHandoffRunnerPayload(run, task); err != nil {
 		return "", err
 	}
-	if err := e.repo.PutRunnerTask(task); err != nil {
+	if err := e.queuePlacedOrLegacyTask(task); err != nil {
 		return "", err
 	}
 	e.notifyRunnerDispatch("terminal")
@@ -612,10 +618,13 @@ func (e *Engine) dispatchRunnerCommand(ctx context.Context, runnerID, runID, nod
 		task.Invocation = e.gateCommandInvocation(run, nodeID)
 	}
 	run, _ := e.repo.RunState(runID)
+	if err := e.preparePlacedExecutionTask(run, &task, domain.NodeTaskRoleVerification); err != nil {
+		return "", err
+	}
 	if err := e.applyRunnerTaskPolicy(run, &task); err != nil {
 		return "", err
 	}
-	if err := e.repo.PutRunnerTask(task); err != nil {
+	if err := e.queuePlacedOrLegacyTask(task); err != nil {
 		return "", err
 	}
 	e.notifyRunnerDispatch("terminal")
