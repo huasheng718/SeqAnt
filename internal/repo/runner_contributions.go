@@ -128,6 +128,12 @@ func (r *RunnersRepo) RunnerContributionInputForSession(taskID, runnerID, sessio
 	var content []byte
 	found := false
 	err := r.DB.Transaction(func(tx *gorm.DB) error {
+		// Authenticate the principal before the not-found probe. Otherwise a
+		// caller with an expired/rotated session could distinguish an unknown
+		// task without receiving the required session error.
+		if err := r.validateRunnerClaimSessionTx(tx, runnerID, sessionHash, now); err != nil {
+			return err
+		}
 		var probe runnerTaskRow
 		if err := tx.Where("id = ?", taskID).Take(&probe).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {

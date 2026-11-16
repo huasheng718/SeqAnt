@@ -297,6 +297,13 @@ func TestRunnerContributionInputForSessionIsFrozenAndAllowlisted(t *testing.T) {
 	}
 }
 
+func TestRunnerContributionInputAuthenticatesBeforeMissingTaskProbe(t *testing.T) {
+	s, _, _, runner, now := newNodeQueueFixture(t, true)
+	if _, _, found, err := s.RunnerContributionInputForSession("missing-input-task", runner.ID, strings.Repeat("a", 64), 1, "repo", now); !errors.Is(err, ErrRunnerPlacementSessionInvalid) || found {
+		t.Fatalf("missing task with invalid session found=%v err=%v", found, err)
+	}
+}
+
 func TestQueueNodeExecutionTaskRejectsUnacceptedPreviousAndMalformedInput(t *testing.T) {
 	for _, mode := range []string{"not-complete", "missing-input", "wrong-receipt", "wrong-head-verification", "missing-bytes", "stale-node-attempt"} {
 		t.Run(mode, func(t *testing.T) {
