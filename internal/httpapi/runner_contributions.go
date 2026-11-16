@@ -34,7 +34,7 @@ func (h *runnersHandlers) runnerContributionContent(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "positive attempt required"})
 		return
 	}
-	spec, err := h.repo.ValidateRunnerContributionUpload(c.Param("id"), runner.ID, attempt, c.Param("repositoryId"), time.Now().UTC())
+	spec, err := h.repo.ValidateRunnerContributionUploadForSession(c.Param("id"), runner.ID, runner.SessionTokenHash, attempt, c.Param("repositoryId"), time.Now().UTC())
 	if err != nil {
 		writeContributionError(c, err)
 		return
@@ -94,11 +94,11 @@ func (h *runnersHandlers) runnerContributionContent(c *gin.Context) {
 		writeContributionError(c, err)
 		return
 	}
-	receipt, err := h.repo.StageRunnerContribution(domain.RunnerContributionReceipt{
+	receipt, err := h.repo.StageRunnerContributionForSession(domain.RunnerContributionReceipt{
 		TaskID: c.Param("id"), Attempt: attempt, RepositoryID: spec.RepositoryID,
 		Dir: spec.Dir, BaseSHA: baseSHA, ResultSHA: resultSHA, ContextSHA256: spec.ContextSHA256,
 		SHA256: digest, Size: size,
-	}, runner.ID, time.Now().UTC())
+	}, runner.ID, runner.SessionTokenHash, time.Now().UTC())
 	if err != nil {
 		writeContributionError(c, err)
 		return
@@ -106,8 +106,52 @@ func (h *runnersHandlers) runnerContributionContent(c *gin.Context) {
 	c.JSON(http.StatusOK, receipt)
 }
 
+// runnerContributionInput serves only the currently leased task's frozen
+// contribution input. The Repo method rechecks session, placement, attempt,
+// lineage and blob hash under one transaction before bytes are returned.
+func (h *runnersHandlers) runnerContributionInput(c *gin.Context) {
+	runner, ok := h.runnerSessionAuth(c)
+	if !ok {
+		return
+	}
+	attempt, err := strconv.Atoi(c.Query("attempt"))
+	if err != nil || attempt <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "positive attempt required"})
+		return
+	}
+	input, content, found, err := h.repo.RunnerContributionInputForSession(c.Param("id"), runner.ID, runner.SessionTokenHash, attempt, c.Param("repositoryId"), time.Now().UTC())
+	if errors.Is(err, repo.ErrRunnerPlacementSessionInvalid) {
+		writeRunnerTaskAuthorizationError(c, err)
+		return
+	}
+	if !found && err == nil {
+		c.Status(http.StatusNotFound)
+		return
+	}
+	if errors.Is(err, repo.ErrRunnerTaskLeaseLost) {
+		c.JSON(http.StatusConflict, gin.H{"error": "task lease lost"})
+		return
+	}
+	if errors.Is(err, repo.ErrRunnerContributionInvalid) {
+		c.JSON(http.StatusConflict, gin.H{"error": "frozen contribution input unavailable"})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "read contribution input"})
+		return
+	}
+	c.Header("Cache-Control", "private, no-store")
+	c.Header("Content-Length", strconv.FormatInt(int64(len(content)), 10))
+	c.Header("X-Contribution-SHA256", input.BundleSHA256)
+	c.Header("X-Contribution-Base-SHA", input.BaseSHA)
+	c.Header("X-Contribution-Result-SHA", input.HeadSHA)
+	c.Data(http.StatusOK, "application/x-git-bundle", content)
+}
+
 func writeContributionError(c *gin.Context, err error) {
 	switch {
+	case errors.Is(err, repo.ErrRunnerPlacementSessionInvalid), errors.Is(err, domain.ErrRunnerPlacementInvalid), errors.Is(err, domain.ErrRunnerPlacementDenied), errors.Is(err, domain.ErrRunnerPlacementChanged), errors.Is(err, domain.ErrRunnerPlacementUnavailable):
+		writeRunnerTaskAuthorizationError(c, err)
 	case errors.Is(err, repo.ErrRunnerTaskLeaseLost):
 		c.JSON(http.StatusConflict, gin.H{"error": "task lease lost"})
 	case errors.Is(err, repo.ErrRunnerContributionConflict):

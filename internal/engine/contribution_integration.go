@@ -15,6 +15,55 @@ import (
 	"agentflow/internal/gitwork"
 )
 
+// runnerContributionHandoff is a private, task-scoped projection of an
+// already accepted contribution. It is intentionally not a public API or a
+// second store; callers still obtain bytes from the existing content-addressed
+// RunnerContributionBlob table.
+type runnerContributionHandoff struct {
+	Input  domain.RunnerContributionInput
+	Bytes  []byte
+	Source domain.RunnerContributionInputSource
+}
+
+// acceptedRunnerContributionHandoff validates and projects accepted source
+// receipts for a future placed consumer. It refuses stale/superseded sources,
+// corrupt or oversized blobs and cross-repository lineage. Credentials never
+// enter the projection. The current dispatch path does not yet call this
+// helper because it still creates legacy RunnerTask payloads.
+func (e *Engine) acceptedRunnerContributionHandoff(controller domain.Run, repositoryID string, taskIDs []string) ([]runnerContributionHandoff, error) {
+	receipts, err := e.acceptedIntegrationInputs(controller, repositoryID, taskIDs)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]runnerContributionHandoff, 0, len(receipts))
+	for _, receipt := range receipts {
+		raw, size, ok := e.repo.RunnerContributionBlob(receipt.SHA256)
+		if !ok || size != receipt.Size || size <= 0 || size > domain.RunnerContributionMaxBytes || int64(len(raw)) != receipt.Size {
+			return nil, errors.New("accepted contribution bundle is missing, oversized or truncated")
+		}
+		sum := sha256.Sum256(raw)
+		if hex.EncodeToString(sum[:]) != receipt.SHA256 {
+			return nil, errors.New("accepted contribution bundle hash mismatch")
+		}
+		sourceTask, ok := e.repo.RunnerTask(receipt.TaskID)
+		if !ok || sourceTask.RunID == "" || sourceTask.NodeID == "" || sourceTask.Invocation == nil {
+			return nil, errors.New("accepted contribution source task is unavailable")
+		}
+		sourceRun, ok := e.repo.RunState(sourceTask.RunID)
+		if !ok || sourceRun.Nodes[sourceTask.NodeID] == nil || sourceRun.Nodes[sourceTask.NodeID].Attempt <= 0 {
+			return nil, errors.New("accepted contribution source Node attempt is unavailable")
+		}
+		contextSHA, err := domain.RunnerContributionContextSHA(sourceTask)
+		if err != nil || contextSHA != receipt.ContextSHA256 {
+			return nil, errors.New("accepted contribution source context changed")
+		}
+		source := domain.RunnerContributionInputSource{RunID: sourceTask.RunID, NodeID: sourceTask.NodeID, TaskID: sourceTask.ID, ReceiptID: receipt.ID, NodeAttempt: sourceRun.Nodes[sourceTask.NodeID].Attempt, TaskAttempt: receipt.Attempt, ContextSHA256: receipt.ContextSHA256, BundleSHA256: receipt.SHA256, ResultSHA: receipt.ResultSHA}
+		input := domain.RunnerContributionInput{RepositoryID: receipt.RepositoryID, BaseSHA: receipt.BaseSHA, HeadSHA: receipt.ResultSHA, BundleSHA256: receipt.SHA256, BundleSize: receipt.Size, Sources: []domain.RunnerContributionInputSource{source}}
+		out = append(out, runnerContributionHandoff{Input: input, Bytes: append([]byte(nil), raw...), Source: source})
+	}
+	return out, nil
+}
+
 // IntegrateRunnerContributions performs a controller action over immutable,
 // already accepted task results. It does not publish or finish any work item.
 func (e *Engine) IntegrateRunnerContributions(ctx context.Context, runID, repositoryID string, taskIDs []string) (domain.ContributionIntegration, error) {

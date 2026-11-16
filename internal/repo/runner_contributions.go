@@ -80,9 +80,22 @@ func contributionSpec(task domain.RunnerTask, repositoryID string) (domain.Runne
 	return selected, nil
 }
 
-func (r *RunnersRepo) contributionTaskForUpload(tx *gorm.DB, taskID, runnerID string, attempt int, repositoryID string, now time.Time) (domain.RunnerTask, domain.RunnerContributionSpec, error) {
-	row, ok := r.takeRunnerTaskForLease(tx, taskID, runnerID, attempt, now)
-	if !ok || row.DesiredState == domain.RunnerTaskDesiredCancel {
+func (r *RunnersRepo) contributionTaskForUpload(tx *gorm.DB, taskID, runnerID, sessionHash string, attempt int, repositoryID string, now time.Time) (domain.RunnerTask, domain.RunnerContributionSpec, error) {
+	var row runnerTaskRow
+	if sessionHash != "" {
+		var err error
+		row, err = r.takeRunnerTaskForSession(tx, taskID, runnerID, sessionHash, attempt, now)
+		if err != nil {
+			return domain.RunnerTask{}, domain.RunnerContributionSpec{}, err
+		}
+	} else {
+		var ok bool
+		row, ok = r.takeRunnerTaskForLease(tx, taskID, runnerID, attempt, now)
+		if !ok {
+			return domain.RunnerTask{}, domain.RunnerContributionSpec{}, ErrRunnerTaskLeaseLost
+		}
+	}
+	if row.DesiredState == domain.RunnerTaskDesiredCancel {
 		return domain.RunnerTask{}, domain.RunnerContributionSpec{}, ErrRunnerTaskLeaseLost
 	}
 	task := runnerTaskFromRow(row)
@@ -93,10 +106,81 @@ func (r *RunnersRepo) contributionTaskForUpload(tx *gorm.DB, taskID, runnerID st
 // ValidateRunnerContributionUpload authorizes receipt without holding a task
 // lock while a potentially slow request body streams. Stage rechecks it.
 func (r *RunnersRepo) ValidateRunnerContributionUpload(taskID, runnerID string, attempt int, repositoryID string, now time.Time) (domain.RunnerContributionSpec, error) {
+	return r.validateRunnerContributionUpload(taskID, runnerID, "", attempt, repositoryID, now)
+}
+
+func (r *RunnersRepo) ValidateRunnerContributionUploadForSession(taskID, runnerID, sessionHash string, attempt int, repositoryID string, now time.Time) (domain.RunnerContributionSpec, error) {
+	if !domain.ValidWorkspaceContextSHA256(sessionHash) {
+		return domain.RunnerContributionSpec{}, ErrRunnerPlacementSessionInvalid
+	}
+	return r.validateRunnerContributionUpload(taskID, runnerID, sessionHash, attempt, repositoryID, now)
+}
+
+// RunnerContributionInputForSession returns one immutable, controller-frozen
+// input bundle for the currently leased placed task. The task transaction
+// remains the authorization boundary: callers cannot read an arbitrary blob
+// by digest or bypass the task's source-lineage validation.
+func (r *RunnersRepo) RunnerContributionInputForSession(taskID, runnerID, sessionHash string, attempt int, repositoryID string, now time.Time) (domain.RunnerContributionInput, []byte, bool, error) {
+	if !domain.ValidWorkspaceContextSHA256(sessionHash) {
+		return domain.RunnerContributionInput{}, nil, false, ErrRunnerPlacementSessionInvalid
+	}
+	var input domain.RunnerContributionInput
+	var content []byte
+	found := false
+	err := r.DB.Transaction(func(tx *gorm.DB) error {
+		var probe runnerTaskRow
+		if err := tx.Where("id = ?", taskID).Take(&probe).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil
+			}
+			return err
+		}
+		row, err := r.takeRunnerTaskForSession(tx, taskID, runnerID, sessionHash, attempt, now)
+		if err != nil {
+			return err
+		}
+		task := runnerTaskFromRow(row)
+		if task.Invocation == nil || task.ExecutionPlacement == nil || len(task.Invocation.ContributionInputs) == 0 {
+			return nil
+		}
+		for _, candidate := range task.Invocation.ContributionInputs {
+			if candidate.RepositoryID != repositoryID {
+				continue
+			}
+			if found {
+				return invalidContribution("duplicate frozen contribution input")
+			}
+			found = true
+			if !validContributionSHA256(candidate.BundleSHA256) || candidate.BundleSize <= 0 || candidate.BundleSize > domain.RunnerContributionMaxBytes {
+				return invalidContribution("frozen contribution input has invalid bundle identity")
+			}
+			var blob runnerContributionBlobRow
+			if err := tx.Where("sha256 = ?", candidate.BundleSHA256).Take(&blob).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return ErrRunnerTaskLeaseLost
+				}
+				return err
+			}
+			if blob.Size != candidate.BundleSize || int64(len(blob.Content)) != candidate.BundleSize {
+				return ErrRunnerTaskLeaseLost
+			}
+			sum := sha256.Sum256(blob.Content)
+			if hex.EncodeToString(sum[:]) != candidate.BundleSHA256 {
+				return ErrRunnerTaskLeaseLost
+			}
+			input = candidate
+			content = append([]byte(nil), blob.Content...)
+		}
+		return nil
+	})
+	return input, content, found, err
+}
+
+func (r *RunnersRepo) validateRunnerContributionUpload(taskID, runnerID, sessionHash string, attempt int, repositoryID string, now time.Time) (domain.RunnerContributionSpec, error) {
 	var spec domain.RunnerContributionSpec
 	err := r.DB.Transaction(func(tx *gorm.DB) error {
 		var err error
-		_, spec, err = r.contributionTaskForUpload(tx, taskID, runnerID, attempt, repositoryID, now)
+		_, spec, err = r.contributionTaskForUpload(tx, taskID, runnerID, sessionHash, attempt, repositoryID, now)
 		return err
 	})
 	return spec, err
@@ -159,9 +243,20 @@ func contributionBlobExists(tx *gorm.DB, receipt domain.RunnerContributionReceip
 // attempt. IDs and timestamps are server-owned; identical replay returns the
 // original receipt while conflicting replay cannot replace it.
 func (r *RunnersRepo) StageRunnerContribution(receipt domain.RunnerContributionReceipt, runnerID string, now time.Time) (domain.RunnerContributionReceipt, error) {
+	return r.stageRunnerContribution(receipt, runnerID, "", now)
+}
+
+func (r *RunnersRepo) StageRunnerContributionForSession(receipt domain.RunnerContributionReceipt, runnerID, sessionHash string, now time.Time) (domain.RunnerContributionReceipt, error) {
+	if !domain.ValidWorkspaceContextSHA256(sessionHash) {
+		return domain.RunnerContributionReceipt{}, ErrRunnerPlacementSessionInvalid
+	}
+	return r.stageRunnerContribution(receipt, runnerID, sessionHash, now)
+}
+
+func (r *RunnersRepo) stageRunnerContribution(receipt domain.RunnerContributionReceipt, runnerID, sessionHash string, now time.Time) (domain.RunnerContributionReceipt, error) {
 	var staged domain.RunnerContributionReceipt
 	err := r.DB.Transaction(func(tx *gorm.DB) error {
-		task, spec, err := r.contributionTaskForUpload(tx, receipt.TaskID, runnerID, receipt.Attempt, receipt.RepositoryID, now)
+		task, spec, err := r.contributionTaskForUpload(tx, receipt.TaskID, runnerID, sessionHash, receipt.Attempt, receipt.RepositoryID, now)
 		if err != nil {
 			return err
 		}

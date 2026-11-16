@@ -974,6 +974,9 @@ func (r *RunsRepo) writeRunOnce(run domain.Run, lockKey string, expectedRevision
 		} else if err != gorm.ErrRecordNotFound {
 			return err
 		}
+		if err := r.preserveNodeExecutionAuthorityTx(tx, &run, current, err == nil); err != nil {
+			return err
+		}
 		if len(expectedRevision) > 0 {
 			if err != nil {
 				return ErrRunDecisionStale

@@ -279,6 +279,9 @@ type RunnerRuntime struct {
 }
 
 type RunnerTask struct {
+	ExecutionPlacement    *NodeExecutionPlacement     `json:"executionPlacement,omitempty"`
+	Execution             *NodeTaskExecution          `json:"execution,omitempty"`
+	MaintenanceKey        *RunnerMaintenanceKey       `json:"maintenanceKey,omitempty"`
 	ExecutionDeadline     *time.Time                  `json:"executionDeadline,omitempty"`
 	ContributionSpecs     []RunnerContributionSpec    `json:"contributionSpecs,omitempty"`
 	PendingContributions  []RunnerContributionReceipt `json:"pendingContributions,omitempty"`
@@ -366,6 +369,18 @@ type RunnerSandboxSpec struct {
 // PublicRunnerTask strips task-scoped credentials from management responses.
 // The authenticated claiming runner receives the original task payload.
 func PublicRunnerTask(task RunnerTask) RunnerTask {
+	if task.ExecutionPlacement != nil {
+		placement := cloneNodeExecutionPlacement(*task.ExecutionPlacement)
+		task.ExecutionPlacement = &placement
+	}
+	if task.Execution != nil {
+		execution := *task.Execution
+		task.Execution = &execution
+	}
+	if task.MaintenanceKey != nil {
+		key := *task.MaintenanceKey
+		task.MaintenanceKey = &key
+	}
 	if task.PreviewArchive != nil {
 		copySpec := *task.PreviewArchive
 		copySpec.UploadToken = ""
@@ -375,6 +390,15 @@ func PublicRunnerTask(task RunnerTask) RunnerTask {
 		return task
 	}
 	copyInvocation := *task.Invocation
+	if copyInvocation.ContributionInputs != nil {
+		copyInvocation.ContributionInputs = append([]RunnerContributionInput{}, copyInvocation.ContributionInputs...)
+		for i := range copyInvocation.ContributionInputs {
+			input := &copyInvocation.ContributionInputs[i]
+			if input.Sources != nil {
+				input.Sources = append([]RunnerContributionInputSource{}, input.Sources...)
+			}
+		}
+	}
 	copyInvocation.CodeBuddyAPIKey = ""
 	copyInvocation.CodeBuddyInternetEnvironment = ""
 	copyInvocation.CodexAPIKey = ""
@@ -406,6 +430,7 @@ func PublicRunnerTask(task RunnerTask) RunnerTask {
 // credentials are included only when the runtime selects personal credentials
 // and are scrubbed from durable storage when the task finishes.
 type RunnerInvocation struct {
+	ContributionInputs []RunnerContributionInput `json:"contributionInputs,omitempty"`
 	// WorkspaceIsolation is frozen by the Engine. Its version requires a
 	// capable Runner and a fresh, task/attempt-owned checkout.
 	WorkspaceIsolation *RunnerWorkspaceIsolation `json:"workspaceIsolation,omitempty"`

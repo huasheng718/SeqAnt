@@ -842,11 +842,12 @@ func (h *runnersHandlers) runnerTaskClaim(c *gin.Context) {
 	}
 	claimOrSignal := func() (domain.RunnerTask, bool, error) {
 		if input.Preflight {
-			available, err := h.repo.RunnerTaskAvailable(runner.ID, input.AvailableRuntimes)
+			available, err := h.repo.RunnerTaskAvailableForSession(runner.ID, runner.SessionTokenHash, input.AvailableRuntimes, time.Now().UTC())
 			return domain.RunnerTask{}, available, err
 		}
-		return h.repo.ClaimRunnerTask(runner.ID, input.AvailableRuntimes, time.Now().UTC(), runnerTaskLeaseTTL)
+		return h.repo.ClaimRunnerTaskForSession(runner.ID, runner.SessionTokenHash, input.AvailableRuntimes, time.Now().UTC(), runnerTaskLeaseTTL)
 	}
+
 	respond := func(task domain.RunnerTask) {
 		if input.Preflight {
 			c.JSON(http.StatusOK, map[string]bool{"taskAvailable": true})
@@ -862,7 +863,7 @@ func (h *runnersHandlers) runnerTaskClaim(c *gin.Context) {
 		}
 		task, claimed, err := claimOrSignal()
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			writeRunnerTaskAuthorizationError(c, err)
 			return
 		}
 		if claimed {
@@ -887,7 +888,7 @@ func (h *runnersHandlers) runnerTaskClaim(c *gin.Context) {
 		task, claimed, err = claimOrSignal()
 		if err != nil {
 			h.runnerWaiters.unregister(waiter)
-			c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			writeRunnerTaskAuthorizationError(c, err)
 			return
 		}
 		if claimed {
@@ -925,8 +926,12 @@ func (h *runnersHandlers) runnerTaskGet(c *gin.Context) {
 	if !ok {
 		return
 	}
-	task, exists := h.repo.RunnerTask(c.Param("id"))
-	if !exists || !runnerMaySeeTask(runner, task) {
+	task, exists, err := h.repo.RunnerTaskForSessionHistory(c.Param("id"), runner.ID, runner.SessionTokenHash, time.Now().UTC())
+	if errors.Is(err, repo.ErrRunnerPlacementSessionInvalid) {
+		writeRunnerTaskAuthorizationError(c, err)
+		return
+	}
+	if err != nil || !exists {
 		c.Status(http.StatusNotFound)
 		return
 	}
@@ -997,12 +1002,16 @@ func (h *runnersHandlers) runnerTaskEventsOut(c *gin.Context) {
 	if !ok {
 		return
 	}
-	task, exists := h.repo.RunnerTask(c.Param("id"))
-	if !exists || !runnerMaySeeTask(runner, task) {
+	events, exists, err := h.repo.RunnerTaskEventsForSession(c.Param("id"), runner.ID, runner.SessionTokenHash, time.Now().UTC())
+	if errors.Is(err, repo.ErrRunnerPlacementSessionInvalid) {
+		writeRunnerTaskAuthorizationError(c, err)
+		return
+	}
+	if err != nil || !exists {
 		c.Status(http.StatusNotFound)
 		return
 	}
-	c.JSON(http.StatusOK, h.repo.RunnerTaskEvents(task.ID))
+	c.JSON(http.StatusOK, events)
 }
 
 // runnerTaskStart acknowledges the runner picked up the leased task.
@@ -1024,12 +1033,8 @@ func (h *runnersHandlers) runnerTaskStart(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, map[string]string{"error": "positive attempt required"})
 		return
 	}
-	if err := h.repo.StartRunnerTask(c.Param("id"), runner.ID, input.Attempt, time.Now().UTC()); err != nil {
-		if err == repo.ErrRunnerTaskLeaseLost {
-			c.JSON(http.StatusConflict, map[string]string{"error": "task lease lost"})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	if err := h.repo.StartRunnerTaskForSession(c.Param("id"), runner.ID, runner.SessionTokenHash, input.Attempt, time.Now().UTC()); err != nil {
+		writeRunnerTaskAuthorizationError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, map[string]bool{"ok": true})
@@ -1054,18 +1059,14 @@ func (h *runnersHandlers) runnerTaskLeaseRenew(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, map[string]string{"error": "positive attempt required"})
 		return
 	}
-	desired, err := h.repo.RenewRunnerTaskLease(c.Param("id"), runner.ID, input.Attempt, runnerTaskLeaseTTL, time.Now().UTC())
+	desired, err := h.repo.RenewRunnerTaskLeaseForSession(c.Param("id"), runner.ID, runner.SessionTokenHash, input.Attempt, runnerTaskLeaseTTL, time.Now().UTC())
 	if err != nil {
-		if err == repo.ErrRunnerTaskLeaseLost {
-			c.JSON(http.StatusConflict, map[string]string{"error": "task lease lost"})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeRunnerTaskAuthorizationError(c, err)
 		return
 	}
-	task, exists := h.repo.RunnerTaskControl(c.Param("id"))
-	if !exists || task.LeaseOwner != runner.ID || task.Attempt != input.Attempt || task.LeaseUntil == nil || !task.LeaseUntil.After(time.Now().UTC()) || domain.ExecutionDeadlineExpired(task.ExecutionDeadline, time.Now().UTC()) {
-		c.JSON(http.StatusConflict, map[string]string{"error": "task lease lost"})
+	task, err := h.repo.RunnerTaskControlForSession(c.Param("id"), runner.ID, runner.SessionTokenHash, input.Attempt, time.Now().UTC())
+	if err != nil {
+		writeRunnerTaskAuthorizationError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, map[string]any{"leaseUntil": task.LeaseUntil, "desiredState": desired})
@@ -1112,13 +1113,9 @@ func (h *runnersHandlers) runnerTaskEventsIngest(c *gin.Context) {
 			input.Events[i].Ts = time.Now().UTC()
 		}
 	}
-	accepted, err := h.repo.AppendRunnerTaskEvents(taskID, runner.ID, input.Attempt, input.Events, time.Now().UTC())
+	accepted, err := h.repo.AppendRunnerTaskEventsForSession(taskID, runner.ID, runner.SessionTokenHash, input.Attempt, input.Events, time.Now().UTC())
 	if err != nil {
-		if err == repo.ErrRunnerTaskLeaseLost {
-			c.JSON(http.StatusConflict, map[string]string{"error": "task lease lost"})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeRunnerTaskAuthorizationError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, map[string]int{"accepted": accepted})
@@ -1166,16 +1163,12 @@ func (h *runnersHandlers) runnerTaskComplete(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, map[string]string{"error": message})
 		return
 	}
-	if err := h.repo.CompleteRunnerTask(c.Param("id"), runner.ID, input.Attempt, input.Status, input.ExitCode, input.Result, input.Error, input.Artifacts, input.Outputs, time.Now().UTC()); err != nil {
+	if err := h.repo.CompleteRunnerTaskForSession(c.Param("id"), runner.ID, runner.SessionTokenHash, input.Attempt, input.Status, input.ExitCode, input.Result, input.Error, input.Artifacts, input.Outputs, time.Now().UTC()); err != nil {
 		if errors.Is(err, repo.ErrRunnerContributionInvalid) || errors.Is(err, repo.ErrRunnerContributionConflict) || errors.Is(err, repo.ErrRunnerContributionTooLarge) {
 			writeContributionError(c, err)
 			return
 		}
-		if err == repo.ErrRunnerTaskLeaseLost {
-			c.JSON(http.StatusConflict, map[string]string{"error": "task lease lost"})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeRunnerTaskAuthorizationError(c, err)
 		return
 	}
 	h.engine.NotifyRunnerTaskChanged(c.Param("id"))
@@ -1199,13 +1192,13 @@ func (h *runnersHandlers) runnerTaskControl(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, map[string]string{"error": "positive attempt required"})
 		return
 	}
-	task, exists := h.repo.RunnerTaskControl(c.Param("id"))
-	if !exists {
+	if _, exists := h.repo.RunnerTaskControl(c.Param("id")); !exists {
 		c.Status(http.StatusNotFound)
 		return
 	}
-	if task.LeaseOwner != runner.ID || task.Attempt != attempt || (task.Status != domain.RunnerTaskLeased && task.Status != domain.RunnerTaskRunning) || task.LeaseUntil == nil || !task.LeaseUntil.After(time.Now().UTC()) || domain.ExecutionDeadlineExpired(task.ExecutionDeadline, time.Now().UTC()) {
-		c.JSON(http.StatusConflict, map[string]string{"error": "task lease lost"})
+	task, err := h.repo.RunnerTaskControlForSession(c.Param("id"), runner.ID, runner.SessionTokenHash, attempt, time.Now().UTC())
+	if err != nil {
+		writeRunnerTaskAuthorizationError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, map[string]any{
@@ -1322,4 +1315,23 @@ func (h *runnersHandlers) runnerPreviewComplete(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusGone, map[string]string{"error": "preview completion is committed by the fenced content upload"})
+}
+
+func writeRunnerTaskAuthorizationError(c *gin.Context, err error) {
+	status := http.StatusInternalServerError
+	message := err.Error()
+	switch {
+	case errors.Is(err, repo.ErrRunnerPlacementSessionInvalid):
+		status = http.StatusUnauthorized
+		c.Header("WWW-Authenticate", `Bearer realm="AgentFlow Runner"`)
+	case errors.Is(err, domain.ErrRunnerPlacementInvalid):
+		status = http.StatusBadRequest
+	case errors.Is(err, domain.ErrRunnerPlacementDenied):
+		status = http.StatusForbidden
+	case errors.Is(err, repo.ErrRunnerTaskLeaseLost):
+		status, message = http.StatusConflict, "task lease lost"
+	case errors.Is(err, domain.ErrRunnerPlacementChanged), errors.Is(err, domain.ErrRunnerPlacementUnavailable), errors.Is(err, repo.ErrRunnerTaskNotClaimable):
+		status = http.StatusConflict
+	}
+	c.JSON(status, map[string]string{"error": message})
 }

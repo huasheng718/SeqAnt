@@ -162,6 +162,48 @@ func TestContributionIntegrationControllerUsesAcceptedIndependentBundles(t *test
 	}
 }
 
+func TestAcceptedRunnerContributionHandoffValidatesAllowlistedBytesAndLineage(t *testing.T) {
+	f := newAcceptedContributionFixture(t)
+	task := f.accept(t, "handoff", "safe.py", "safe = True\n", nil)
+	sourceRun, _ := f.s.RunState(task.RunID)
+	sourceRun.Nodes[task.NodeID].Attempt = 1
+	if err := f.s.PutRun(sourceRun); err != nil {
+		t.Fatal(err)
+	}
+	handoff, err := f.e.acceptedRunnerContributionHandoff(f.controller, "repo", []string{task.ID})
+	if err != nil || len(handoff) != 1 {
+		t.Fatalf("handoff=%+v err=%v", handoff, err)
+	}
+	got := handoff[0]
+	if got.Input.RepositoryID != "repo" || got.Input.BaseSHA != f.base || got.Input.HeadSHA == "" || got.Input.BundleSHA256 == "" || got.Input.BundleSize != int64(len(got.Bytes)) || len(got.Input.Sources) != 1 || got.Source.ReceiptID == "" {
+		t.Fatalf("invalid frozen handoff: %+v", got)
+	}
+	if got.Input.Sources[0].TaskID != task.ID || got.Input.Sources[0].TaskAttempt != task.Attempt || got.Input.Sources[0].ResultSHA != got.Input.HeadSHA {
+		t.Fatalf("invalid source lineage: %+v", got.Input.Sources[0])
+	}
+	if strings.Contains(string(got.Bytes), "git-token") || strings.Contains(string(got.Bytes), "apiKey") {
+		t.Fatal("handoff bytes contained credential-like payload")
+	}
+	// Corruption is rejected before a consumer could receive bytes.
+	if err := f.s.DB.Model(&struct{}{}).Table("runner_contribution_blobs").Where("sha256 = ?", got.Input.BundleSHA256).Update("content", []byte("corrupt")).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.e.acceptedRunnerContributionHandoff(f.controller, "repo", []string{task.ID}); err == nil {
+		t.Fatal("corrupt accepted bundle was handed off")
+	}
+}
+
+func TestAcceptedRunnerContributionHandoffRejectsSupersededSource(t *testing.T) {
+	f := newAcceptedContributionFixture(t)
+	task := f.accept(t, "handoff-stale", "safe.py", "safe = True\n", nil)
+	if err := f.s.PutRunnerTask(domain.RunnerTask{ID: "handoff-newer", RunID: task.RunID, NodeID: task.NodeID, Provider: "terminal", CreatedAt: task.CreatedAt.Add(time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.e.acceptedRunnerContributionHandoff(f.controller, "repo", []string{task.ID}); err == nil {
+		t.Fatal("superseded source was handed off")
+	}
+}
+
 func TestContributionIntegrationRejectsMissingFrozenContext(t *testing.T) {
 	f := newAcceptedContributionFixture(t)
 	task := f.accept(t, "no-context", "safe.py", "safe = True\n", func(task *domain.RunnerTask, run *domain.Run) { task.Invocation.WorkspaceIsolation = nil })

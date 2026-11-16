@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -325,6 +326,7 @@ func (e *Engine) executeNode(ctx context.Context, runID string, wf domain.Workfl
 	executionAttempt := 0
 	var executionDeadline *time.Time
 	started := false
+	var placementErr error
 	e.updateRun(runID, func(r *domain.Run) {
 		nr := r.Nodes[node.ID]
 		if nr.Status != "pending" {
@@ -349,10 +351,20 @@ func (e *Engine) executeNode(ctx context.Context, runID string, wf domain.Workfl
 		}
 		executionAttempt = nr.Attempt
 		executionDeadline = nr.ExecutionDeadline
+		if len(r.ExecutionContext.NodePlacements) > 0 {
+			if err := e.freezeNodeExecutionPlacement(r, node, nr); err != nil {
+				placementErr = err
+				return
+			}
+		}
 		nr.GateResult = nil
 		e.event(r, node.ID, "node.started", node.Name+" 开始执行")
 	})
 	if !started {
+		return
+	}
+	if placementErr != nil {
+		e.nodeFailedAt(runID, node, executionAttempt, executionGeneration, placementErr, false)
 		return
 	}
 	ctx, cancelNode := context.WithCancel(ctx)
@@ -420,7 +432,12 @@ func (e *Engine) executeNode(ctx context.Context, runID string, wf domain.Workfl
 		return
 	}
 	current, _ := e.repo.RunState(runID)
-	current, err := e.bindPoolRunner(ctx, current, node.ID)
+	var err error
+	if len(current.ExecutionContext.NodePlacements) > 0 {
+		current, err = e.nodeExecutionRun(current, node.ID)
+	} else {
+		current, err = e.bindPoolRunner(ctx, current, node.ID)
+	}
 	if err != nil {
 		failNode(err, false)
 		return
@@ -487,6 +504,13 @@ func (e *Engine) executeNode(ctx context.Context, runID string, wf domain.Workfl
 		return sb.Exec(ctx, runtime.CommandSpec{Argv: []string{"sh", "-lc", bindExecutionTarget(command, target)}, Provider: "verification", CredentialBindings: []runtime.CredentialBinding{runtime.BindGit, runtime.BindMCP}}, gateSink)
 	}
 	current, _ = e.repo.RunState(runID)
+	if len(current.ExecutionContext.NodePlacements) > 0 {
+		current, err = e.nodeExecutionRun(current, node.ID)
+		if err != nil {
+			failNode(err, nodeRejects(node))
+			return
+		}
+	}
 	gitTok := sb.credentialSnapshot().GitToken
 	ctx = withGitToken(e.deliveryContext(ctx, current), gitTok)
 	ctx = withGitIdentity(ctx, sb.credentialSnapshot().GitUserName, sb.credentialSnapshot().GitUserEmail)
@@ -710,6 +734,12 @@ func (e *Engine) executeNode(ctx context.Context, runID string, wf domain.Workfl
 				reported.reset()
 			}
 			current, _ := e.repo.RunState(runID)
+			if len(current.ExecutionContext.NodePlacements) > 0 {
+				current, err = e.nodeExecutionRun(current, node.ID)
+				if err != nil {
+					return "", err
+				}
+			}
 			invocationSeq++
 			attempt := 1
 			resumeSessionID := ""
@@ -891,6 +921,12 @@ func (e *Engine) executeNode(ctx context.Context, runID string, wf domain.Workfl
 		}
 		if err == nil {
 			live, _ := e.repo.RunState(runID)
+			if len(live.ExecutionContext.NodePlacements) > 0 {
+				live, err = e.nodeExecutionRun(live, node.ID)
+				if err != nil {
+					break
+				}
+			}
 			var recovered []string
 			if reported != nil {
 				recovered = reported.takeRecovered()
@@ -1029,6 +1065,13 @@ func (e *Engine) executeNode(ctx context.Context, runID string, wf domain.Workfl
 		}
 	}
 	current, _ = e.repo.RunState(runID)
+	if len(current.ExecutionContext.NodePlacements) > 0 {
+		current, err = e.nodeExecutionRun(current, node.ID)
+		if err != nil {
+			failNode(err, nodeRejects(node))
+			return
+		}
+	}
 	artifacts, err := collectArtifactsMode(outputs, current, effectiveNode, output, false)
 	if err != nil {
 		failNode(fmt.Errorf("artifact contract: %w", err), nodeRejects(node))
@@ -1067,6 +1110,30 @@ func (e *Engine) executeNode(ctx context.Context, runID string, wf domain.Workfl
 	if domain.IsPreviewBuildNode(node.ID) {
 		e.archivePreviewAfterBuild(runID)
 	}
+}
+
+// freezeNodeExecutionPlacement resolves and persists one effective Node
+// attempt inside the guarded updateRun transaction. A second resolution may
+// only reproduce the exact snapshot; it can never rebind a sibling or the Run
+// default target.
+func (e *Engine) freezeNodeExecutionPlacement(run *domain.Run, node domain.WorkflowNode, nr *domain.NodeRun) error {
+	if run == nil || nr == nil || len(run.ExecutionContext.NodePlacements) == 0 {
+		return nil
+	}
+	provider, err := e.nodePlacementProvider(*run, node)
+	if err != nil {
+		return err
+	}
+	placement, err := e.resolveNodeExecutionPlacement(*run, node, nr.Attempt, provider)
+	if err != nil {
+		return err
+	}
+	if nr.ExecutionPlacement != nil && !reflect.DeepEqual(nr.ExecutionPlacement, &placement) {
+		return fmt.Errorf("%w: Node placement changed after attempt freeze", domain.ErrRunnerPlacementChanged)
+	}
+	copy := placement
+	nr.ExecutionPlacement = &copy
+	return nil
 }
 
 // archivePreviewAfterBuild publishes the static site as soon as the build

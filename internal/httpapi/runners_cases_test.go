@@ -163,6 +163,7 @@ func TestRunnerErrorAndRegistrationBranches(t *testing.T) {
 		{http.MethodPost, "/runners/tasks/claim", map[string]any{"availableRuntimes": []string{"none"}, "preflight": true, "noWait": true}, 204},
 		{http.MethodGet, "/api/runners/tasks/missing", nil, 404},
 		{http.MethodGet, "/api/runners/tasks/missing/events", nil, 404},
+		{http.MethodGet, "/api/runners/tasks/missing/contribution-inputs/repo?attempt=1", nil, 404},
 		{http.MethodPost, "/runners/tasks/missing/start", map[string]any{"attempt": 1}, 409},
 		{http.MethodPost, "/runners/tasks/missing/lease/renew", map[string]any{"attempt": 1}, 409},
 		{http.MethodPost, "/runners/tasks/missing/events", map[string]any{"attempt": 1, "events": []any{}}, 409},

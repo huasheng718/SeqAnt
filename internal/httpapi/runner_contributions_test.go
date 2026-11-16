@@ -227,4 +227,36 @@ func TestRunnerContributionHTTP(t *testing.T) {
 			}
 		})
 	}
+	for _, change := range []string{"rotate", "expire"} {
+		t.Run("session-"+change+"-during-body", func(t *testing.T) {
+			original, _ := s.Runner(runnerID)
+			defer func() {
+				if err := s.PutRunner(original); err != nil {
+					t.Error(err)
+				}
+			}()
+			task := claim("contribution-session-"+change, domain.RunnerContributionMaxBytes)
+			body := &contributionReadHook{Reader: bytes.NewReader(content), once: func() {
+				changed := original
+				if change == "rotate" {
+					changed.SessionTokenHash = strings.Repeat("c", 64)
+				} else {
+					expired := time.Now().UTC().Add(-time.Second)
+					changed.SessionExpiresAt = &expired
+				}
+				if err := s.PutRunner(changed); err != nil {
+					t.Fatal(err)
+				}
+			}}
+			rec := upload(task, session, body, nil)
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("session changed during upload: %d %s", rec.Code, rec.Body)
+			}
+			stored, _ := s.RunnerTask(task.ID)
+			if len(stored.PendingContributions) != 0 || len(stored.AcceptedContributions) != 0 || stored.Attempt != task.Attempt || stored.Status != domain.RunnerTaskLeased {
+				t.Fatal("old session staged a receipt or mutated task")
+			}
+		})
+	}
+
 }

@@ -105,28 +105,31 @@ func (r *Run) UnmarshalJSON(raw []byte) error {
 }
 
 type NodeRun struct {
-	ExecutionDeadline *time.Time  `json:"executionDeadline,omitempty"`
-	NodeID            string      `json:"nodeId"`
-	Status            string      `json:"status"`
-	Attempt           int         `json:"attempt"`
-	ReworkCount       int         `json:"reworkCount"`
-	SandboxID         string      `json:"sandboxId,omitempty"`
-	Output            string      `json:"output,omitempty"`
-	Error             string      `json:"error,omitempty"`
-	Provider          string      `json:"provider,omitempty"`
-	Model             string      `json:"model,omitempty"`
-	SessionID         string      `json:"sessionId,omitempty"`
-	ResumeSessionID   string      `json:"resumeSessionId,omitempty"`
-	Activity          string      `json:"activity,omitempty"`
-	Feedback          string      `json:"feedback,omitempty"`
-	Usage             TokenUsage  `json:"usage"`
-	UsageSessionID    string      `json:"usageSessionId,omitempty"`
-	UsageCursor       TokenUsage  `json:"usageCursor,omitempty"`
-	ToolCalls         int         `json:"toolCalls"`
-	GateResult        *GateResult `json:"gateResult,omitempty"`
-	ChildRunID        string      `json:"childRunId,omitempty"`
-	StartedAt         time.Time   `json:"startedAt,omitzero"`
-	FinishedAt        time.Time   `json:"finishedAt,omitzero"`
+	ExecutionPlacement *NodeExecutionPlacement `json:"executionPlacement,omitempty"`
+	ExecutionSequence  int                     `json:"executionSequence,omitempty"`
+	ExecutionTaskID    string                  `json:"executionTaskId,omitempty"`
+	ExecutionDeadline  *time.Time              `json:"executionDeadline,omitempty"`
+	NodeID             string                  `json:"nodeId"`
+	Status             string                  `json:"status"`
+	Attempt            int                     `json:"attempt"`
+	ReworkCount        int                     `json:"reworkCount"`
+	SandboxID          string                  `json:"sandboxId,omitempty"`
+	Output             string                  `json:"output,omitempty"`
+	Error              string                  `json:"error,omitempty"`
+	Provider           string                  `json:"provider,omitempty"`
+	Model              string                  `json:"model,omitempty"`
+	SessionID          string                  `json:"sessionId,omitempty"`
+	ResumeSessionID    string                  `json:"resumeSessionId,omitempty"`
+	Activity           string                  `json:"activity,omitempty"`
+	Feedback           string                  `json:"feedback,omitempty"`
+	Usage              TokenUsage              `json:"usage"`
+	UsageSessionID     string                  `json:"usageSessionId,omitempty"`
+	UsageCursor        TokenUsage              `json:"usageCursor,omitempty"`
+	ToolCalls          int                     `json:"toolCalls"`
+	GateResult         *GateResult             `json:"gateResult,omitempty"`
+	ChildRunID         string                  `json:"childRunId,omitempty"`
+	StartedAt          time.Time               `json:"startedAt,omitzero"`
+	FinishedAt         time.Time               `json:"finishedAt,omitzero"`
 }
 
 // GateResult is the structured terminal decision submitted by an Agent through
