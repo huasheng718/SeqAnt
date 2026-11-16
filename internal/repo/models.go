@@ -327,6 +327,26 @@ type runAdmissionMembershipRow struct {
 
 func (runAdmissionMembershipRow) TableName() string { return "run_admission_memberships" }
 
+// runWorkspaceCleanupParticipantRow keeps aggregate cleanup state after a Run
+// is deleted. Runner task history remains the source of participant identity;
+// this row records each registration's independent outcome.
+type runWorkspaceCleanupParticipantRow struct {
+	RunID              string     `gorm:"column:run_id;primaryKey;size:64;index:idx_cleanup_participants_status,priority:1"`
+	Action             string     `gorm:"column:action;primaryKey;size:64"`
+	RunnerID           string     `gorm:"column:runner_id;primaryKey;size:64"`
+	RegistrationSHA256 string     `gorm:"column:registration_sha256;primaryKey;size:64"`
+	Status             string     `gorm:"column:status;index:idx_cleanup_participants_status,priority:2;size:32"`
+	TaskID             string     `gorm:"column:task_id;size:64"`
+	Error              string     `gorm:"column:error;type:text"`
+	Created            *time.Time `gorm:"column:created_at"`
+	Updated            *time.Time `gorm:"column:updated_at"`
+	Completed          *time.Time `gorm:"column:completed_at"`
+}
+
+func (runWorkspaceCleanupParticipantRow) TableName() string {
+	return "run_workspace_cleanup_participants"
+}
+
 type runNodeRow struct {
 	RunID   string `gorm:"column:run_id;primaryKey;size:64"`
 	NodeID  string `gorm:"column:node_id;primaryKey;size:64"`
@@ -697,7 +717,7 @@ func allModels() []any {
 		dockerfileRow{}, environmentRow{}, sandboxRow{},
 		workflowRow{}, syncConfigRow{}, scheduleJobRow{}, sharedScheduleVersionRow{},
 		issueRow{}, issueCommentRow{}, taskRow{},
-		runAdmissionLockRow{}, runAdmissionMembershipRow{}, runRow{}, runNodeRow{}, runEventRow{}, runTelemetryRow{}, runLogRow{}, runArtifactRow{}, runEvalRow{},
+		runAdmissionLockRow{}, runAdmissionMembershipRow{}, runWorkspaceCleanupParticipantRow{}, runRow{}, runNodeRow{}, runEventRow{}, runTelemetryRow{}, runLogRow{}, runArtifactRow{}, runEvalRow{},
 		runPreviewRow{}, previewSessionRow{}, previewBlobRow{}, WorkspaceCheckpoint{}, workspaceCheckpointChunk{},
 		mrDeliveryStateRow{}, contributionIntegrationRow{}, contributionPublicationRow{}, definitionRevisionRow{},
 		runnerRow{}, runnerTaskRow{}, runnerTaskEventRow{}, runnerContributionBlobRow{}, userRunnerPrefRow{},

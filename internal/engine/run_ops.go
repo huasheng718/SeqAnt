@@ -488,6 +488,9 @@ func (e *Engine) retryContext(ctx context.Context, runID, nodeID, reason, humanC
 	if explicitNode && !replayUpstreamSucceeded(r, nodeID) {
 		return fmt.Errorf("cannot replay node %s: an upstream node has not succeeded", nodeID)
 	}
+	if err := e.drainPlacedCleanup(runID); err != nil {
+		return err
+	}
 	cleaned := !r.WorkspaceCleanedAt.IsZero()
 	if (r.Status == "cancelled" || cleaned) && !explicitNode && !replaySucceeded {
 		return fmt.Errorf("run workspace has been cleaned or scheduled for cleanup; this run can no longer be retried")

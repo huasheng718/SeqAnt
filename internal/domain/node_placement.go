@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 )
@@ -102,6 +103,28 @@ type RunnerWorkspaceParticipant struct {
 	RunnerID           string                 `json:"runnerId"`
 	RegistrationSHA256 string                 `json:"registrationSHA256"`
 	Placement          NodeExecutionPlacement `json:"placement"`
+}
+
+const (
+	RunnerWorkspaceCleanupPending = "pending"
+	RunnerWorkspaceCleanupSuccess = "success"
+	RunnerWorkspaceCleanupFailure = "failure"
+)
+
+// RunnerWorkspaceCleanupParticipant is the durable aggregate state for one
+// frozen Runner registration that contributed work to a placed Run. The
+// registration is part of the identity: a later daemon registration must not
+// claim cleanup queued for the previous one.
+type RunnerWorkspaceCleanupParticipant struct {
+	RunID              string    `json:"runId"`
+	Action             string    `json:"action"`
+	RunnerID           string    `json:"runnerId"`
+	RegistrationSHA256 string    `json:"registrationSHA256"`
+	Status             string    `json:"status"`
+	TaskID             string    `json:"taskId,omitempty"`
+	Error              string    `json:"error,omitempty"`
+	UpdatedAt          time.Time `json:"updatedAt"`
+	CompletedAt        time.Time `json:"completedAt,omitempty"`
 }
 
 // RunnerRegistrationSHA256 purpose-separates the durable registry identity

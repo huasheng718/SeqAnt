@@ -629,12 +629,17 @@ func (r *RunnersRepo) QueueRunnerMaintenanceTask(v domain.RunnerTask) (domain.Ru
 		var active []runnerTaskRow
 		// Re-read current tasks after waiting for the Run lock, and keep any
 		// reused active task stable until this transaction finishes.
-		if err := r.locking(r.runnerTasksForRunAction(tx, v.RunID, v.Action)).Where("status IN ?", []string{domain.RunnerTaskQueued, domain.RunnerTaskLeased, domain.RunnerTaskRunning}).Order("created_at DESC").Limit(1).Find(&active).Error; err != nil {
+		if err := r.locking(r.runnerTasksForRunAction(tx, v.RunID, v.Action)).Where("status IN ?", []string{domain.RunnerTaskQueued, domain.RunnerTaskLeased, domain.RunnerTaskRunning}).Order("created_at DESC").Find(&active).Error; err != nil {
 			return err
 		}
-		if len(active) > 0 {
-			task = runnerTaskFromRow(active[0])
-			return nil
+		for _, row := range active {
+			candidate := runnerTaskFromRow(row)
+			// Legacy maintenance remains one active task per Run/action. Placed
+			// maintenance is one active task per frozen registration identity.
+			if v.MaintenanceKey == nil || sameRunnerMaintenanceKey(candidate.MaintenanceKey, v.MaintenanceKey) {
+				task = candidate
+				return nil
+			}
 		}
 		// Unlike PutRunnerTask this path must never update a reused identity.
 		inserted, err := insertIgnore(tx, "runner_tasks", runnerTaskRowValues(v))
@@ -653,8 +658,33 @@ func (r *RunnersRepo) QueueRunnerMaintenanceTask(v domain.RunnerTask) (domain.Ru
 	return task, created, nil
 }
 
+func sameRunnerMaintenanceKey(a, b *domain.RunnerMaintenanceKey) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.RunID == b.RunID && a.Action == b.Action && a.RunnerID == b.RunnerID && a.RegistrationSHA256 == b.RegistrationSHA256
+}
+
 func (r *RunnersRepo) runnerTasksForRunAction(tx *gorm.DB, runID, action string) *gorm.DB {
 	return tx.Model(&runnerTaskRow{}).Where(r.sqlJSONText("$.runId")+" = ? AND "+r.sqlJSONText("$.action")+" = ?", "$.runId", runID, "$.action", action)
+}
+
+// RunnerTasksForRun returns the complete durable task history for a Run. It
+// intentionally has no list limit: placed cleanup must account for failed,
+// cancelled and older attempt tasks even after the Run row is deleted.
+func (r *RunnersRepo) RunnerTasksForRun(runID string) []domain.RunnerTask {
+	if strings.TrimSpace(runID) == "" {
+		return nil
+	}
+	var rows []runnerTaskRow
+	if err := r.DB.Model(&runnerTaskRow{}).Where(r.sqlJSONText("$.runId")+" = ?", "$.runId", runID).Order("created_at, id").Find(&rows).Error; err != nil {
+		return nil
+	}
+	out := make([]domain.RunnerTask, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, runnerTaskFromRow(row))
+	}
+	return out
 }
 
 // LatestRunnerTaskForRunAction includes terminal history and legacy task IDs.
@@ -825,8 +855,8 @@ func (r *RunnersRepo) claimRunnerTaskOnce(runnerID, sessionHash string, provider
 			query = query.Where(r.sqlJSONText(path)+" IS NULL", path)
 		}
 	} else {
-		// Placed maintenance has a separate terminal-compatible authorization
-		// contract and is intentionally unavailable until that path is wired.
+		// Node execution and cleanup maintenance are both authenticated, but
+		// maintenance is authorized by its frozen registration key below.
 		query = query.Where("("+r.sqlJSONText("$.executionPlacement")+" IS NULL OR "+r.sqlJSONText("$.action")+" IS NULL OR "+r.sqlJSONText("$.action")+" = '')", "$.executionPlacement", "$.action", "$.action")
 	}
 	var candidates []runnerTaskRow
@@ -896,7 +926,21 @@ func (r *RunnersRepo) claimRunnerTaskOnce(runnerID, sessionHash string, provider
 			if err := r.validateRunnerPlacementTx(tx, *queued.ExecutionPlacement, sessionHash, now); err != nil {
 				return err
 			}
-		} else if queued.Execution != nil || queued.MaintenanceKey != nil || (queued.Invocation != nil && len(queued.Invocation.ContributionInputs) > 0) {
+		} else if queued.MaintenanceKey != nil {
+			if !authenticated || queued.Action == "" || queued.MaintenanceKey.RunID != queued.RunID || queued.MaintenanceKey.Action != queued.Action || queued.MaintenanceKey.RunnerID != runnerID || queued.MaintenanceKey.RegistrationSHA256 == "" {
+				return ErrRunnerTaskNotClaimable
+			}
+			if err := r.validateRunnerClaimSessionTx(tx, runnerID, sessionHash, now); err != nil {
+				return err
+			}
+			registration, regErr := domain.RunnerRegistrationSHA256(sessionHash)
+			if regErr != nil || queued.MaintenanceKey.RegistrationSHA256 != registration {
+				return ErrRunnerTaskNotClaimable
+			}
+			if queued.Action != domain.RunnerTaskActionCleanupRun {
+				return ErrRunnerTaskNotClaimable
+			}
+		} else if queued.Execution != nil || (queued.Invocation != nil && len(queued.Invocation.ContributionInputs) > 0) {
 			return fmt.Errorf("%w: task is missing its execution placement", domain.ErrRunnerPlacementInvalid)
 		} else if authenticated {
 			if err := r.validateRunnerClaimSessionTx(tx, runnerID, sessionHash, now); err != nil {

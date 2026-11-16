@@ -22,6 +22,46 @@ func claimFencingTask(t *testing.T, s *Store, id, runner string, now time.Time) 
 	return task
 }
 
+func TestPlacedCleanupMaintenanceIsPerRegistrationAndFenced(t *testing.T) {
+	s := cvEStore(t)
+	now := time.Now().UTC()
+	expires := now.Add(time.Hour)
+	oldSession := fmt.Sprintf("%064d", 1)
+	newSession := fmt.Sprintf("%064d", 2)
+	runner := domain.Runner{ID: "cleanup-registration", Status: domain.RunnerStatusOnline, SessionTokenHash: oldSession, SessionExpiresAt: &expires, Runtimes: []domain.RunnerRuntime{{Provider: "terminal", Status: domain.RuntimeStatusOnline}}}
+	if err := s.PutRunner(runner); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutRun(domain.Run{ID: "cleanup-registration-run", Status: "succeeded"}); err != nil {
+		t.Fatal(err)
+	}
+	oldRegistration, _ := domain.RunnerRegistrationSHA256(oldSession)
+	newRegistration, _ := domain.RunnerRegistrationSHA256(newSession)
+	for i, registration := range []string{oldRegistration, newRegistration} {
+		task := domain.RunnerTask{ID: fmt.Sprintf("cleanup-registration-task-%d", i), RunID: "cleanup-registration-run", RunnerID: runner.ID, Provider: "terminal", Action: domain.RunnerTaskActionCleanupRun, Status: domain.RunnerTaskQueued, CreatedAt: now.Add(time.Duration(i) * time.Second), MaintenanceKey: &domain.RunnerMaintenanceKey{RunID: "cleanup-registration-run", Action: domain.RunnerTaskActionCleanupRun, RunnerID: runner.ID, RegistrationSHA256: registration}}
+		if _, created, err := s.QueueRunnerMaintenanceTask(task); err != nil || !created {
+			t.Fatalf("queue registration %d created=%v err=%v", i, created, err)
+		}
+	}
+	if got := len(s.RunnerTasksForRun("cleanup-registration-run")); got != 2 {
+		t.Fatalf("cleanup task history = %d, want two registration identities", got)
+	}
+	runner.SessionTokenHash = newSession
+	if err := s.PutRunner(runner); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := s.ClaimRunnerTaskForSession(runner.ID, newSession, []string{"terminal"}, now.Add(2*time.Second), time.Minute); err == nil || ok {
+		t.Fatalf("new registration took over old cleanup: ok=%v err=%v", ok, err)
+	}
+	if err := s.CancelRunnerTask("cleanup-registration-task-0", now.Add(3*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	claimed, ok, err := s.ClaimRunnerTaskForSession(runner.ID, newSession, []string{"terminal"}, now.Add(4*time.Second), time.Minute)
+	if err != nil || !ok || claimed.ID != "cleanup-registration-task-1" {
+		t.Fatalf("current registration claim = %+v ok=%v err=%v", claimed, ok, err)
+	}
+}
+
 func assertLeaseMutationsRejected(t *testing.T, s *Store, id, runner string, attempt int, now time.Time) {
 	t.Helper()
 	checks := []struct {

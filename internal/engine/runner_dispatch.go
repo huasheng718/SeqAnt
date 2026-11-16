@@ -531,6 +531,9 @@ func (e *Engine) validateExecutionReconnect(run domain.Run, nodeID string) error
 // explicit deletion also calls it for failed/cancelled runs. Active work is
 // reused, but each new cleanup receives a fresh task identity and retry budget.
 func (e *Engine) queueRunnerRunCleanup(run domain.Run) error {
+	if participants := e.placedWorkspaceParticipants(run.ID); len(participants) > 0 {
+		return e.queuePlacedWorkspaceCleanup(run, time.Now().UTC(), participants)
+	}
 	runnerID := e.defaultExecutionRunner(run)
 	if runnerID == "" {
 		return nil

@@ -162,6 +162,12 @@ func (e *Engine) cleanupRunWorkspace(runID string) {
 }
 
 func (e *Engine) cleanupWorkspace(run domain.Run, now time.Time) {
+	if run.WorkspaceCleanedAt.IsZero() {
+		if participants := e.placedWorkspaceParticipants(run.ID); len(participants) > 0 {
+			e.cleanupPlacedWorkspace(run, now, participants)
+			return
+		}
+	}
 	managed, checkpointClaimed, releaseCheckpoint, checkpointErr := e.claimIdleConversationWorkspace(run, now)
 	if releaseCheckpoint != nil {
 		defer releaseCheckpoint()
