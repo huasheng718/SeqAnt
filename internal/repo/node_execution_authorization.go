@@ -14,6 +14,14 @@ import (
 // after Run, sorted source/current tasks and registry locks before any effect.
 // The caller must retain this transaction through its mutation or byte read.
 func (r *RunnersRepo) takeRunnerTaskForSession(tx *gorm.DB, id, runnerID, sessionHash string, attempt int, now time.Time) (runnerTaskRow, error) {
+	return r.takeRunnerTaskForSessionMode(tx, id, runnerID, sessionHash, attempt, now, false)
+}
+
+// takeRunnerTaskForSessionMode is identical to the normal callback fence,
+// except that canceled terminal callbacks may observe the owning Run's
+// durable cancel transition. No lease, session, placement or lineage check is
+// relaxed by this mode.
+func (r *RunnersRepo) takeRunnerTaskForSessionMode(tx *gorm.DB, id, runnerID, sessionHash string, attempt int, now time.Time, allowCanceled bool) (runnerTaskRow, error) {
 	if !domain.ValidWorkspaceContextSHA256(sessionHash) {
 		return runnerTaskRow{}, ErrRunnerPlacementSessionInvalid
 	}
@@ -39,7 +47,7 @@ func (r *RunnersRepo) takeRunnerTaskForSession(tx *gorm.DB, id, runnerID, sessio
 			return runnerTaskRow{}, ErrRunnerTaskLeaseLost
 		}
 		var err error
-		run, err = r.runs.lockRunnerExecutionRunTx(tx, task.RunID, now)
+		run, err = r.runs.lockRunnerExecutionRunTxMode(tx, task.RunID, now, allowCanceled)
 		if err != nil {
 			return runnerTaskRow{}, err
 		}
@@ -73,7 +81,7 @@ func (r *RunnersRepo) takeRunnerTaskForSession(tx *gorm.DB, id, runnerID, sessio
 		return runnerTaskRow{}, ErrRunnerTaskLeaseLost
 	}
 	if current.ExecutionPlacement != nil {
-		if err := r.runs.validateRunnerExecutionState(run, current); err != nil {
+		if err := r.runs.validateRunnerExecutionStateMode(run, current, allowCanceled && current.DesiredState == domain.RunnerTaskDesiredCancel); err != nil {
 			return runnerTaskRow{}, err
 		}
 		if err := r.validateNodeContributionInputsTx(tx, run, current, locked); err != nil {
@@ -93,8 +101,10 @@ func (r *RunnersRepo) takeRunnerTaskForSession(tx *gorm.DB, id, runnerID, sessio
 	}
 	checkedAt := leaseCheckTime(tx, now)
 	if current.ExecutionPlacement != nil {
-		if err := r.runs.validateRunnerExecutionRunAt(run, checkedAt); err != nil {
-			return runnerTaskRow{}, err
+		if !allowCanceled || current.DesiredState != domain.RunnerTaskDesiredCancel {
+			if err := r.runs.validateRunnerExecutionRunAt(run, checkedAt); err != nil {
+				return runnerTaskRow{}, err
+			}
 		}
 	}
 	if row.LeaseOwner != runnerID || row.Attempt != attempt || (row.Status != domain.RunnerTaskLeased && row.Status != domain.RunnerTaskRunning) || row.LeaseUntil == nil || !row.LeaseUntil.After(checkedAt) || domain.ExecutionDeadlineExpired(current.ExecutionDeadline, checkedAt) {

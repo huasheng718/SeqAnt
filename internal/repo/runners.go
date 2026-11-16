@@ -1095,8 +1095,12 @@ func (r *RunnersRepo) takeRunnerTaskForLease(tx *gorm.DB, id, runnerID string, a
 // Session mutation callers use the ordered Run/task/registry authorization
 // path. Legacy entry points may mutate only tasks without placed authority.
 func (r *RunnersRepo) takeRunnerTaskForMutation(tx *gorm.DB, id, runnerID, sessionHash string, attempt int, now time.Time) (runnerTaskRow, error) {
+	return r.takeRunnerTaskForMutationMode(tx, id, runnerID, sessionHash, attempt, now, false)
+}
+
+func (r *RunnersRepo) takeRunnerTaskForMutationMode(tx *gorm.DB, id, runnerID, sessionHash string, attempt int, now time.Time, allowCanceled bool) (runnerTaskRow, error) {
 	if sessionHash != "" {
-		return r.takeRunnerTaskForSession(tx, id, runnerID, sessionHash, attempt, now)
+		return r.takeRunnerTaskForSessionMode(tx, id, runnerID, sessionHash, attempt, now, allowCanceled)
 	}
 	row, ok := r.takeRunnerTaskForLease(tx, id, runnerID, attempt, now)
 	if !ok {
@@ -1165,7 +1169,7 @@ func (r *RunnersRepo) completeRunnerTask(id, runnerID, sessionHash string, attem
 		return fmt.Errorf("invalid final task status %q", status)
 	}
 	return r.DB.Transaction(func(tx *gorm.DB) error {
-		row, err := r.takeRunnerTaskForMutation(tx, id, runnerID, sessionHash, attempt, now)
+		row, err := r.takeRunnerTaskForMutationMode(tx, id, runnerID, sessionHash, attempt, now, status == domain.RunnerTaskCanceled)
 		if err != nil {
 			return err
 		}

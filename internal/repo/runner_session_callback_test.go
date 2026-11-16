@@ -121,6 +121,27 @@ func TestRunnerSessionCallbacksFenceCurrentAuthority(t *testing.T) {
 	}
 }
 
+func TestRunnerSessionCanceledCallbackConvergesAfterRunCancel(t *testing.T) {
+	s, runner, run, task, now := newSessionPlacedClaimFixture(t)
+	claimed, found, err := s.ClaimRunnerTaskForSession(runner.ID, runner.SessionTokenHash, []string{"codex"}, now, time.Minute)
+	if err != nil || !found {
+		t.Fatalf("claim found=%v err=%v", found, err)
+	}
+	if _, err := s.RequestRunCancel(run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CancelRunnerTask(task.ID, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CompleteRunnerTaskForSession(claimed.ID, runner.ID, runner.SessionTokenHash, claimed.Attempt, domain.RunnerTaskCanceled, nil, "runner stopped", "", nil, nil, now); err != nil {
+		t.Fatalf("canceled callback should converge before lease expiry: %v", err)
+	}
+	stored, ok := s.RunnerTask(task.ID)
+	if !ok || stored.Status != domain.RunnerTaskCanceled || stored.LeaseOwner != "" || stored.LeaseUntil != nil || stored.CompletedAt == nil {
+		t.Fatalf("canceled callback did not settle task: %+v", stored)
+	}
+}
+
 func TestRunnerLegacyCallbacksCannotBypassPlacedAuthority(t *testing.T) {
 	s, runner, _, _, now := newSessionPlacedClaimFixture(t)
 	task, found, err := s.ClaimRunnerTaskForSession(runner.ID, runner.SessionTokenHash, []string{"codex"}, now, time.Minute)

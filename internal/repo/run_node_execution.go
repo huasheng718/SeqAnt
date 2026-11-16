@@ -17,6 +17,15 @@ import (
 // lease generation, is the durable Runner authority: an Engine takeover can
 // retain an already executing Node attempt.
 func (r *RunsRepo) lockRunnerExecutionRunTx(tx *gorm.DB, runID string, now time.Time) (domain.Run, error) {
+	return r.lockRunnerExecutionRunTxMode(tx, runID, now, false)
+}
+
+// lockRunnerExecutionRunTxMode keeps the normal execution fence strict while
+// allowing the already-authorized runner to report a durable cancellation
+// after the owning Run has transitioned out of running. The relaxed mode is
+// only used by the canceled terminal callback; task/session/lease checks stay
+// in RunnersRepo.
+func (r *RunsRepo) lockRunnerExecutionRunTxMode(tx *gorm.DB, runID string, now time.Time, allowCanceled bool) (domain.Run, error) {
 	row, err := r.takeRunForUpdate(tx, runID)
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
@@ -41,8 +50,10 @@ func (r *RunsRepo) lockRunnerExecutionRunTx(tx *gorm.DB, runID string, now time.
 	if len(row.Repositories) > 0 && json.Unmarshal(row.Repositories, &run.Repositories) != nil {
 		return domain.Run{}, runnerExecutionConflict("invalid owning repositories")
 	}
-	if err := r.validateRunnerExecutionRunAt(run, leaseCheckTime(tx, now)); err != nil {
-		return domain.Run{}, err
+	if !allowCanceled || !run.CancelRequested {
+		if err := r.validateRunnerExecutionRunAt(run, leaseCheckTime(tx, now)); err != nil {
+			return domain.Run{}, err
+		}
 	}
 	var rows []runNodeRow
 	if err := r.locking(tx).Where("run_id = ?", runID).Order("node_id ASC").Find(&rows).Error; err != nil {
@@ -78,7 +89,11 @@ func (r *RunsRepo) validateRunnerExecutionRunAt(run domain.Run, now time.Time) e
 // validateRunnerExecutionState validates an existing task. Receipt lineage,
 // registration/session and task lease checks remain RunnersRepo's authority.
 func (r *RunsRepo) validateRunnerExecutionState(run domain.Run, task domain.RunnerTask) error {
-	node, err := r.validateRunnerExecutionTaskShape(run, task)
+	return r.validateRunnerExecutionStateMode(run, task, false)
+}
+
+func (r *RunsRepo) validateRunnerExecutionStateMode(run domain.Run, task domain.RunnerTask, allowCanceled bool) error {
+	node, err := r.validateRunnerExecutionTaskShapeMode(run, task, allowCanceled)
 	if err != nil {
 		return err
 	}
@@ -161,8 +176,14 @@ func (r *RunsRepo) advanceRunnerExecutionStateTx(tx *gorm.DB, run domain.Run, ta
 }
 
 func (r *RunsRepo) validateRunnerExecutionTaskShape(run domain.Run, task domain.RunnerTask) (*domain.NodeRun, error) {
-	if err := r.validateRunnerExecutionRunAt(run, time.Now().UTC()); err != nil {
-		return nil, err
+	return r.validateRunnerExecutionTaskShapeMode(run, task, false)
+}
+
+func (r *RunsRepo) validateRunnerExecutionTaskShapeMode(run domain.Run, task domain.RunnerTask, allowCanceled bool) (*domain.NodeRun, error) {
+	if !allowCanceled || !run.CancelRequested {
+		if err := r.validateRunnerExecutionRunAt(run, time.Now().UTC()); err != nil {
+			return nil, err
+		}
 	}
 	context := run.ExecutionContext
 	if !domain.ControlledDelivery(context.DeliveryPolicy) || task.DeliveryPolicy != context.DeliveryPolicy || run.IsWorkspace() || context.ParentRunID != "" || context.RunnerWorkspaceLayout != domain.RunnerWorkspaceLayoutAttempt || len(context.NodePlacements) == 0 {
