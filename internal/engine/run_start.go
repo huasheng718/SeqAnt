@@ -167,6 +167,11 @@ func (e *Engine) startWorkflowDefinition(wf domain.WorkflowDefinition, input str
 	for _, n := range wf.Nodes {
 		r.Nodes[n.ID] = &domain.NodeRun{NodeID: n.ID, Status: "pending"}
 	}
+	if len(r.ExecutionContext.NodePlacements) > 0 {
+		if err := e.freezeNodePlacementRequests(&r); err != nil {
+			return domain.Run{}, err
+		}
+	}
 	if executionContext.ParentRunID != "" {
 		parent, exists := e.repo.RunState(executionContext.ParentRunID)
 		if !exists {

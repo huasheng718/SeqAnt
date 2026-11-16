@@ -303,10 +303,11 @@ func (h issuesHandlers) issueSOPs(c *gin.Context, issue domain.Issue) {
 
 func (h issuesHandlers) dispatchIssueRoute(c *gin.Context, issue domain.Issue) {
 	var request struct {
-		RunnerWorkspaceLayout string            `json:"runnerWorkspaceLayout,omitempty"`
-		WorkspaceBaseSHAs     map[string]string `json:"workspaceBaseSHAs,omitempty"`
-		Rerun                 bool              `json:"rerun"`
-		WorkflowID            string            `json:"workflowId"`
+		RunnerWorkspaceLayout string                                 `json:"runnerWorkspaceLayout,omitempty"`
+		WorkspaceBaseSHAs     map[string]string                      `json:"workspaceBaseSHAs,omitempty"`
+		NodePlacements        map[string]domain.NodePlacementRequest `json:"nodePlacements,omitempty"`
+		Rerun                 bool                                   `json:"rerun"`
+		WorkflowID            string                                 `json:"workflowId"`
 	}
 	if !decodeOptional(c, &request) {
 		return
@@ -315,7 +316,7 @@ func (h issuesHandlers) dispatchIssueRoute(c *gin.Context, issue domain.Issue) {
 	if current, ok := h.requestUser(c.Request, true); ok && current != nil && current.ID > 0 {
 		triggerUserID = current.ID
 	}
-	task, err := dispatchIssue(h.deps, dispatchRequest{IssueID: issue.ID, WorkflowID: request.WorkflowID, Rerun: request.Rerun, TriggerUserID: triggerUserID, RunnerWorkspaceLayout: request.RunnerWorkspaceLayout, WorkspaceBaseSHAs: request.WorkspaceBaseSHAs})
+	task, err := dispatchIssue(h.deps, dispatchRequest{IssueID: issue.ID, WorkflowID: request.WorkflowID, Rerun: request.Rerun, TriggerUserID: triggerUserID, RunnerWorkspaceLayout: request.RunnerWorkspaceLayout, WorkspaceBaseSHAs: request.WorkspaceBaseSHAs, NodePlacements: request.NodePlacements})
 	if err != nil {
 		respond(c, err)
 		return
