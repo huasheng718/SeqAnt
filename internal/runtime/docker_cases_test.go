@@ -166,6 +166,14 @@ func TestHardenedDockerResourceLimitsAreExplicitAndFailClosed(t *testing.T) {
 	}
 }
 
+func TestHardenedSandboxRejectsNativeFallback(t *testing.T) {
+	t.Setenv(dockerHardenedEnv, "1")
+	m := NewManager(t.TempDir())
+	if _, err := m.AcquireRun(context.Background(), "hardened-native", domain.SandboxProfile{Driver: "local"}, SandboxRequirements{}, RunCredentials{}, SandboxResources{}); err == nil || !strings.Contains(err.Error(), "requires the docker driver") {
+		t.Fatalf("hardened native fallback accepted: %v", err)
+	}
+}
+
 func TestDockerMasksAndManagerPaths(t *testing.T) {
 	workspace := t.TempDir()
 	cvRInstallFakeDocker(t, workspace)

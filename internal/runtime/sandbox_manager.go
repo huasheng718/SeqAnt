@@ -82,6 +82,9 @@ func (m *Manager) open(ctx context.Context, id, dir string, profile domain.Sandb
 	if profile.Driver, err = domain.ResolveSandboxDriver(profile.Driver, goruntime.GOOS); err != nil {
 		return fail(err)
 	}
+	if strings.TrimSpace(os.Getenv(dockerHardenedEnv)) == "1" && profile.Driver != "docker" {
+		return fail(fmt.Errorf("hardened sandbox requires the docker driver; refusing native fallback %q", profile.Driver))
+	}
 	workspace := filepath.Join(m.root, dir)
 	if wipe {
 		if err := os.RemoveAll(workspace); err != nil {
