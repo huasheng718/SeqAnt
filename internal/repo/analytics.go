@@ -782,6 +782,20 @@ func queryAnalyticsCoverage(db *gorm.DB, runIDs []string) (map[string]int, map[s
 		UNION ALL
 		SELECT 'level' AS kind, level AS value, COUNT(*) AS count
 		FROM run_logs WHERE run_id IN (`+placeholders+`) GROUP BY value`, coverageArgs...).Scan(&rows).Error
+	// The generated columns are installed by the manual baseline migration,
+	// while freshly created test databases only have the JSON payload columns.
+	// Keep the indexed path when present, but make a MySQL read correct during
+	// migration rollout and in clean integration fixtures by deriving the same
+	// values from JSON when those columns are absent.
+	if err != nil {
+		rows = nil
+		err = db.Raw(`
+			SELECT 'adapter' AS kind, COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.source.adapter')), ''), 'unknown') AS value, COUNT(*) AS count
+			FROM run_telemetry WHERE run_id IN (`+placeholders+`) GROUP BY value
+			UNION ALL
+			SELECT 'level' AS kind, COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.level')), ''), 'info') AS value, COUNT(*) AS count
+			FROM run_logs WHERE run_id IN (`+placeholders+`) GROUP BY value`, coverageArgs...).Scan(&rows).Error
+	}
 	if err != nil {
 		return nil, nil, err
 	}
