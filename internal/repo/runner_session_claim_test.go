@@ -95,6 +95,35 @@ func TestRunnerSessionClaimPreflightIsAuthenticatedSignalOnly(t *testing.T) {
 	}
 }
 
+func TestRunnerSessionCallbacksAuthorizePlacedCleanupMaintenance(t *testing.T) {
+	s, runner, placement, now := newRegistryPlacementFixture(t, false)
+	if err := s.PutRun(domain.Run{ID: "cleanup-run", Status: "succeeded"}); err != nil {
+		t.Fatal(err)
+	}
+	task, created, err := s.QueueRunnerMaintenanceTask(domain.RunnerTask{
+		ID: "cleanup-callbacks", RunID: "cleanup-run", RunnerID: runner.ID,
+		Provider: "terminal", Action: domain.RunnerTaskActionCleanupRun,
+		Status: domain.RunnerTaskQueued, MaxAttempts: 1,
+		MaintenanceKey: &domain.RunnerMaintenanceKey{RunID: "cleanup-run", Action: domain.RunnerTaskActionCleanupRun, RunnerID: runner.ID, RegistrationSHA256: placement.RegistrationSHA256},
+	})
+	if err != nil || !created {
+		t.Fatalf("queue maintenance: task=%+v created=%v err=%v", task, created, err)
+	}
+	claimed, found, err := s.ClaimRunnerTaskForSession(runner.ID, runner.SessionTokenHash, []string{"terminal"}, now, time.Minute)
+	if err != nil || !found || claimed.ID != task.ID {
+		t.Fatalf("claim maintenance: task=%+v found=%v err=%v", claimed, found, err)
+	}
+	if err := s.StartRunnerTaskForSession(task.ID, runner.ID, runner.SessionTokenHash, claimed.Attempt, now); err != nil {
+		t.Fatalf("start maintenance: %v", err)
+	}
+	if _, err := s.RenewRunnerTaskLeaseForSession(task.ID, runner.ID, runner.SessionTokenHash, claimed.Attempt, time.Minute, now); err != nil {
+		t.Fatalf("renew maintenance: %v", err)
+	}
+	if err := s.CompleteRunnerTaskForSession(task.ID, runner.ID, runner.SessionTokenHash, claimed.Attempt, domain.RunnerTaskSuccess, nil, "cleaned", "", nil, nil, now); err != nil {
+		t.Fatalf("complete maintenance: %v", err)
+	}
+}
+
 func TestRunnerLegacyClaimCannotDowngradePlacedAuthority(t *testing.T) {
 	s, runner, placement, now := newRegistryPlacementFixture(t, false)
 	placed := domain.RunnerTask{

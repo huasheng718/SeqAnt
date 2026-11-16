@@ -47,6 +47,10 @@ func (r *RunnersRepo) takeRunnerTaskForSession(tx *gorm.DB, id, runnerID, sessio
 		if err != nil {
 			return runnerTaskRow{}, err
 		}
+	} else if task.MaintenanceKey != nil {
+		if err := r.validateRunnerMaintenanceTaskTx(tx, task, runnerID, sessionHash, now); err != nil {
+			return runnerTaskRow{}, err
+		}
 	} else if runnerTaskHasNodeAuthority(task) {
 		return runnerTaskRow{}, ErrRunnerTaskLeaseLost
 	}
@@ -78,6 +82,10 @@ func (r *RunnersRepo) takeRunnerTaskForSession(tx *gorm.DB, id, runnerID, sessio
 		if err := r.validateRunnerPlacementTx(tx, *current.ExecutionPlacement, sessionHash, now); err != nil {
 			return runnerTaskRow{}, err
 		}
+	} else if current.MaintenanceKey != nil {
+		if err := r.validateRunnerMaintenanceTaskTx(tx, current, runnerID, sessionHash, now); err != nil {
+			return runnerTaskRow{}, err
+		}
 	} else {
 		if err := r.validateRunnerClaimSessionTx(tx, runnerID, sessionHash, now); err != nil {
 			return runnerTaskRow{}, err
@@ -93,6 +101,25 @@ func (r *RunnersRepo) takeRunnerTaskForSession(tx *gorm.DB, id, runnerID, sessio
 		return runnerTaskRow{}, ErrRunnerTaskLeaseLost
 	}
 	return row, nil
+}
+
+// validateRunnerMaintenanceTaskTx authorizes durable placed cleanup callbacks
+// against the frozen runner registration. Maintenance tasks carry no node
+// execution authority, but their registration key must remain immutable across
+// Start/Renew/Event/Complete just like a placed task's execution placement.
+func (r *RunnersRepo) validateRunnerMaintenanceTaskTx(tx *gorm.DB, task domain.RunnerTask, runnerID, sessionHash string, now time.Time) error {
+	key := task.MaintenanceKey
+	if key == nil || task.Action != domain.RunnerTaskActionCleanupRun || task.RunID == "" || key.RunID != task.RunID || key.Action != task.Action || key.RunnerID != runnerID || key.RegistrationSHA256 == "" {
+		return ErrRunnerTaskLeaseLost
+	}
+	if err := r.validateRunnerClaimSessionTx(tx, runnerID, sessionHash, now); err != nil {
+		return err
+	}
+	registration, err := domain.RunnerRegistrationSHA256(sessionHash)
+	if err != nil || key.RegistrationSHA256 != registration {
+		return ErrRunnerTaskLeaseLost
+	}
+	return nil
 }
 
 // RunnerTaskControlForSession returns the small control projection under the
