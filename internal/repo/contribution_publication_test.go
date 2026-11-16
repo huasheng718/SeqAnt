@@ -1,6 +1,8 @@
 package repo
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"strings"
 	"testing"
@@ -11,7 +13,13 @@ import (
 
 func publicationFixture(t *testing.T, s *Store, id string) domain.ContributionPublication {
 	t.Helper()
-	integration := domain.ContributionIntegration{ID: id, ManifestSHA256: id, RunID: "publication-run", RepositoryID: "publication-repo", BaseSHA: strings.Repeat("1", 40), ResultSHA: strings.Repeat("2", 40), ContextSHA256: strings.Repeat("c", 64), BundleSHA256: strings.Repeat("b", 64), BundleSize: 1, State: "prepared", Inputs: []domain.RunnerContributionReceipt{{ID: "source-receipt"}}}
+	raw := []byte("publication-source")
+	sum := sha256.Sum256(raw)
+	digest := hex.EncodeToString(sum[:])
+	if err := s.PutRunnerContributionBlob(digest, raw); err != nil {
+		t.Fatal(err)
+	}
+	integration := domain.ContributionIntegration{ID: id, ManifestSHA256: id, RunID: "publication-run", RepositoryID: "publication-repo", BaseSHA: strings.Repeat("1", 40), ResultSHA: strings.Repeat("2", 40), ContextSHA256: strings.Repeat("c", 64), BundleSHA256: digest, BundleSize: int64(len(raw)), State: "prepared", Inputs: []domain.RunnerContributionReceipt{{ID: "source-receipt", SHA256: digest, Size: int64(len(raw))}}}
 	if _, err := s.PrepareContributionIntegration(integration); err != nil {
 		t.Fatal(err)
 	}

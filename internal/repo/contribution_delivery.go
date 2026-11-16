@@ -34,6 +34,14 @@ func (r *DeliveryRepo) PrepareContributionIntegration(value domain.ContributionI
 	}
 	row := contributionIntegrationRow{ID: value.ID, RunID: value.RunID, RepositoryID: value.RepositoryID, State: value.State, Payload: string(raw), CreatedAt: time.Now().UTC()}
 	err = r.DB.Transaction(func(tx *gorm.DB) error {
+		if err := lockContributionBlob(tx, value.BundleSHA256, value.BundleSize); err != nil {
+			return err
+		}
+		for _, input := range value.Inputs {
+			if err := lockContributionBlob(tx, input.SHA256, input.Size); err != nil {
+				return err
+			}
+		}
 		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&row).Error; err != nil {
 			return err
 		}

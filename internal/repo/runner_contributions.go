@@ -263,9 +263,10 @@ func sortedContributionReferences(refs map[string]struct{}) []string {
 }
 
 // DeleteUnreferencedContributionBlobs removes only old blobs absent from the
-// caller's durable reference snapshot. The operation is content-addressed and
-// idempotent; a later scan can safely retry it. Production callers should use
-// a retention window long enough to cover concurrent task/publication writes.
+// caller's durable reference snapshot. Candidate rows are locked before the
+// delete so durable reference writers and collection serialize on the blob
+// row. A concurrent writer that loses the race observes a missing blob and
+// must retry its immutable write.
 func (r *RunnersRepo) DeleteUnreferencedContributionBlobs(references []string, before time.Time) (int64, error) {
 	if before.IsZero() {
 		return 0, errors.New("contribution blob retention cutoff is required")
@@ -279,7 +280,7 @@ func (r *RunnersRepo) DeleteUnreferencedContributionBlobs(references []string, b
 	var deleted int64
 	err := r.DB.Transaction(func(tx *gorm.DB) error {
 		var rows []runnerContributionBlobRow
-		if err := tx.Where("created_at < ?", before.UTC()).Find(&rows).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("created_at < ?", before.UTC()).Find(&rows).Error; err != nil {
 			return err
 		}
 		for _, row := range rows {
@@ -311,15 +312,19 @@ func validateContributionReceipt(receipt domain.RunnerContributionReceipt, spec 
 	return nil
 }
 
-func contributionBlobExists(tx *gorm.DB, receipt domain.RunnerContributionReceipt) error {
+func lockContributionBlob(tx *gorm.DB, sha256Hex string, size int64) error {
 	var row runnerContributionBlobRow
-	if err := tx.Select("sha256", "size").Where("sha256 = ? AND size = ?", receipt.SHA256, receipt.Size).Take(&row).Error; err != nil {
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("sha256", "size").Where("sha256 = ? AND size = ?", sha256Hex, size).Take(&row).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return invalidContribution("durable bundle bytes are missing")
 		}
 		return err
 	}
 	return nil
+}
+
+func contributionBlobExists(tx *gorm.DB, receipt domain.RunnerContributionReceipt) error {
+	return lockContributionBlob(tx, receipt.SHA256, receipt.Size)
 }
 
 // StageRunnerContribution atomically binds a durable blob to the still-live
