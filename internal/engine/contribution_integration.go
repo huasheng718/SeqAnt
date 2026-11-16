@@ -26,10 +26,12 @@ type runnerContributionHandoff struct {
 }
 
 // acceptedRunnerContributionHandoff validates and projects accepted source
-// receipts for a future placed consumer. It refuses stale/superseded sources,
-// corrupt or oversized blobs and cross-repository lineage. Credentials never
-// enter the projection. The current dispatch path does not yet call this
-// helper because it still creates legacy RunnerTask payloads.
+// receipts for a controller-selected placed consumer. It refuses
+// stale/superseded sources, corrupt or oversized blobs and cross-repository
+// lineage. Credentials never enter the projection. The normal placed dispatch
+// path constructs its per-repository inputs in node_execution_dispatch.go;
+// this seam remains useful for controller flows that need to project one
+// accepted source set without exposing storage or credentials.
 func (e *Engine) acceptedRunnerContributionHandoff(controller domain.Run, repositoryID string, taskIDs []string) ([]runnerContributionHandoff, error) {
 	receipts, err := e.acceptedIntegrationInputs(controller, repositoryID, taskIDs)
 	if err != nil {
