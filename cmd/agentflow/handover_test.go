@@ -19,7 +19,15 @@ import (
 )
 
 func TestSDNotifySendsReadyAndMainPID(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "notify.sock")
+	// macOS limits Unix-domain socket paths to a little over 100 bytes. The
+	// testing package's per-test directory under /var/folders can exceed that
+	// limit, so keep this test fixture deliberately short and portable.
+	dir, err := os.MkdirTemp("/tmp", "af-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	path := filepath.Join(dir, "notify.sock")
 	conn, err := net.ListenUnixgram("unixgram", &net.UnixAddr{Name: path, Net: "unixgram"})
 	if err != nil {
 		t.Fatal(err)
