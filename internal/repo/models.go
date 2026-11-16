@@ -316,6 +316,17 @@ type runRow struct {
 
 func (runRow) TableName() string { return "runs" }
 
+// runAdmissionMembershipRow is the additive index for Runs that participate
+// in more than one admission bucket (for example, a placed Run using two
+// personal Runners plus a shared project Runner). Legacy Runs continue to use
+// runRow.QuotaBucket as their scalar compatibility field.
+type runAdmissionMembershipRow struct {
+	RunID  string `gorm:"column:run_id;primaryKey;size:64;index:idx_run_admission_membership_bucket,priority:2"`
+	Bucket string `gorm:"column:bucket;primaryKey;size:128;index:idx_run_admission_membership_bucket,priority:1"`
+}
+
+func (runAdmissionMembershipRow) TableName() string { return "run_admission_memberships" }
+
 type runNodeRow struct {
 	RunID   string `gorm:"column:run_id;primaryKey;size:64"`
 	NodeID  string `gorm:"column:node_id;primaryKey;size:64"`
@@ -686,7 +697,7 @@ func allModels() []any {
 		dockerfileRow{}, environmentRow{}, sandboxRow{},
 		workflowRow{}, syncConfigRow{}, scheduleJobRow{}, sharedScheduleVersionRow{},
 		issueRow{}, issueCommentRow{}, taskRow{},
-		runAdmissionLockRow{}, runRow{}, runNodeRow{}, runEventRow{}, runTelemetryRow{}, runLogRow{}, runArtifactRow{}, runEvalRow{},
+		runAdmissionLockRow{}, runAdmissionMembershipRow{}, runRow{}, runNodeRow{}, runEventRow{}, runTelemetryRow{}, runLogRow{}, runArtifactRow{}, runEvalRow{},
 		runPreviewRow{}, previewSessionRow{}, previewBlobRow{}, WorkspaceCheckpoint{}, workspaceCheckpointChunk{},
 		mrDeliveryStateRow{}, contributionIntegrationRow{}, contributionPublicationRow{}, definitionRevisionRow{},
 		runnerRow{}, runnerTaskRow{}, runnerTaskEventRow{}, runnerContributionBlobRow{}, userRunnerPrefRow{},
