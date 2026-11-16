@@ -63,3 +63,30 @@ func (r *DeliveryRepo) ContributionIntegration(id string) (domain.ContributionIn
 	}
 	return value, true
 }
+
+// DeliveryContributionBlobReferences returns bundle digests retained by the
+// immutable controller integration records. Publication rows refer to their
+// integration ID, so retaining the integration reference also protects the
+// publication's source bundle.
+func (r *DeliveryRepo) DeliveryContributionBlobReferences() ([]string, error) {
+	var rows []contributionIntegrationRow
+	if err := r.DB.Select("payload").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	refs := make(map[string]struct{})
+	for _, row := range rows {
+		var value domain.ContributionIntegration
+		if err := json.Unmarshal([]byte(row.Payload), &value); err != nil {
+			return nil, fmt.Errorf("decode contribution integration: %w", err)
+		}
+		if validContributionSHA256(value.BundleSHA256) {
+			refs[value.BundleSHA256] = struct{}{}
+		}
+		for _, input := range value.Inputs {
+			if validContributionSHA256(input.SHA256) {
+				refs[input.SHA256] = struct{}{}
+			}
+		}
+	}
+	return sortedContributionReferences(refs), nil
+}

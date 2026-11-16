@@ -4,8 +4,10 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -218,6 +220,81 @@ func (r *RunnersRepo) RunnerContributionBlob(sha256Hex string) ([]byte, int64, b
 		return nil, 0, false
 	}
 	return row.Content, row.Size, true
+}
+
+// RunnerContributionBlobReferences returns every contribution digest still
+// reachable from durable Runner task payloads. It is intentionally a read-only
+// snapshot; callers performing collection must use a conservative retention
+// window and re-run the scan before deleting anything.
+func (r *RunnersRepo) RunnerContributionBlobReferences() ([]string, error) {
+	var rows []runnerTaskRow
+	if err := r.DB.Select("payload").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	refs := make(map[string]struct{})
+	for _, row := range rows {
+		var payload runnerTaskPayload
+		if err := json.Unmarshal(row.Payload, &payload); err != nil {
+			return nil, fmt.Errorf("decode runner task payload %s: %w", row.ID, err)
+		}
+		for _, receipt := range append(append([]domain.RunnerContributionReceipt{}, payload.PendingContributions...), payload.AcceptedContributions...) {
+			if validContributionSHA256(receipt.SHA256) {
+				refs[receipt.SHA256] = struct{}{}
+			}
+		}
+		if payload.Invocation != nil {
+			for _, input := range payload.Invocation.ContributionInputs {
+				if validContributionSHA256(input.BundleSHA256) {
+					refs[input.BundleSHA256] = struct{}{}
+				}
+			}
+		}
+	}
+	return sortedContributionReferences(refs), nil
+}
+
+func sortedContributionReferences(refs map[string]struct{}) []string {
+	values := make([]string, 0, len(refs))
+	for ref := range refs {
+		values = append(values, ref)
+	}
+	sort.Strings(values)
+	return values
+}
+
+// DeleteUnreferencedContributionBlobs removes only old blobs absent from the
+// caller's durable reference snapshot. The operation is content-addressed and
+// idempotent; a later scan can safely retry it. Production callers should use
+// a retention window long enough to cover concurrent task/publication writes.
+func (r *RunnersRepo) DeleteUnreferencedContributionBlobs(references []string, before time.Time) (int64, error) {
+	if before.IsZero() {
+		return 0, errors.New("contribution blob retention cutoff is required")
+	}
+	keep := make(map[string]struct{}, len(references))
+	for _, ref := range references {
+		if validContributionSHA256(ref) {
+			keep[ref] = struct{}{}
+		}
+	}
+	var deleted int64
+	err := r.DB.Transaction(func(tx *gorm.DB) error {
+		var rows []runnerContributionBlobRow
+		if err := tx.Where("created_at < ?", before.UTC()).Find(&rows).Error; err != nil {
+			return err
+		}
+		for _, row := range rows {
+			if _, ok := keep[row.SHA256]; ok {
+				continue
+			}
+			result := tx.Where("sha256 = ? AND created_at < ?", row.SHA256, before.UTC()).Delete(&runnerContributionBlobRow{})
+			if result.Error != nil {
+				return result.Error
+			}
+			deleted += result.RowsAffected
+		}
+		return nil
+	})
+	return deleted, err
 }
 
 func sameContribution(a, b domain.RunnerContributionReceipt) bool {
