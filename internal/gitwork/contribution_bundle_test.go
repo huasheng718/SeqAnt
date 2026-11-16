@@ -98,6 +98,41 @@ func TestContributionBundleIndependentReconstruction(t *testing.T) {
 	}
 }
 
+func TestImportContributionBundlePinsCleanTaskCheckout(t *testing.T) {
+	repo, base := contributionFixture(t)
+	ctx := context.Background()
+	root := filepath.Dir(repo)
+	if err := os.WriteFile(filepath.Join(repo, "code.txt"), []byte("changed\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := ExportContribution(ctx, repo, filepath.Join(root, "input.bundle"), base, "input", 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "consumer")
+	if _, err := C(ctx, root, "clone", "-q", repo, target); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := C(ctx, target, "checkout", "-q", "-B", "agentflow/test-input", base); err != nil {
+		t.Fatal(err)
+	}
+	if err := ImportContributionBundle(ctx, bundle.Path, target, bundle, 8<<20); err != nil {
+		t.Fatal(err)
+	}
+	head, ok := RevParse(ctx, target, "HEAD")
+	if !ok || head != bundle.ResultSHA {
+		t.Fatalf("head=%q ok=%v want=%q", head, ok, bundle.ResultSHA)
+	}
+	branch, err := C(ctx, target, "branch", "--show-current")
+	if err != nil || strings.TrimSpace(branch) != "agentflow/test-input" {
+		t.Fatalf("branch=%q err=%v", branch, err)
+	}
+	content, err := os.ReadFile(filepath.Join(target, "code.txt"))
+	if err != nil || string(content) != "changed\n" {
+		t.Fatalf("imported content=%q err=%v", content, err)
+	}
+}
+
 func TestContributionBundleRejectsInvalidObjectsAndMetadata(t *testing.T) {
 	repo, base := contributionFixture(t)
 	ctx := context.Background()

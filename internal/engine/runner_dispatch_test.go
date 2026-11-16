@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"strings"
 	"testing"
 
 	"agentflow/internal/domain"
@@ -33,6 +34,17 @@ func TestResolveRunnerResumeSessionIDPrefersEngineOption(t *testing.T) {
 	got = resolveRunnerResumeSessionID(run, "review", runtime.InvocationOptions{ResumeSessionID: "   "})
 	if got != "node-session" {
 		t.Fatalf("blank option should fall through to node field, got %q", got)
+	}
+}
+
+func TestApplyResumePromptPreservesRegularCorrectionContext(t *testing.T) {
+	regular := applyResumePrompt("rendered task\nfeedback: fix tests", "session", "operator note", "fix tests")
+	if !strings.Contains(regular, "请从刚才中断的位置继续执行") || !strings.Contains(regular, "rendered task") || !strings.Contains(regular, "feedback: fix tests") {
+		t.Fatalf("regular resume lost context: %q", regular)
+	}
+	protocol := applyResumePrompt("rendered task", "session", "operator note", gateMissingRetryMarker)
+	if strings.Contains(protocol, "rendered task") || !strings.Contains(protocol, "operator note") {
+		t.Fatalf("missing-submit repair should replace normal prompt: %q", protocol)
 	}
 }
 

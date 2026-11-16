@@ -2,8 +2,11 @@ package runner
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -129,6 +132,38 @@ func TestClientContributionRejectsLeaseLossAndWrongReceipt(t *testing.T) {
 		if err == nil || (leaseLost && !errors.Is(err, ErrTaskLeaseLost)) {
 			t.Fatalf("leaseLost=%v err=%v", leaseLost, err)
 		}
+	}
+}
+
+func TestClientDownloadContributionInputPinsResponseMetadata(t *testing.T) {
+	raw := []byte("immutable bundle bytes")
+	sum := sha256.Sum256(raw)
+	digest := hex.EncodeToString(sum[:])
+	base := strings.Repeat("a", 40)
+	head := strings.Repeat("b", 40)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/runners/tasks/task/contribution-inputs/repo" || r.URL.Query().Get("attempt") != "3" || r.Header.Get("Authorization") != "Bearer fixture-session" {
+			t.Errorf("request identity lost: %s %s auth=%q", r.Method, r.URL.String(), r.Header.Get("Authorization"))
+		}
+		w.Header().Set("Content-Type", "application/x-git-bundle")
+		w.Header().Set("Content-Length", fmt.Sprint(len(raw)))
+		w.Header().Set("X-Contribution-SHA256", digest)
+		w.Header().Set("X-Contribution-Base-SHA", base)
+		w.Header().Set("X-Contribution-Result-SHA", head)
+		_, _ = w.Write(raw)
+	}))
+	defer server.Close()
+	client := NewClient(server.URL)
+	client.SetSession("fixture-session")
+	input := domain.RunnerContributionInput{RepositoryID: "repo", BaseSHA: base, HeadSHA: head, BundleSHA256: digest, BundleSize: int64(len(raw))}
+	path, err := client.DownloadContributionInput(context.Background(), "task", 3, "repo", input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(path)
+	got, err := os.ReadFile(path)
+	if err != nil || string(got) != string(raw) {
+		t.Fatalf("downloaded=%q err=%v", got, err)
 	}
 }
 

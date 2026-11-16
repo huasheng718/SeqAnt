@@ -332,3 +332,64 @@ func VerifyContribution(ctx context.Context, bundlePath, destination string, exp
 	success = true
 	return nil
 }
+
+// ImportContributionBundle verifies an accepted bundle in an isolated fresh
+// checkout, then imports its objects into a clean task checkout that is still
+// exactly at the frozen base. The checkout's existing branch name is retained
+// so a retry sees the same ownership marker and branch contract.
+func ImportContributionBundle(ctx context.Context, bundlePath, destination string, expected ContributionBundle, maxExpanded int64) error {
+	if err := validateContributionRepository(destination); err != nil {
+		return err
+	}
+	verified, err := os.MkdirTemp("", "agentflow-input-verify-")
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(verified); err != nil {
+		return err
+	}
+	defer os.RemoveAll(verified)
+	if err := VerifyContribution(ctx, bundlePath, verified, expected, maxExpanded); err != nil {
+		return err
+	}
+	home, err := os.MkdirTemp("", "agentflow-input-import-home-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(home)
+	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	run := func(args ...string) (string, error) { return contributionRun(ctx, destination, home, "", args...) }
+	status, err := run("status", "--porcelain=v1", "--untracked-files=all", "--ignored=matching")
+	if err != nil || status != "" {
+		if err != nil {
+			return err
+		}
+		return errors.New("input checkout is not clean")
+	}
+	base, err := run("rev-parse", "--verify", "HEAD^{commit}")
+	if err != nil || base != expected.BaseSHA {
+		return errors.New("input checkout is not at the frozen base")
+	}
+	branch, err := run("branch", "--show-current")
+	if err != nil || branch == "" {
+		return errors.New("input checkout must remain on its assigned branch")
+	}
+	if _, err := run("check-ref-format", "--branch", branch); err != nil {
+		return errors.New("input checkout branch is invalid")
+	}
+	if _, err := run("bundle", "unbundle", bundlePath); err != nil {
+		return err
+	}
+	if _, err := run("update-ref", domain.RunnerContributionRef, expected.ResultSHA); err != nil {
+		return err
+	}
+	if _, err := run("checkout", "-q", "--force", "-B", branch, expected.ResultSHA); err != nil {
+		return err
+	}
+	head, err := run("rev-parse", "HEAD")
+	if err != nil || head != expected.ResultSHA {
+		return errors.New("imported contribution HEAD mismatch")
+	}
+	return nil
+}

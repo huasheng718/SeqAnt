@@ -216,12 +216,48 @@ func (d *Daemon) checkoutTaskRepositories(ctx context.Context, task domain.Runne
 		if err := checkoutIsolatedRepository(ctx, target, repository, desc); err != nil {
 			return err
 		}
+		if err := d.importTaskContributionInput(ctx, task, repository, target); err != nil {
+			return err
+		}
 		if err := configureRepositoryGitIdentity(ctx, target, task.Invocation.GitUserName, task.Invocation.GitUserEmail); err != nil {
 			return err
 		}
 		if err := runtime.ProtectProjectAgentGitIndex(ctx, target, driver); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func (d *Daemon) importTaskContributionInput(ctx context.Context, task domain.RunnerTask, repository domain.RunnerRepository, target string) error {
+	if task.Invocation == nil || len(task.Invocation.ContributionInputs) == 0 {
+		return nil
+	}
+	var input *domain.RunnerContributionInput
+	for i := range task.Invocation.ContributionInputs {
+		candidate := &task.Invocation.ContributionInputs[i]
+		if candidate.RepositoryID != repository.RepositoryID {
+			continue
+		}
+		if input != nil {
+			return fmt.Errorf("repository %s has duplicate frozen contribution inputs", repository.RepositoryID)
+		}
+		input = candidate
+	}
+	if input == nil {
+		return nil
+	}
+	if input.BaseSHA != repository.BaseSHA {
+		return fmt.Errorf("repository %s input base differs from checkout baseline", repository.RepositoryID)
+	}
+	bundlePath, err := d.client.DownloadContributionInput(ctx, task.ID, task.Attempt, repository.RepositoryID, *input)
+	if err != nil {
+		return fmt.Errorf("download contribution input %s: %w", repository.RepositoryID, err)
+	}
+	defer os.Remove(bundlePath)
+	bundle := gitwork.ContributionBundle{Path: bundlePath, BaseSHA: input.BaseSHA, ResultSHA: input.HeadSHA, SHA256: input.BundleSHA256, Size: input.BundleSize}
+	if err := gitwork.ImportContributionBundle(ctx, bundlePath, target, bundle, 64<<20); err != nil {
+		return fmt.Errorf("import contribution input %s: %w", repository.RepositoryID, err)
 	}
 	return nil
 }

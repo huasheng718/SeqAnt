@@ -2,6 +2,8 @@ package runner
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +18,77 @@ import (
 	"agentflow/internal/domain"
 	"agentflow/internal/gitwork"
 )
+
+// DownloadContributionInput fetches one task-scoped immutable input bundle.
+// The expected metadata comes from the claimed task payload; response headers
+// and bytes must match it exactly before a temporary file is returned.
+func (c *Client) DownloadContributionInput(ctx context.Context, taskID string, attempt int, repositoryID string, expected domain.RunnerContributionInput) (string, error) {
+	if taskID == "" || attempt <= 0 || repositoryID == "" || expected.RepositoryID != repositoryID || expected.BundleSize <= 0 || expected.BundleSize > domain.RunnerContributionMaxBytes || expected.BundleSHA256 == "" || expected.BaseSHA == "" || expected.HeadSHA == "" {
+		return "", errors.New("invalid contribution input identity or size")
+	}
+	path := fmt.Sprintf("/runners/tasks/%s/contribution-inputs/%s?attempt=%d", url.PathEscape(taskID), url.PathEscape(repositoryID), attempt)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+path, nil)
+	if err != nil {
+		return "", err
+	}
+	if session := c.sessionToken(); session != "" {
+		req.Header.Set("Authorization", "Bearer "+session)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized {
+		return "", ErrUnauthorized
+	}
+	payload, readErr := io.ReadAll(io.LimitReader(resp.Body, expected.BundleSize+1))
+	if readErr != nil {
+		return "", readErr
+	}
+	if resp.StatusCode == http.StatusConflict {
+		var detail struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(payload, &detail) == nil && detail.Error == ErrTaskLeaseLost.Error() {
+			return "", ErrTaskLeaseLost
+		}
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return "", fmt.Errorf("contribution input not found")
+	}
+	if resp.StatusCode >= 400 {
+		return "", fmt.Errorf("contribution input rejected (%d)", resp.StatusCode)
+	}
+	if resp.Header.Get("Content-Type") != "application/x-git-bundle" || resp.Header.Get("X-Contribution-SHA256") != expected.BundleSHA256 || resp.Header.Get("X-Contribution-Base-SHA") != expected.BaseSHA || resp.Header.Get("X-Contribution-Result-SHA") != expected.HeadSHA || int64(len(payload)) != expected.BundleSize || (resp.ContentLength >= 0 && resp.ContentLength != expected.BundleSize) {
+		return "", errors.New("contribution input metadata mismatch")
+	}
+	sum := sha256.Sum256(payload)
+	if hex.EncodeToString(sum[:]) != expected.BundleSHA256 {
+		return "", errors.New("contribution input hash mismatch")
+	}
+	file, err := os.CreateTemp("", "agentflow-contribution-input-*.bundle")
+	if err != nil {
+		return "", err
+	}
+	name := file.Name()
+	defer func() {
+		if err != nil {
+			_ = os.Remove(name)
+		}
+	}()
+	if err = file.Chmod(0o600); err == nil {
+		_, err = file.Write(payload)
+	}
+	if closeErr := file.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		_ = os.Remove(name)
+		return "", err
+	}
+	return name, nil
+}
 
 // UploadContribution transfers only the standalone Git bundle. It cannot
 // choose a controller path or make a staged receipt accepted task output.

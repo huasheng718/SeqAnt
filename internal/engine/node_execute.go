@@ -769,12 +769,7 @@ func (e *Engine) executeNode(ctx context.Context, runID string, wf domain.Workfl
 				}
 				prompt += "\n\n" + strings.ReplaceAll(template, "{{feedback}}", feedback)
 			}
-			if resumeSessionID != "" {
-				prompt = "请从刚才中断的位置继续执行。"
-				if resumeFeedback != "" {
-					prompt += "\n\n操作员补充了以下信息，请结合它继续：\n\n" + resumeFeedback
-				}
-			}
+			prompt = applyResumePrompt(prompt, resumeSessionID, resumeFeedback, feedback)
 			if requiresSubmit {
 				prompt = appendSubmitGateInstruction(prompt, node.RejectTo, feedback == gateMissingRetryMarker)
 			}
@@ -1110,6 +1105,26 @@ func (e *Engine) executeNode(ctx context.Context, runID string, wf domain.Workfl
 	if domain.IsPreviewBuildNode(node.ID) {
 		e.archivePreviewAfterBuild(runID)
 	}
+}
+
+func applyResumePrompt(prompt, resumeSessionID, resumeFeedback, loopFeedback string) string {
+	if resumeSessionID == "" {
+		return prompt
+	}
+	resume := "请从刚才中断的位置继续执行。"
+	if resumeFeedback != "" {
+		resume += "\n\n操作员补充了以下信息，请结合它继续：\n\n" + resumeFeedback
+	}
+	// Missing submit is a protocol repair prompt and intentionally replaces the
+	// normal rendered prompt. A regular correction keeps the rendered task,
+	// artifacts and loop feedback so resume cannot erase the requested fix.
+	if loopFeedback == gateMissingRetryMarker {
+		return resume
+	}
+	if strings.TrimSpace(prompt) == "" {
+		return resume
+	}
+	return resume + "\n\n" + prompt
 }
 
 // freezeNodeExecutionPlacement resolves and persists one effective Node
