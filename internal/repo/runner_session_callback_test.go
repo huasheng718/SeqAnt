@@ -133,6 +133,12 @@ func TestRunnerSessionCanceledCallbackConvergesAfterRunCancel(t *testing.T) {
 	if err := s.CancelRunnerTask(task.ID, now); err != nil {
 		t.Fatal(err)
 	}
+	canceledRun, _ := s.RunState(run.ID)
+	canceledRun.Status = "cancelled"
+	canceledRun.Nodes[task.NodeID].Status = "cancelled"
+	if err := s.PutRun(canceledRun); err != nil {
+		t.Fatal(err)
+	}
 	if err := s.CompleteRunnerTaskForSession(claimed.ID, runner.ID, runner.SessionTokenHash, claimed.Attempt, domain.RunnerTaskCanceled, nil, "runner stopped", "", nil, nil, now); err != nil {
 		t.Fatalf("canceled callback should converge before lease expiry: %v", err)
 	}

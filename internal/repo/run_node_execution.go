@@ -193,7 +193,9 @@ func (r *RunsRepo) validateRunnerExecutionTaskShapeMode(run domain.Run, task dom
 		return nil, runnerExecutionConflict("execution identity is missing or inconsistent")
 	}
 	node := run.Nodes[task.NodeID]
-	if node == nil || node.NodeID != task.NodeID || node.Status != "running" || node.Attempt <= 0 || node.ExecutionPlacement == nil || task.Execution.NodeAttempt != node.Attempt {
+	nodeExecuting := node != nil && node.Status == "running"
+	nodeCanceled := allowCanceled && run.CancelRequested && node != nil && node.Status == "cancelled"
+	if node == nil || node.NodeID != task.NodeID || (!nodeExecuting && !nodeCanceled) || node.Attempt <= 0 || node.ExecutionPlacement == nil || task.Execution.NodeAttempt != node.Attempt {
 		return nil, runnerExecutionConflict("owning Node attempt is not executing")
 	}
 	if domain.ExecutionDeadlineExpired(node.ExecutionDeadline, time.Now().UTC()) || !equalRunnerExecutionDeadline(task.ExecutionDeadline, node.ExecutionDeadline) {
