@@ -212,7 +212,7 @@ func (w *contributionLimitWriter) Write(p []byte) (int, error) {
 // limits the sum of reachable object sizes before any checkout; callers also
 // enforce a process/container resource boundary for hostile pack inflation.
 func VerifyContribution(ctx context.Context, bundlePath, destination string, expected ContributionBundle, maxExpanded int64) error {
-	if !fullCommitSHA(expected.BaseSHA) || !fullCommitSHA(expected.ResultSHA) || len(expected.SHA256) != 64 || expected.Size <= 0 || expected.Size > domain.RunnerContributionMaxBytes || maxExpanded <= 0 {
+	if !fullCommitSHA(expected.BaseSHA) || !fullCommitSHA(expected.ResultSHA) || len(expected.SHA256) != 64 || expected.Size <= 0 || expected.Size > domain.RunnerContributionMaxBytes || maxExpanded <= 0 || maxExpanded > domain.RunnerContributionMaxExpandedBytes {
 		return errors.New("invalid contribution verification metadata")
 	}
 	file, err := os.Open(bundlePath)
@@ -298,7 +298,7 @@ func VerifyContribution(ctx context.Context, bundlePath, destination string, exp
 	for scanner.Scan() {
 		size, parseErr := strconv.ParseInt(scanner.Text(), 10, 64)
 		objects++
-		if parseErr != nil || size < 0 || size > maxExpanded-expanded || objects > 100000 {
+		if parseErr != nil || size < 0 || size > maxExpanded-expanded || objects > domain.RunnerContributionMaxObjects {
 			cmd.Process.Kill()
 			cmd.Wait()
 			return errors.New("contribution expanded object limit exceeded")

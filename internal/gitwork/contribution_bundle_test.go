@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"agentflow/internal/domain"
 )
 
 func contributionFixture(t *testing.T) (string, string) {
@@ -154,6 +156,7 @@ func TestContributionBundleRejectsInvalidObjectsAndMetadata(t *testing.T) {
 		{"sha", func(b *ContributionBundle) { b.ResultSHA = base }, 1 << 20},
 		{"base", func(b *ContributionBundle) { b.BaseSHA = strings.Repeat("1", 40) }, 1 << 20},
 		{"expansion", func(b *ContributionBundle) {}, 1},
+		{"expansion-cap", func(b *ContributionBundle) {}, domain.RunnerContributionMaxExpandedBytes + 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			b := good

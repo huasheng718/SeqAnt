@@ -3,8 +3,10 @@ package domain
 import "time"
 
 const (
-	RunnerContributionMaxBytes int64 = 16 << 20
-	RunnerContributionRef            = "refs/heads/agentflow-contribution"
+	RunnerContributionMaxBytes         int64 = 16 << 20
+	RunnerContributionMaxExpandedBytes int64 = 64 << 20
+	RunnerContributionMaxObjects             = 100000
+	RunnerContributionRef                    = "refs/heads/agentflow-contribution"
 )
 
 // RunnerContributionSpec is frozen by the Engine before dispatch. It grants
