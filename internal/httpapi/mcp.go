@@ -18,11 +18,7 @@ type mcpHandlers struct {
 func (h *mcpHandlers) mcpServers(c *gin.Context) {
 	if c.Request.Method == http.MethodGet {
 		items := h.repo.MCPServers()
-		if current, ok := h.requestUser(c.Request, true); ok {
-			items = visibleMCPServersForUser(items, current.ID)
-		} else {
-			items = visibleMCPServersForUser(items, 0)
-		}
+		items = h.readableMCPServers(c, items)
 		c.JSON(200, domain.PublicMCPServers(items))
 		return
 	}
@@ -40,13 +36,20 @@ func (h *mcpHandlers) mcpServers(c *gin.Context) {
 				return
 			}
 		}
-		respond(c, h.repo.DeleteMCPServer(id))
+		expected, allowed := sourceEditPrecondition(c, true)
+		if !allowed {
+			return
+		}
+		respond(c, h.repo.DeleteMCPServer(id, expected))
 		return
 	}
 	if c.Request.Method == http.MethodPut {
 		var v domain.MCPServerDefinition
 		if decode(c, &v) && v.ID != "" {
 			existing, ok := h.repo.MCPServer(v.ID)
+			if !ordinaryDistributionCreate(c, v.DistributionState, ok) {
+				return
+			}
 			domain.RestoreMaskedMCPSecrets(&v, existing)
 			if ok {
 				if existing.MarketID != "" {
@@ -68,12 +71,17 @@ func (h *mcpHandlers) mcpServers(c *gin.Context) {
 					v.FileRefs = existing.FileRefs
 				}
 			}
-			if err := h.repo.PutMCPServer(v); err != nil {
+			expected, allowed := sourceEditPrecondition(c, ok)
+			if !allowed {
+				return
+			}
+			v.SourceRevision = expected
+			saved, err := h.repo.SaveMCPServer(v)
+			if err != nil {
 				respond(c, err)
 				return
 			}
 			h.configureSync(h.repo.SyncConfig())
-			saved, _ := h.repo.MCPServer(v.ID)
 			c.JSON(http.StatusOK, domain.PublicMCPServer(saved))
 		}
 	}
@@ -89,6 +97,9 @@ func (h *mcpHandlers) mcpImport(c *gin.Context) {
 		return
 	}
 	for _, item := range imported {
+		if !ordinaryDistributionCreate(c, item.DistributionState, false) {
+			return
+		}
 		target := strings.TrimSpace(item.ProjectID)
 		if !h.allowStoredAsset(c, "mcp-servers", strings.TrimSpace(item.ID)) {
 			return
@@ -101,18 +112,18 @@ func (h *mcpHandlers) mcpImport(c *gin.Context) {
 			return
 		}
 	}
-	saved := make([]domain.MCPServerDefinition, 0, len(imported))
 	for i, item := range imported {
 		if err := domain.ValidateMCPServer(item); err != nil {
 			c.JSON(400, map[string]string{"error": fmt.Sprintf("第 %d 项无效: %v", i+1, err)})
 			return
 		}
-		if err := h.repo.PutMCPServer(item); err != nil {
-			respond(c, err)
-			return
-		}
-		saved = append(saved, item)
 	}
+	saved, err := h.repo.CreateMCPServers(imported)
+	if err != nil {
+		respond(c, err)
+		return
+	}
+
 	h.configureSync(h.repo.SyncConfig())
 	c.JSON(200, map[string]any{"imported": len(saved), "servers": domain.PublicMCPServers(saved)})
 }

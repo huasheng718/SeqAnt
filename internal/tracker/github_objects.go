@@ -47,7 +47,7 @@ func (s *Service) PublishContributionObjects(ctx context.Context, project, check
 	if !strings.HasPrefix(project, "github:") || !strings.HasPrefix(branch, "superagent/integration/") || branch == "superagent/integration/" || !validPublicationBranch(branch) || !validPublicationBranch(target) || branch == target || !domain.ValidWorkspaceBaseSHA(baseSHA) || !domain.ValidWorkspaceBaseSHA(resultSHA) {
 		return fmt.Errorf("invalid GitHub contribution object publication request")
 	}
-	g, err := s.githubClient(project)
+	g, err := s.githubPublicationClient(ctx, project)
 	if err != nil {
 		return fmt.Errorf("invalid GitHub publication repository")
 	}

@@ -238,7 +238,14 @@ func (e *Engine) dispatchRunnerTask(ctx context.Context, runnerID string, run do
 		}
 		invocation.RecoverOutputs = normalizeExecutionScope(node.ExecutionScope) != domain.ExecutionScopeRepositories
 	}
-	invocation.MCPCallServers = e.resolveScriptMCPAssets(run.ExecutionContext.ProjectID, run.ExecutionContext.ResponsibleUserID).MCPServers
+	if err := e.ValidateRunIntelligence(run); err != nil {
+		return "", err
+	}
+	if run.Intelligence != nil {
+		invocation.MCPCallServers = assets.MCPServers
+	} else {
+		invocation.MCPCallServers = e.resolveScriptMCPAssets(run.ExecutionContext.ProjectID, run.ExecutionContext.ResponsibleUserID).MCPServers
+	}
 	task := domain.RunnerTask{
 		ID:          fmt.Sprintf("rt-%d-%s", time.Now().UnixNano(), safeRunnerPath(node.ID)),
 		RunnerID:    runnerID,
@@ -618,7 +625,10 @@ func (e *Engine) dispatchRunnerCommand(ctx context.Context, runnerID, runID, nod
 		if err != nil {
 			return "", err
 		}
-		task.Invocation = e.gateCommandInvocation(run, nodeID)
+		task.Invocation, err = e.gateCommandInvocation(run, nodeID)
+		if err != nil {
+			return "", err
+		}
 	}
 	run, _ := e.repo.RunState(runID)
 	if err := e.preparePlacedExecutionTask(run, &task, domain.NodeTaskRoleVerification); err != nil {
@@ -662,15 +672,20 @@ func (e *Engine) dispatchRunnerCommand(ctx context.Context, runnerID, runID, nod
 // runner. Repository entries supply the responsible user's git token; an
 // existing checkout is left in place, and the runner only uses the token to
 // authenticate that command.
-func (e *Engine) gateCommandInvocation(run domain.Run, nodeID string) *domain.RunnerInvocation {
-	assets := e.resolveScriptMCPAssets(run.ExecutionContext.ProjectID, run.ExecutionContext.ResponsibleUserID)
+func (e *Engine) gateCommandInvocation(run domain.Run, nodeID string) (*domain.RunnerInvocation, error) {
+	assets, err := e.RunScriptAssets(run)
+	if err != nil {
+		return nil, err
+	}
 	invocation := &domain.RunnerInvocation{
 		RunID: run.ID, NodeID: nodeID, Assets: assets, MCPCallServers: assets.MCPServers}
 	identity := resolveGitIdentity(e.repo, run.ExecutionContext.ResponsibleUserID)
 	bindRunnerRepositories(invocation, run, resolveGitToken(e.repo, run.ExecutionContext.ResponsibleUserID), identity.name, identity.email)
 	task := domain.RunnerTask{Invocation: invocation}
-	_ = e.applyRunnerTaskPolicy(run, &task)
-	return task.Invocation
+	if err := e.applyRunnerTaskPolicy(run, &task); err != nil {
+		return nil, err
+	}
+	return task.Invocation, nil
 }
 
 // NotifyRunnerTaskChanged wakes workflow goroutines waiting for a runner task

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"agentflow/internal/domain"
+	"agentflow/internal/repo"
 )
 
 // adoptGenericWorkflow clones a built-in generic template into a project: the
@@ -14,6 +15,22 @@ import (
 // into the same project with remapped ids, so the copy is immediately runnable
 // instead of failing on "agent not found".
 func (h *catalogHandlers) adoptGenericWorkflow(template domain.WorkflowDefinition, id, name, owner, projectID string) (domain.WorkflowDefinition, error) {
+	var out domain.WorkflowDefinition
+	err := h.repo.WithGenericTemplateCopy(template.ID, projectID, func(store *repo.Store) error {
+		scopedDeps := *h.deps
+		scopedDeps.repo = store
+		scoped := *h
+		scoped.deps = &scopedDeps
+		var err error
+		out, err = scoped.adoptGenericWorkflowLocked(template, id, name, owner, projectID)
+		return err
+	})
+	if err == nil {
+		h.configureSync(h.repo.SyncConfig())
+	}
+	return out, err
+}
+func (h *catalogHandlers) adoptGenericWorkflowLocked(template domain.WorkflowDefinition, id, name, owner, projectID string) (domain.WorkflowDefinition, error) {
 	projectID = strings.TrimSpace(projectID)
 	if projectID == "" {
 		return domain.WorkflowDefinition{}, errors.New("通用模板必须复制到具体项目后才能使用")
@@ -24,7 +41,6 @@ func (h *catalogHandlers) adoptGenericWorkflow(template domain.WorkflowDefinitio
 	if err := ensureDefaultProjectMCPs(h.repo, projectID); err != nil {
 		return domain.WorkflowDefinition{}, fmt.Errorf("安装默认 MCP: %w", err)
 	}
-	h.configureSync(h.repo.SyncConfig())
 	sandboxID := h.genericTemplateSandbox(template.SandboxProfileID, projectID)
 	if sandboxID == "" {
 		return domain.WorkflowDefinition{}, errors.New("当前项目没有可用沙箱，请先在「沙箱管理」创建或共享一个沙箱")
@@ -58,12 +74,7 @@ func (h *catalogHandlers) adoptGenericWorkflow(template domain.WorkflowDefinitio
 		}
 	}
 	if err := h.repo.PutWorkflow(adopted); err != nil {
-		// Deliberately no compensation deletes here. The cloned roles, rules
-		// and skills may already be referenced by a concurrent adoption that
-		// succeeded (or is still running), and deleting them would break that
-		// SOP. They are idempotently reused on the next attempt, so a failed
-		// adopt just leaves pre-created assets behind — self-healing on retry
-		// and manually removable in the catalog if never retried.
+		// The outer template-copy transaction rolls the whole adoption back.
 		return domain.WorkflowDefinition{}, err
 	}
 	stored, _ := h.repo.Workflow(id)
@@ -82,11 +93,11 @@ func (h *catalogHandlers) cloneGenericTemplateAgents(workflowID, projectID strin
 	now := time.Now().UTC()
 	// LoopForge rules and skills ship with the template: clone them into the
 	// project first so the role bindings can be remapped onto real assets.
-	ruleRemap, err := h.cloneGenericTemplateRules(template.Rules, projectID, now)
+	ruleRemap, err := h.cloneGenericTemplateRules(template.Rules, projectID, workflowID, now)
 	if err != nil {
 		return nil, err
 	}
-	skillRemap, err := h.cloneGenericTemplateSkills(template.Skills, projectID, now)
+	skillRemap, err := h.cloneGenericTemplateSkills(template.Skills, projectID, workflowID, now)
 	if err != nil {
 		return nil, err
 	}
@@ -106,6 +117,12 @@ func (h *catalogHandlers) cloneGenericTemplateAgents(workflowID, projectID strin
 			continue
 		}
 		agent := source
+		state, err := domain.CopyDistribution(source)
+		if err != nil {
+			return nil, err
+		}
+		agent.DistributionState = state
+		agent.SourceRevision = ""
 		agent.ID = h.availableGenericAgentID(source.ID, projectID)
 		agent.ProjectID = projectID
 		agent.Shared = false
@@ -115,6 +132,10 @@ func (h *catalogHandlers) cloneGenericTemplateAgents(workflowID, projectID strin
 		agent.Rules = remapAssetIDs(agent.Rules, ruleRemap)
 		agent.Skills = remapAssetIDs(agent.Skills, skillRemap)
 		if err := h.repo.PutAgent(agent); err != nil {
+			return nil, err
+		}
+		stored, _ := h.repo.Agent(agent.ID)
+		if err := h.repo.RecordTemplateDefaultBase("agent", projectID, workflowID, source.ID, agent.ID, source, stored); err != nil {
 			return nil, err
 		}
 		remap[source.ID] = agent.ID
@@ -135,12 +156,10 @@ func (h *catalogHandlers) upgradeGenericTemplateAgent(existing *domain.AgentDefi
 	if len(resolved) == 0 {
 		return
 	}
-	existing.MCPServers = resolved
-	existing.UpdatedAt = now
-	_ = h.repo.PutAgent(*existing)
+	_ = h.repo.FillAgentMCPBindings(existing.ID, projectID, resolved)
 }
 
-func (h *catalogHandlers) cloneGenericTemplateRules(sources []domain.RuleDefinition, projectID string, now time.Time) (map[string]string, error) {
+func (h *catalogHandlers) cloneGenericTemplateRules(sources []domain.RuleDefinition, projectID, templateID string, now time.Time) (map[string]string, error) {
 	remap := make(map[string]string, len(sources))
 	for _, source := range sources {
 		if existing, found := h.repo.Rule(source.ID); found && existing.ProjectID == projectID {
@@ -152,6 +171,12 @@ func (h *catalogHandlers) cloneGenericTemplateRules(sources []domain.RuleDefinit
 			continue
 		}
 		rule := source
+		state, err := domain.CopyDistribution(source)
+		if err != nil {
+			return nil, err
+		}
+		rule.DistributionState = state
+		rule.SourceRevision = ""
 		rule.ID = h.availableGenericRuleID(source.ID, projectID)
 		rule.ProjectID = projectID
 		rule.Shared = false
@@ -159,12 +184,17 @@ func (h *catalogHandlers) cloneGenericTemplateRules(sources []domain.RuleDefinit
 		if err := h.repo.PutRule(rule); err != nil {
 			return nil, err
 		}
+		if templateID != "" {
+			if err := h.repo.RecordTemplateDefaultBase("rule", projectID, templateID, source.ID, rule.ID, source, rule); err != nil {
+				return nil, err
+			}
+		}
 		remap[source.ID] = rule.ID
 	}
 	return remap, nil
 }
 
-func (h *catalogHandlers) cloneGenericTemplateSkills(sources []domain.SkillDefinition, projectID string, now time.Time) (map[string]string, error) {
+func (h *catalogHandlers) cloneGenericTemplateSkills(sources []domain.SkillDefinition, projectID, templateID string, now time.Time) (map[string]string, error) {
 	remap := make(map[string]string, len(sources))
 	for _, source := range sources {
 		if existing, found := h.repo.Skill(source.ID); found && existing.ProjectID == projectID {
@@ -176,12 +206,23 @@ func (h *catalogHandlers) cloneGenericTemplateSkills(sources []domain.SkillDefin
 			continue
 		}
 		skill := source
+		state, err := domain.CopyDistribution(source)
+		if err != nil {
+			return nil, err
+		}
+		skill.DistributionState = state
+		skill.SourceRevision = ""
 		skill.ID = h.availableGenericSkillID(source.ID, projectID)
 		skill.ProjectID = projectID
 		skill.Shared = false
 		skill.UpdatedAt = now
 		if err := h.repo.PutSkill(skill); err != nil {
 			return nil, err
+		}
+		if templateID != "" {
+			if err := h.repo.RecordTemplateDefaultBase("skill", projectID, templateID, source.ID, skill.ID, source, skill); err != nil {
+				return nil, err
+			}
 		}
 		remap[source.ID] = skill.ID
 	}

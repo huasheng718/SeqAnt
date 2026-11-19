@@ -8,19 +8,21 @@ import (
 )
 
 type Run struct {
-	Kind               string             `json:"kind,omitempty"`
-	ID                 string             `json:"id"`
-	WorkflowID         string             `json:"workflowId"`
-	WorkflowSnapshot   WorkflowDefinition `json:"workflowSnapshot"`
-	SandboxID          string             `json:"sandboxId,omitempty"`
-	OwnerInstanceID    string             `json:"ownerInstanceId,omitempty"`
-	LeaseUntil         time.Time          `json:"leaseUntil,omitempty"`
-	Generation         int                `json:"executionGeneration,omitempty"`
-	WorkspaceHost      string             `json:"workspaceHost,omitempty"`
-	WorkspaceEditorID  int64              `json:"workspaceEditorId,omitempty"`
-	WorkspaceEditUntil time.Time          `json:"workspaceEditUntil,omitempty"`
-	WorkspaceRoot      string             `json:"workspaceRoot,omitempty"`
-	WorkspaceCleanedAt time.Time          `json:"workspaceCleanedAt,omitempty"`
+	ExecutionBudget    *ExecutionBudgetState         `json:"executionBudget,omitempty"`
+	Intelligence       *ExecutionIntelligenceContext `json:"intelligence,omitempty"`
+	Kind               string                        `json:"kind,omitempty"`
+	ID                 string                        `json:"id"`
+	WorkflowID         string                        `json:"workflowId"`
+	WorkflowSnapshot   WorkflowDefinition            `json:"workflowSnapshot"`
+	SandboxID          string                        `json:"sandboxId,omitempty"`
+	OwnerInstanceID    string                        `json:"ownerInstanceId,omitempty"`
+	LeaseUntil         time.Time                     `json:"leaseUntil,omitempty"`
+	Generation         int                           `json:"executionGeneration,omitempty"`
+	WorkspaceHost      string                        `json:"workspaceHost,omitempty"`
+	WorkspaceEditorID  int64                         `json:"workspaceEditorId,omitempty"`
+	WorkspaceEditUntil time.Time                     `json:"workspaceEditUntil,omitempty"`
+	WorkspaceRoot      string                        `json:"workspaceRoot,omitempty"`
+	WorkspaceCleanedAt time.Time                     `json:"workspaceCleanedAt,omitempty"`
 	// WorkspaceCleanupNotBefore delays terminal workspace deletion while a
 	// preview finalizer still needs the run directory. Zero means no hold.
 	WorkspaceCleanupNotBefore time.Time         `json:"workspaceCleanupNotBefore,omitempty"`

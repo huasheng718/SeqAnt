@@ -1,14 +1,56 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"text/template"
 
 	"agentflow/internal/domain"
 )
+
+func TestDockerImageUserDefaultAndExplicitOwner(t *testing.T) {
+	for _, user := range []string{"", "root", "0", "runner:runner", "1001:1002"} {
+		t.Run("user="+user, func(t *testing.T) {
+			config := map[string]any{}
+			if user != "" {
+				config["User"] = user
+			}
+			var rendered bytes.Buffer
+			tmpl := template.Must(template.New("image-user").Option("missingkey=error").Parse(dockerImageUserTemplate))
+			if err := tmpl.Execute(&rendered, map[string]any{"Config": config}); err != nil || rendered.String() != user {
+				t.Fatalf("image user=%q err=%v", rendered.String(), err)
+			}
+			if os.Geteuid() == 0 {
+				return // Native owner remapping only applies to non-root services.
+			}
+			workspace := t.TempDir()
+			cvRInstallFakeDocker(t, workspace)
+			createLog := filepath.Join(t.TempDir(), "create-args")
+			t.Setenv("CVR_DOCKER_IMAGE_USER", rendered.String())
+			t.Setenv("CVR_DOCKER_CREATE_LOG", createLog)
+			t.Setenv(dockerHardenedEnv, "")
+			defer os.RemoveAll(dockerIsolationMaskRoot(workspace))
+			sb := &dockerSandbox{id: "image-owner", name: "image-owner", workspace: workspace, dockerfile: domain.DockerfileDefinition{Content: "FROM scratch\n"}}
+			if err := sb.ensureStarted(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			args, err := os.ReadFile(createLog)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantOverride := user == "" || user == "root" || user == "0"
+			hasOverride := strings.Contains(string(args), "\n--user\n")
+			if hasOverride != wantOverride || (wantOverride && !strings.Contains(string(args), fmt.Sprintf("\n%d:%d\n", os.Geteuid(), os.Getegid()))) {
+				t.Fatalf("image user %q create args: %s", user, args)
+			}
+		})
+	}
+}
 
 func TestDockerSandboxLifecycleWithFakeCLI(t *testing.T) {
 	workspace := t.TempDir()
@@ -276,6 +318,9 @@ func cvRInstallFakeDocker(t *testing.T, workspace string) {
 	script := `#!/bin/sh
 set -eu
 workspace="${CVR_DOCKER_WORKSPACE}"
+if [ "${1-}" = create ] && [ -n "${CVR_DOCKER_CREATE_LOG-}" ]; then
+  printf '%s\n' "$@" > "$CVR_DOCKER_CREATE_LOG"
+fi
 if [ "${1-}" = inspect ] && [ "${2-}" = -f ]; then
   case "${3-}" in
     "{{range"*) printf '%s\n' "$workspace" ;;
@@ -296,7 +341,7 @@ case " $* " in
 esac
 case "$*" in
   "image inspect --format {{.Architecture}} "*) echo amd64; exit 0 ;;
-  "image inspect --format {{.Config.User}} "*) exit 0 ;;
+  "image inspect --format {{with index .Config \"User\"}}{{.}}{{end}} "*) printf '%s' "${CVR_DOCKER_IMAGE_USER-}"; exit 0 ;;
   "image inspect "*) exit 1 ;;
   "images --format {{.Repository}} --filter reference=agentflow-img-*"*) printf 'agentflow-img-a:latest\nagentflow-img-b\nagentflow-img-a\n'; exit 0 ;;
   "ps -a --format {{.Image}}"*) echo agentflow-img-b; exit 0 ;;

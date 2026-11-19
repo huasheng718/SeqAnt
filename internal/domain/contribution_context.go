@@ -8,8 +8,9 @@ import (
 )
 
 // RunnerContributionContextSHA identifies the frozen execution input, before
-// claim/lease fields exist. It is a P0 assignment manifest, not a TeamAI or
-// governed-memory version. Provider/Git credential values and the hash itself
+// claim/lease fields exist. This P0 assignment manifest also includes the
+// compact approved-context provenance binding when present. It remains distinct
+// from the TeamRelease/Memory content version. Credential values and the hash itself
 // do not enter the digest. Task claim attempts are bound separately by the
 // lease; placed Node attempts are frozen in the version-2 manifest. Hashing is
 // not proof that a placement or source receipt is currently authorized.

@@ -19,6 +19,9 @@ func (h *mcpHandlers) editableMCP(c *gin.Context, id string) (domain.MCPServerDe
 		c.JSON(http.StatusNotFound, map[string]string{"error": "MCP 不存在"})
 		return server, false
 	}
+	if c.Request.Method == http.MethodGet && !h.requireCatalogRead(c, server.ProjectID, false) {
+		return server, false
+	}
 	if server.MarketID != "" {
 		c.JSON(http.StatusBadRequest, map[string]string{"error": "市场 MCP 不能上传自定义程序"})
 		return server, false
@@ -37,6 +40,10 @@ func (h *mcpHandlers) editableMCP(c *gin.Context, id string) (domain.MCPServerDe
 func (h *mcpHandlers) mcpFiles(c *gin.Context) {
 	id := strings.TrimSpace(c.Param("id"))
 	if _, ok := h.editableMCP(c, id); !ok {
+		return
+	}
+	expected, allowed := sourceEditPrecondition(c, true)
+	if !allowed {
 		return
 	}
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, skillUploadBodyLimit)
@@ -118,11 +125,11 @@ func (h *mcpHandlers) mcpFiles(c *gin.Context) {
 		c.JSON(400, map[string]string{"error": "MCP 文件数量或总量超过限制"})
 		return
 	}
-	if err := h.repo.PutMCPFiles(id, inputs); err != nil {
+	saved, err := h.repo.SaveMCPFiles(id, inputs, expected)
+	if err != nil {
 		respond(c, err)
 		return
 	}
-	saved, _ := h.repo.MCPServer(id)
 	c.JSON(200, domain.PublicMCPServer(saved))
 }
 
@@ -138,6 +145,11 @@ func (h *mcpHandlers) mcpFile(c *gin.Context) {
 	}
 	switch c.Request.Method {
 	case http.MethodGet:
+		server, _ := h.repo.MCPServer(id)
+		if err := domain.CheckDistribution(server, "export"); err != nil {
+			respond(c, err)
+			return
+		}
 		content, ok := h.repo.MCPFileContent(id, filePath)
 		if !ok {
 			c.JSON(404, map[string]string{"error": "file not found"})
@@ -146,11 +158,15 @@ func (h *mcpHandlers) mcpFile(c *gin.Context) {
 		c.Header("Content-Disposition", fmt.Sprintf("attachment; filename*=UTF-8''%s", pathEscapeRFC5987(path.Base(filePath))))
 		c.Data(200, "application/octet-stream", content)
 	case http.MethodDelete:
-		if err := h.repo.DeleteMCPFile(id, filePath); err != nil {
+		expected, allowed := sourceEditPrecondition(c, true)
+		if !allowed {
+			return
+		}
+		saved, err := h.repo.RemoveMCPFile(id, filePath, expected)
+		if err != nil {
 			respond(c, err)
 			return
 		}
-		saved, _ := h.repo.MCPServer(id)
 		c.JSON(200, domain.PublicMCPServer(saved))
 	default:
 		c.JSON(405, map[string]string{"error": "method not allowed"})

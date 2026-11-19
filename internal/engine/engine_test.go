@@ -27,7 +27,8 @@ func TestMain(m *testing.M) {
 
 func putGateTestAgent(t *testing.T, s *repo.Store, id string, gates []domain.VerificationGate) {
 	t.Helper()
-	if err := s.PutAgent(domain.AgentDefinition{ID: id, Name: id, ExecutorID: "mock", Verification: gates}); err != nil {
+	observed, _ := s.Agent(id)
+	if err := s.PutAgent(domain.AgentDefinition{ID: id, Name: id, ExecutorID: "mock", Verification: gates, SourceRevision: observed.SourceRevision}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -89,9 +90,10 @@ func TestResolveAssetsLoadsSkillBinaryFiles(t *testing.T) {
 	if err := st.PutSkill(domain.SkillDefinition{ID: "bin-skill", Name: "Bin", ProjectID: "p1", Content: "# bin"}); err != nil {
 		t.Fatal(err)
 	}
+	createdSkill, _ := st.Skill("bin-skill")
 	if err := st.PutSkillFiles("bin-skill", []repo.SkillFileInput{
 		{Path: "scripts/run.sh", Content: []byte("#!/bin/sh\n"), Mode: 0o755},
-	}); err != nil {
+	}, createdSkill.SourceRevision); err != nil {
 		t.Fatal(err)
 	}
 	assets := (&Engine{repo: st}).resolveAssets(domain.AgentDefinition{Skills: []string{"bin-skill"}}, "p1", "", 1)

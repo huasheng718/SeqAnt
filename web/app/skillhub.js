@@ -432,7 +432,7 @@ function openSkillhubUpdate(skill,{latest='',versions=null,version='',opener=nul
   const src=skillhubSourceOf(skill);if(!src)return;
   if(!catalogOwned(skill.projectId))return toast('只能更新本项目的技能','warn');
   bindSkillhubOnce();
-  const m=state.skillhubModal={mode:'update',skill,slug:src.slug,namespace:src.namespace||'',installed:src.version,latest,version:version&&version!==src.version?version:latest,versions,busy:false,error:'',opener:opener||document.activeElement};
+  const m=state.skillhubModal={mode:'update',skill,sourceRevision:skill.sourceRevision,slug:src.slug,namespace:src.namespace||'',installed:src.version,latest,version:version&&version!==src.version?version:latest,versions,busy:false,error:'',opener:opener||document.activeElement};
   renderSkillhubModal();
   if(!versions)skillhubFetchVersions(m.slug,m.namespace).then(list=>{if(state.skillhubModal!==m)return;m.versions=list;if(!m.latest)m.latest=list[0]?.version||'';if(!m.version)m.version=m.latest;renderSkillhubModal()}).catch(err=>{if(state.skillhubModal!==m)return;m.versions=[];m.versionsError=err.message;renderSkillhubModal()});
 }
@@ -497,7 +497,7 @@ async function submitSkillhubModal(){
     if(m.mode==='install'){
       saved=await api('/api/skillhub/install',{method:'POST',body:JSON.stringify({slug:m.slug,namespace:m.namespace,version:m.version,projectId:state.projectFilter,id:String(m.id).trim(),name:String(m.name||'').trim()})});
     }else{
-      saved=await api('/api/skillhub/update',{method:'POST',body:JSON.stringify({skillId:m.skill.id,version:m.version})});
+      saved=await api('/api/skillhub/update',{method:'POST',headers:sourceEditHeaders(m.sourceRevision),body:JSON.stringify({skillId:m.skill.id,version:m.version})});
     }
     skillhubStoreSkill(saved);
     const src=skillhubSourceOf(saved);
@@ -510,7 +510,7 @@ async function submitSkillhubModal(){
     if(typeof renderProperties==='function')renderProperties();
   }catch(err){
     m.busy=false;m.error=err.message||'操作失败';
-    if(state.skillhubModal===m)renderSkillhubModal();
+    if(state.skillhubModal===m){renderSkillhubModal();if(m.mode==='update')showSourceEditConflict(err,$('#skillhubModal'),'skills',m.skill.id,latest=>{m.sourceRevision=latest.sourceRevision})}
     toast(m.error,'err',6000);
   }
 }

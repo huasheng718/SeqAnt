@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -64,8 +65,26 @@ func TestCatalogRepositoryAgentAndAssetBranches(t *testing.T) {
 		{http.MethodDelete, "/api/dockerfiles?id=cvb-df", nil, 409},
 		{http.MethodDelete, "/api/environments?id=cvb-env", nil, 204},
 	}
+	var observedClone, observedAgent domain.AgentDefinition
 	for i, tc := range requests {
-		rec := cvBRequest(t, f, tc.method, tc.path, tc.body, true)
+		var rec *httptest.ResponseRecorder
+		if tc.path == "/api/agents/cvb-agent-clone" && tc.method == http.MethodDelete {
+			rec = sourceEditRequest(t, f.h, f.user, tc.method, tc.path, tc.body, map[string]string{"If-Match": "\"" + observedClone.SourceRevision + "\""})
+		} else if tc.method == http.MethodPut && tc.path == "/api/agents" && tc.want == http.StatusConflict {
+			rec = sourceEditRequest(t, f.h, f.user, tc.method, tc.path, tc.body, map[string]string{"If-Match": "\"" + observedAgent.SourceRevision + "\""})
+		} else {
+			rec = cvBRequest(t, f, tc.method, tc.path, tc.body, true)
+		}
+		if tc.method == http.MethodPut && tc.path == "/api/agents" && tc.want == http.StatusOK {
+			if err := json.Unmarshal(rec.Body.Bytes(), &observedAgent); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if tc.method == http.MethodPost && tc.path == "/api/agents/cvb-agent/clone" && tc.want == http.StatusCreated {
+			if err := json.Unmarshal(rec.Body.Bytes(), &observedClone); err != nil {
+				t.Fatal(err)
+			}
+		}
 		if rec.Code != tc.want {
 			t.Errorf("%d %s %s = %d want %d: %s", i, tc.method, tc.path, rec.Code, tc.want, rec.Body.String())
 		}
@@ -79,15 +98,18 @@ func TestCatalogRepositoryAgentAndAssetBranches(t *testing.T) {
 	if err := f.s.PutAgent(agent); err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{"/api/rules?id=cvb-rule", "/api/skills?id=cvb-skill"} {
-		if rec := cvBRequest(t, f, http.MethodDelete, path, nil, true); rec.Code != 409 {
+	observedRule, _ := f.s.Rule("cvb-rule")
+	observedSkill, _ := f.s.Skill("cvb-skill")
+	for path, base := range map[string]string{"/api/rules?id=cvb-rule": observedRule.SourceRevision, "/api/skills?id=cvb-skill": observedSkill.SourceRevision} {
+		if rec := sourceEditRequest(t, f.h, f.user, http.MethodDelete, path, nil, map[string]string{"If-Match": "\"" + base + "\""}); rec.Code != 409 {
 			t.Errorf("guarded delete %s = %d: %s", path, rec.Code, rec.Body.String())
 		}
 	}
-	if rec := cvBRequest(t, f, http.MethodPut, "/api/rules", map[string]any{"id": "cvb-rule", "name": "Rule", "projectId": "cvb-cat", "shared": true}, true); rec.Code != 200 {
+	if rec := sourceEditRequest(t, f.h, f.user, http.MethodPut, "/api/rules", map[string]any{"id": "cvb-rule", "name": "Rule", "projectId": "cvb-cat", "shared": true}, map[string]string{"If-Match": "\"" + observedRule.SourceRevision + "\""}); rec.Code != 200 {
 		t.Fatal(rec.Body.String())
 	}
-	if rec := cvBRequest(t, f, http.MethodPut, "/api/rules", map[string]any{"id": "cvb-rule", "name": "Rule", "projectId": "cvb-cat", "shared": false}, true); rec.Code != 409 {
+	observedRule, _ = f.s.Rule("cvb-rule")
+	if rec := sourceEditRequest(t, f.h, f.user, http.MethodPut, "/api/rules", map[string]any{"id": "cvb-rule", "name": "Rule", "projectId": "cvb-cat", "shared": false}, map[string]string{"If-Match": "\"" + observedRule.SourceRevision + "\""}); rec.Code != 409 {
 		t.Errorf("unshare referenced rule = %d: %s", rec.Code, rec.Body.String())
 	}
 }
@@ -192,7 +214,8 @@ func TestCatalogDirectSharingAndCloneHelpers(t *testing.T) {
 		Rules:  []string{"missing", "cvb-foreign-rule", "cvb-already-rule", "cvb-share-rule"},
 		Skills: []string{"missing", "cvb-foreign-skill", "cvb-already-skill", "cvb-share-skill"},
 	}
-	if err := h.shareAgentAssets(agent); err != nil {
+	agent.Shared = true
+	if _, err := f.s.SaveAgentWithSharing(agent); err != nil {
 		t.Fatal(err)
 	}
 	if item, _ := f.s.Rule("cvb-share-rule"); !item.Shared {
@@ -219,14 +242,17 @@ func TestCatalogDirectSharingAndCloneHelpers(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := h.cloneAgentMCPServers([]string{"cvb-personal-other"}, "cvb-direct-b", 0); !errors.Is(err, errPersonalMCPCloneRequiresLogin) {
+	if _, _, err := h.cloneAgentMCPServers([]string{"cvb-personal-other"}, "cvb-direct-b", 0); !errors.Is(err, errPersonalMCPCloneRequiresLogin) {
 		t.Fatalf("personal clone without login error = %v", err)
 	}
-	got, err := h.cloneAgentMCPServers([]string{
+	got, pending, err := h.cloneAgentMCPServers([]string{
 		"missing", "cvb-empty", "cvb-project-same", "cvb-project-market",
 		"cvb-project-copy", "cvb-personal-own", "cvb-personal-other",
 	}, "cvb-direct-b", f.user.ID)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.s.CreateAgentClone(domain.AgentDefinition{ID: "cvb-clone-plan", Name: "Clone", ProjectID: "cvb-direct-b", MCPServers: got}, pending); err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 5 {
@@ -240,7 +266,7 @@ func TestCatalogDirectSharingAndCloneHelpers(t *testing.T) {
 			t.Fatalf("cloned MCP %q was not stored", id)
 		}
 	}
-	again, err := h.cloneAgentMCPServers([]string{"cvb-project-copy"}, "cvb-direct-b", f.user.ID)
+	again, _, err := h.cloneAgentMCPServers([]string{"cvb-project-copy"}, "cvb-direct-b", f.user.ID)
 	if err != nil || len(again) != 1 || again[0] != got[2] {
 		t.Fatalf("idempotent clone = %#v, %v", again, err)
 	}
@@ -364,12 +390,16 @@ func TestCatalogMoreHTTPBranches(t *testing.T) {
 	if err := f.s.PutAgent(agent); err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{"/api/agents/cvb-http-agent", "/api/rules?id=cvb-http-rule", "/api/skills?id=cvb-http-skill"} {
-		rec := cvBRequest(t, f, http.MethodDelete, path, nil, true)
+	observedAgent, _ := f.s.Agent(agent.ID)
+	observedRule, _ := f.s.Rule("cvb-http-rule")
+	observedSkill, _ := f.s.Skill("cvb-http-skill")
+	for path, base := range map[string]string{"/api/agents/cvb-http-agent": observedAgent.SourceRevision, "/api/rules?id=cvb-http-rule": observedRule.SourceRevision, "/api/skills?id=cvb-http-skill": observedSkill.SourceRevision} {
+		rec := sourceEditRequest(t, f.h, f.user, http.MethodDelete, path, nil, map[string]string{"If-Match": "\"" + base + "\""})
 		if rec.Code != http.StatusConflict {
 			t.Errorf("shared delete %s = %d: %s", path, rec.Code, rec.Body.String())
 		}
 	}
+	agent, _ = f.s.Agent(agent.ID)
 	agent.Shared = false
 	if err := f.s.PutAgent(agent); err != nil {
 		t.Fatal(err)
@@ -383,7 +413,8 @@ func TestCatalogMoreHTTPBranches(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if rec := cvBRequest(t, f, http.MethodDelete, "/api/agents/cvb-http-agent", nil, true); rec.Code != http.StatusConflict {
+	observedAgent, _ = f.s.Agent(agent.ID)
+	if rec := sourceEditRequest(t, f.h, f.user, http.MethodDelete, "/api/agents/cvb-http-agent", nil, map[string]string{"If-Match": "\"" + observedAgent.SourceRevision + "\""}); rec.Code != http.StatusConflict {
 		t.Fatalf("referenced agent delete = %d: %s", rec.Code, rec.Body.String())
 	}
 
@@ -407,7 +438,14 @@ func TestCatalogMoreHTTPBranches(t *testing.T) {
 		{http.MethodGet, "/api/executors", nil, http.StatusOK},
 	}
 	for _, tc := range cases {
-		rec := cvBRequest(t, f, tc.method, tc.path, tc.body, true)
+		var rec *httptest.ResponseRecorder
+		if tc.method == http.MethodPut && tc.path == "/api/rules" && tc.want == http.StatusConflict {
+			rec = sourceEditRequest(t, f.h, f.user, tc.method, tc.path, tc.body, map[string]string{"If-Match": "\"" + observedRule.SourceRevision + "\""})
+		} else if tc.method == http.MethodPut && tc.path == "/api/skills" && tc.want == http.StatusConflict {
+			rec = sourceEditRequest(t, f.h, f.user, tc.method, tc.path, tc.body, map[string]string{"If-Match": "\"" + observedSkill.SourceRevision + "\""})
+		} else {
+			rec = cvBRequest(t, f, tc.method, tc.path, tc.body, true)
+		}
 		if rec.Code != tc.want {
 			t.Errorf("%s %s = %d want %d: %s", tc.method, tc.path, rec.Code, tc.want, rec.Body.String())
 		}
@@ -554,6 +592,7 @@ func TestCatalogRevisionRestoreAndValidation(t *testing.T) {
 	if err := f.s.PutAgent(agent); err != nil {
 		t.Fatal(err)
 	}
+	agent, _ = f.s.Agent(agent.ID)
 	agent.Name = "Agent v2"
 	if err := f.s.PutAgent(agent); err != nil {
 		t.Fatal(err)
@@ -568,6 +607,7 @@ func TestCatalogRevisionRestoreAndValidation(t *testing.T) {
 	if err := f.s.PutWorkflow(workflow); err != nil {
 		t.Fatal(err)
 	}
+	observedRestoreAgent, _ := f.s.Agent(agent.ID)
 	for _, tc := range []struct {
 		method, path string
 		body         any
@@ -583,9 +623,14 @@ func TestCatalogRevisionRestoreAndValidation(t *testing.T) {
 		{http.MethodGet, "/api/workflows/" + workflow.ID + "/revisions", nil, 200},
 		{http.MethodGet, "/api/agents/" + agent.ID + "/revisions", nil, 200},
 		{http.MethodPost, "/api/workflows/" + workflow.ID + "/revisions/missing/restore", nil, 404},
-		{http.MethodPost, "/api/agents/" + agent.ID + "/revisions/missing/restore", nil, 400},
+		{http.MethodPost, "/api/agents/" + agent.ID + "/revisions/missing/restore", nil, 404},
 	} {
-		rec := cvBRequest(t, f, tc.method, tc.path, tc.body, true)
+		var rec *httptest.ResponseRecorder
+		if tc.method == http.MethodPost && strings.HasPrefix(tc.path, "/api/agents/") {
+			rec = sourceEditRequest(t, f.h, f.user, tc.method, tc.path, tc.body, map[string]string{"If-Match": "\"" + observedRestoreAgent.SourceRevision + "\""})
+		} else {
+			rec = cvBRequest(t, f, tc.method, tc.path, tc.body, true)
+		}
 		if rec.Code != tc.want {
 			t.Errorf("%s %s = %d want %d: %s", tc.method, tc.path, rec.Code, tc.want, rec.Body.String())
 		}
@@ -598,7 +643,12 @@ func TestCatalogRevisionRestoreAndValidation(t *testing.T) {
 			t.Fatalf("%s revisions: %v %s", kind, err, rec.Body.String())
 		}
 		path := "/api/" + kind + "/" + id + "/revisions/" + revisions[0].ID + "/restore"
-		if restored := cvBRequest(t, f, http.MethodPost, path, nil, true); restored.Code != http.StatusOK {
+		headers := map[string]string{}
+		if kind == "agents" {
+			observed, _ := f.s.Agent(id)
+			headers["If-Match"] = "\"" + observed.SourceRevision + "\""
+		}
+		if restored := sourceEditRequest(t, f.h, f.user, http.MethodPost, path, nil, headers); restored.Code != http.StatusOK {
 			t.Errorf("restore %s = %d: %s", kind, restored.Code, restored.Body.String())
 		}
 	}

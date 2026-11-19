@@ -56,7 +56,7 @@ func (e *Engine) PublishContribution(ctx context.Context, integrationID string) 
 	if !valid || info.Project != project {
 		return empty, errors.New("invalid publication GitHub repository")
 	}
-	if e.CreateContributionPR == nil {
+	if e.CreateContributionPR == nil && e.DiscoverContributionPR == nil {
 		return empty, errors.New("create-only PR adapter is not configured")
 	}
 	projectRecord, ok := e.repo.Project(repository.ProjectID)
@@ -127,7 +127,27 @@ func (e *Engine) PublishContribution(ctx context.Context, integrationID string) 
 	if err := check(); err != nil {
 		return empty, err
 	}
-	receipt, err := e.CreateContributionPR(ctx, project, claimed.Branch, claimed.TargetBranch, value.ResultSHA, title, body)
+	prAdapter := e.DiscoverContributionPR
+	if !claimed.PRCreateAttempted {
+		if e.CreateContributionPR == nil {
+			return empty, errors.New("create-only PR adapter is not configured")
+		}
+		// The durable phase is the authorization linearization point for one
+		// automatic create attempt. Crashing after it but before POST sacrifices
+		// availability: reclaim may discover, never authorize another creation.
+		claimed, err = e.repo.MarkContributionPRCreateAttempted(value.ID, claimed.LeaseOwner, claimed.Attempt, time.Now().UTC())
+		if err != nil {
+			return empty, err
+		}
+		if err := check(); err != nil {
+			return empty, err
+		}
+		prAdapter = e.CreateContributionPR
+	}
+	if prAdapter == nil {
+		return empty, errors.New("uncertain PR creation requires a discover-only adapter; automatic create retry is disabled")
+	}
+	receipt, err := prAdapter(ctx, project, claimed.Branch, claimed.TargetBranch, value.ResultSHA, title, body)
 	if err != nil {
 		return empty, err
 	}

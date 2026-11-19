@@ -39,10 +39,15 @@ export async function createWorkflow(label, nodes, extra = {}) {
 
 export async function createAgent(label, prompt, extra = {}) {
   const id = uid(label);
-  track(`agent ${id}`, () => del(`/api/agents/${id}`));
+  track(`agent ${id}`, async () => {
+    // Cleanup reads only this test-owned fixture; editor writes must retain their
+    // originally observed revision rather than refetching and retrying.
+    const current = list(await get('/api/agents')).find(agent => agent.id === id);
+    if (current) await del(`/api/agents/${id}`, { headers: { 'If-Match': JSON.stringify(current.sourceRevision) } });
+  });
   await put('/api/agents', {
     id, name: `E2E ${label}`, projectId: cfg.projectId, description: 'e2e', executorId: cfg.executor, prompt, ...(cfg.modelID ? {model:cfg.modelID} : {}), ...extra,
-  });
+  }, { headers: { 'If-None-Match': '*' } });
   return id;
 }
 

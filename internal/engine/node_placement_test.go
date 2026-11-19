@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"errors"
 	"reflect"
 	"strings"
@@ -240,8 +241,10 @@ func TestNodePlacementProjectionRefusesChangedAgentExecutorAndCapabilities(t *te
 	if _, err := e.nodeExecutionRun(run, "writer"); err != nil {
 		t.Fatal(err)
 	}
+	agent, _ = store.Agent(agent.ID)
 	agent.ExecutorID = "pi"
-	if err := store.PutAgent(agent); err != nil {
+	agent, err = store.SaveAgent(agent)
+	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := e.nodeExecutionRun(run, "writer"); !errors.Is(err, domain.ErrRunnerPlacementChanged) {
@@ -320,5 +323,34 @@ func TestNodeExecutionProjectionPreservesDefaultAndRejectsStaleAttempts(t *testi
 	projected, err = e.nodeExecutionRun(legacy, "old-node")
 	if err != nil || !reflect.DeepEqual(projected, legacy) {
 		t.Fatalf("legacy projection changed: %v", err)
+	}
+}
+
+// Human approval stays on the control plane even when every executable node
+// uses a frozen remote target. It must never attempt Runner placement.
+func TestNodePlacementApprovalWaitsWithoutAnExecutionTarget(t *testing.T) {
+	e, store, run, _ := placementEngineFixture(t)
+	if err := e.freezeNodePlacementRequests(&run); err != nil {
+		t.Fatal(err)
+	}
+	e.ConfigureExecution("approval-placement-test", "test-host", time.Minute, true)
+	run.OwnerInstanceID = "approval-placement-test"
+	run.Generation = 1
+	run.LeaseUntil = time.Now().UTC().Add(time.Minute)
+	run.Status = "running"
+	run.CreatedAt = time.Now().UTC()
+	run.Nodes["writer"].Status = "succeeded"
+	run.Nodes["approve"] = &domain.NodeRun{NodeID: "approve", Status: "pending"}
+	if err := store.PutRun(run); err != nil {
+		t.Fatal(err)
+	}
+	e.executeNode(context.Background(), run.ID, run.WorkflowSnapshot, run.WorkflowSnapshot.Nodes[1])
+	got, _ := store.RunState(run.ID)
+	approval := got.Nodes["approve"]
+	if approval.Status != "waiting_approval" || approval.Error != "" || approval.ExecutionPlacement != nil || approval.Attempt != 1 {
+		t.Fatalf("placed workflow approval failed or acquired a Runner: %+v", approval)
+	}
+	if len(store.RunnerTasksForRun(run.ID)) != 0 {
+		t.Fatal("approval dispatched execution to a Runner")
 	}
 }

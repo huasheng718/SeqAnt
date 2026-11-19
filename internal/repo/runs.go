@@ -38,6 +38,8 @@ func runFromRow(row runRow) domain.Run {
 	}
 	_ = json.Unmarshal(row.Snapshot, &run.WorkflowSnapshot)
 	_ = json.Unmarshal(row.ExecutionContext, &run.ExecutionContext)
+	_ = json.Unmarshal(row.ExecutionBudget, &run.ExecutionBudget)
+	_ = json.Unmarshal(row.Intelligence, &run.Intelligence)
 	_ = json.Unmarshal(row.UsageJSON, &run.Usage)
 	if row.Created != nil {
 		run.CreatedAt = *row.Created
@@ -71,7 +73,7 @@ func runRowValues(run domain.Run) map[string]any {
 		"repository": jsonBytes(run.Repository),
 		// master 的 repositoriesJSON：空集合写 SQL NULL 而不是 '[]'。
 		"repositories": repositoriesJSONValue(run.Repositories), "snapshot": jsonBytes(run.WorkflowSnapshot),
-		"execution_context": jsonBytes(run.ExecutionContext), "usage_json": jsonBytes(run.Usage),
+		"execution_context": jsonBytes(run.ExecutionContext), "execution_budget": jsonBytes(run.ExecutionBudget), "intelligence": jsonBytes(run.Intelligence), "usage_json": jsonBytes(run.Usage),
 		"tool_calls": run.ToolCalls, "telemetry_sequence": run.TelemetrySequence, "log_sequence": run.LogSequence,
 		"owner_instance_id": run.OwnerInstanceID, "lease_until": timePtr(run.LeaseUntil),
 		"execution_generation": run.Generation, "workspace_host": run.WorkspaceHost, "workspace_root": run.WorkspaceRoot,
@@ -952,6 +954,9 @@ func (r *RunsRepo) writeRunOnce(run domain.Run, lockKeys []string, expectedRevis
 		}
 		current, err := r.takeRunForUpdate(tx, run.ID)
 		if err == nil {
+			if err := preserveExecutionBudgetWrite(runFromRow(current), run); err != nil {
+				return err
+			}
 			if len(expectedRevision) > 0 && current.Revision != expectedRevision[0] {
 				return ErrRunDecisionStale
 			}
@@ -1019,7 +1024,7 @@ func (r *RunsRepo) writeRunOnce(run domain.Run, lockKeys []string, expectedRevis
 		// cancel/pause request (master's writeRun has the same omission).
 		if err := upsertColumns(tx, "runs", runRowValues(run), []string{
 			"kind", "workflow_id", "status", "revision", "input", "human_context", "sandbox_id", "repository", "repositories", "snapshot",
-			"execution_context", "usage_json", "tool_calls", "telemetry_sequence",
+			"execution_context", "execution_budget", "intelligence", "usage_json", "tool_calls", "telemetry_sequence",
 			"log_sequence", "workspace_cleaned_at", "updated_at", "admission_state", "queue_entered_at", "quota_project_id", "quota_parent_run_id", "quota_exempt", "quota_bucket",
 		}); err != nil {
 			return fmt.Errorf("runs upsert %s: %w", run.ID, err)

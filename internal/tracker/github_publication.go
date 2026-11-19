@@ -20,6 +20,7 @@ type githubPublicationPull struct {
 	Merged    *bool           `json:"merged"`
 	MergedAt  json.RawMessage `json:"merged_at"`
 	AutoMerge json.RawMessage `json:"auto_merge"`
+	Draft     *bool           `json:"draft"`
 	Head      struct {
 		Ref  string `json:"ref"`
 		SHA  string `json:"sha"`
@@ -116,7 +117,7 @@ func (g *githubClient) publicationReceipt(ctx context.Context, number int, branc
 	if err := g.verifyPublicationBranch(ctx, branch, sha); err != nil {
 		return domain.ContributionPRReceipt{}, err
 	}
-	return domain.ContributionPRReceipt{URL: canonicalURL, Number: number, HeadSHA: sha}, nil
+	return domain.ContributionPRReceipt{URL: canonicalURL, Number: number, HeadSHA: sha, Draft: pull.Draft != nil && *pull.Draft}, nil
 }
 
 // EnsureOpenBranchPRAtSHA is create-only. It never updates a branch/PR, enables
@@ -124,13 +125,23 @@ func (g *githubClient) publicationReceipt(ctx context.Context, number int, branc
 // existing repository integration lock; provider discovery reconciles uncertain
 // POST outcomes using the same stable branch.
 func (s *Service) EnsureOpenBranchPRAtSHA(ctx context.Context, project, branch, target, resultSHA, title, body string) (domain.ContributionPRReceipt, error) {
+	return s.openBranchPRAtSHA(ctx, project, branch, target, resultSHA, title, body, true)
+}
+
+// FindOpenBranchPRAtSHA reconciles an uncertain durable create phase. A missing
+// or temporarily invisible PR never authorizes a second POST or replacement.
+func (s *Service) FindOpenBranchPRAtSHA(ctx context.Context, project, branch, target, resultSHA, title, body string) (domain.ContributionPRReceipt, error) {
+	return s.openBranchPRAtSHA(ctx, project, branch, target, resultSHA, title, body, false)
+}
+
+func (s *Service) openBranchPRAtSHA(ctx context.Context, project, branch, target, resultSHA, title, body string, allowCreate bool) (domain.ContributionPRReceipt, error) {
 	if err := ctx.Err(); err != nil {
 		return domain.ContributionPRReceipt{}, err
 	}
 	if !strings.HasPrefix(project, "github:") || !validPublicationBranch(branch) || !validPublicationBranch(target) || branch == target || !domain.ValidWorkspaceBaseSHA(resultSHA) {
 		return domain.ContributionPRReceipt{}, fmt.Errorf("invalid GitHub fixed-SHA publication request")
 	}
-	g, err := s.githubClient(project)
+	g, err := s.githubPublicationClient(ctx, project)
 	if err != nil {
 		return domain.ContributionPRReceipt{}, fmt.Errorf("invalid GitHub publication repository")
 	}
@@ -142,6 +153,9 @@ func (s *Service) EnsureOpenBranchPRAtSHA(ctx context.Context, project, branch, 
 		return domain.ContributionPRReceipt{}, err
 	}
 	if !found {
+		if !allowCreate {
+			return domain.ContributionPRReceipt{}, fmt.Errorf("GitHub stable branch PR is not visible; uncertain creation remains reconcile-only")
+		}
 		if strings.TrimSpace(title) == "" {
 			title = "SuperAgent: " + branch + " → " + target
 		}

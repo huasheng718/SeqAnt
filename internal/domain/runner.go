@@ -430,6 +430,7 @@ func PublicRunnerTask(task RunnerTask) RunnerTask {
 // credentials are included only when the runtime selects personal credentials
 // and are scrubbed from durable storage when the task finishes.
 type RunnerInvocation struct {
+	GovernedContext    *RunnerGovernedContext    `json:"governedContext,omitempty"`
 	ContributionInputs []RunnerContributionInput `json:"contributionInputs,omitempty"`
 	// WorkspaceIsolation is frozen by the Engine. Its version requires a
 	// capable Runner and a fresh, task/attempt-owned checkout.
@@ -538,7 +539,8 @@ type RunnerInputFile struct {
 // RunnerTaskOutputs is what a runner reports about the task workspace after
 // an invocation or script.
 type RunnerTaskOutputs struct {
-	ContributionReceipts []string `json:"contributionReceipts,omitempty"`
+	ContextEvidence      *RunnerContextEvidence `json:"contextEvidence,omitempty"`
+	ContributionReceipts []string               `json:"contributionReceipts,omitempty"`
 	// Files maps a workspace-relative OutputFiles path to its content. Missing
 	// files and non-regular files are absent; oversized ones are in TooLarge.
 	Files    map[string]string `json:"files,omitempty"`

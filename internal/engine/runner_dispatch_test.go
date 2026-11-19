@@ -73,7 +73,10 @@ func TestGateCommandInvocationCarriesResponsibleGitToken(t *testing.T) {
 			WorkspaceDir: "skillhub",
 		}},
 	}
-	invocation := (&Engine{repo: s, deliveryPolicy: domain.DeliveryPolicyLegacy}).gateCommandInvocation(run, "fix")
+	invocation, err := (&Engine{repo: s, deliveryPolicy: domain.DeliveryPolicyLegacy}).gateCommandInvocation(run, "fix")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if invocation == nil || len(invocation.Repositories) != 1 {
 		t.Fatalf("invocation = %+v", invocation)
 	}

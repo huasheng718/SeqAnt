@@ -224,6 +224,7 @@ func TestCatalogValidationDeletionAndBuiltins(t *testing.T) {
 	if err := s.PutAgent(valid); err != nil {
 		t.Fatal(err)
 	}
+	valid, _ = s.Agent(valid.ID)
 	valid.Name = "Catalog Agent 2"
 	valid.ProjectID = ""
 	if err := s.PutAgent(valid); err != nil {
@@ -236,7 +237,7 @@ func TestCatalogValidationDeletionAndBuiltins(t *testing.T) {
 	if err := s.DeleteAgent("missing"); err == nil {
 		t.Fatal("missing agent deleted")
 	}
-	if err := s.DeleteAgent(valid.ID); err != nil {
+	if err := s.DeleteAgent(valid.ID, gotAgent.SourceRevision); err != nil {
 		t.Fatal(err)
 	}
 
@@ -285,20 +286,22 @@ func TestCatalogValidationDeletionAndBuiltins(t *testing.T) {
 	if err := s.PutRule(rule); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DeleteRule(rule.ID); err != nil {
+	rule, _ = s.Rule(rule.ID)
+	if err := s.DeleteRule(rule.ID, rule.SourceRevision); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DeleteRule(rule.ID); err == nil {
+	if err := s.DeleteRule(rule.ID, rule.SourceRevision); err == nil {
 		t.Fatal("missing rule deleted")
 	}
 	skill := domain.SkillDefinition{ID: "cve-skill", Name: "Skill"}
 	if err := s.PutSkill(skill); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DeleteSkill(skill.ID); err != nil {
+	skill, _ = s.Skill(skill.ID)
+	if err := s.DeleteSkill(skill.ID, skill.SourceRevision); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DeleteSkill(skill.ID); err == nil {
+	if err := s.DeleteSkill(skill.ID, skill.SourceRevision); err == nil {
 		t.Fatal("missing skill deleted")
 	}
 }

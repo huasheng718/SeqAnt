@@ -129,13 +129,16 @@ func (r *RunnersRepo) RunnerContributionInputForSession(taskID, runnerID, sessio
 	var input domain.RunnerContributionInput
 	var content []byte
 	found := false
+	// Authenticate before the not-found probe, but in a short transaction of
+	// its own. Keeping the registry lock while the task-plane transaction
+	// acquires Run/task locks reverses the callback lock order and can deadlock
+	// with a concurrent claim (Run/task -> registry).
+	if err := r.DB.Transaction(func(tx *gorm.DB) error {
+		return r.validateRunnerClaimSessionTx(tx, runnerID, sessionHash, now)
+	}); err != nil {
+		return input, nil, false, err
+	}
 	err := r.DB.Transaction(func(tx *gorm.DB) error {
-		// Authenticate the principal before the not-found probe. Otherwise a
-		// caller with an expired/rotated session could distinguish an unknown
-		// task without receiving the required session error.
-		if err := r.validateRunnerClaimSessionTx(tx, runnerID, sessionHash, now); err != nil {
-			return err
-		}
 		var probe runnerTaskRow
 		if err := tx.Where("id = ?", taskID).Take(&probe).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {

@@ -1,6 +1,8 @@
 package repo
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -39,6 +41,9 @@ func decodeGenericTemplate(raw []byte) (GenericTemplate, error) {
 	template.Workflow.Generic = true
 	template.Workflow.ProjectID = ""
 	template.Workflow.Shared = false
+	for i := range template.Agents {
+		template.Agents[i].SourceRevision = sourceRevision("generic_agents:"+template.Workflow.ID, template.Agents[i])
+	}
 	return template, nil
 }
 
@@ -79,6 +84,21 @@ func (r *CatalogRepo) PutGenericTemplate(template GenericTemplate) error {
 // UpdateGenericWorkflow writes the workflow half of a stored template and
 // leaves the bundled roles, rules and skills untouched.
 func (r *CatalogRepo) UpdateGenericWorkflow(workflow domain.WorkflowDefinition) (domain.WorkflowDefinition, error) {
+	var saved domain.WorkflowDefinition
+	err := r.DB.Transaction(func(tx *gorm.DB) error {
+		var row genericTemplateRow
+		if err := r.locking(tx).Where("id = ?", workflow.ID).Take(&row).Error; err != nil {
+			return err
+		}
+		catalog := *r
+		catalog.deps = &deps{DB: tx}
+		var err error
+		saved, err = catalog.updateGenericWorkflow(workflow)
+		return err
+	})
+	return saved, err
+}
+func (r *CatalogRepo) updateGenericWorkflow(workflow domain.WorkflowDefinition) (domain.WorkflowDefinition, error) {
 	if err := domain.ValidateWorkflowPreparation(workflow); err != nil {
 		return domain.WorkflowDefinition{}, err
 	}
@@ -135,6 +155,21 @@ func (r *CatalogRepo) UpdateGenericWorkflow(workflow domain.WorkflowDefinition) 
 // workflow graph, rules and skills stay untouched, and nothing is written
 // into the project agents table.
 func (r *CatalogRepo) UpdateGenericAgent(workflowID string, agent domain.AgentDefinition) (domain.AgentDefinition, error) {
+	var saved domain.AgentDefinition
+	err := r.DB.Transaction(func(tx *gorm.DB) error {
+		var row genericTemplateRow
+		if err := r.locking(tx).Where("id = ?", workflowID).Take(&row).Error; err != nil {
+			return err
+		}
+		catalog := *r
+		catalog.deps = &deps{DB: tx}
+		var err error
+		saved, err = catalog.updateGenericAgent(workflowID, agent)
+		return err
+	})
+	return saved, err
+}
+func (r *CatalogRepo) updateGenericAgent(workflowID string, agent domain.AgentDefinition) (domain.AgentDefinition, error) {
 	template, ok := r.GenericTemplateByWorkflow(workflowID)
 	if !ok {
 		return domain.AgentDefinition{}, errors.New("generic template not found")
@@ -154,6 +189,22 @@ func (r *CatalogRepo) UpdateGenericAgent(workflowID string, agent domain.AgentDe
 		return domain.AgentDefinition{}, fmt.Errorf("角色 %q 不属于该通用模板", id)
 	}
 	existing := template.Agents[index]
+	state, err := ordinaryDistributionState(existing.DistributionState, agent.DistributionState)
+	if err != nil {
+		return domain.AgentDefinition{}, err
+	}
+	agent.DistributionState = state
+	if agent.SourceRevision == "" {
+		return domain.AgentDefinition{}, ErrSourcePrecondition
+	}
+	if agent.SourceRevision != existing.SourceRevision {
+		return domain.AgentDefinition{}, ErrSourceConflict
+	}
+	var nonce [16]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return domain.AgentDefinition{}, err
+	}
+	agent.SourceRevision = hex.EncodeToString(nonce[:])
 	agent.ID = id
 	agent.ProjectID = ""
 	agent.Shared = false

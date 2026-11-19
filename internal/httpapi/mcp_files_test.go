@@ -18,7 +18,8 @@ func TestMCPFileUploadDownloadDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := skillFileHandler(t, store)
-	rec := requestMultipart(t, h, http.MethodPost, "/api/mcp-servers/custom/files", func(w *multipart.Writer) { addFilePartWithPath(w, "my-mcp/src/server.py", []byte("print('ok')")) })
+	server, _ = store.MCPServer(server.ID)
+	rec := requestMultipart(t, h, http.MethodPost, "/api/mcp-servers/custom/files", func(w *multipart.Writer) { addFilePartWithPath(w, "my-mcp/src/server.py", []byte("print('ok')")) }, map[string]string{"If-Match": `"` + server.SourceRevision + `"`})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("upload=%d %s", rec.Code, rec.Body.String())
 	}
@@ -36,6 +37,7 @@ func TestMCPFileUploadDownloadDelete(t *testing.T) {
 		t.Fatalf("download=%d %q", dl.Code, dl.Body.Bytes())
 	}
 	req = httptest.NewRequest(http.MethodDelete, "/api/mcp-servers/custom/files/src/server.py", nil)
+	req.Header.Set("If-Match", `"`+saved.SourceRevision+`"`)
 	del := httptest.NewRecorder()
 	h.ServeHTTP(del, req)
 	if del.Code != 200 {

@@ -229,11 +229,13 @@ func TestUpdateCustomMCPKeepsScopeAndClearsIcon(t *testing.T) {
 	if err := st.PutMCPServer(original); err != nil {
 		t.Fatal(err)
 	}
+	original, _ = st.MCPServer(original.ID)
 	s := &Server{deps: &deps{repo: st}}
 	s.mcp = &mcpHandlers{deps: s.deps}
 	g := gin.New()
 	g.PUT("/api/mcp-servers", s.mcp.mcpServers)
 	req := httptest.NewRequest(http.MethodPut, "/api/mcp-servers", bytes.NewBufferString(`{"id":"custom","name":"New","scope":"personal","ownerUserId":99,"projectId":"other","iconUrl":"https://bad.example/icon.svg","transport":"http","url":"https://new.example/mcp"}`))
+	req.Header.Set("If-Match", `"`+original.SourceRevision+`"`)
 	rec := httptest.NewRecorder()
 	g.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -257,11 +259,13 @@ func TestUpdateMarketMCPIsRejected(t *testing.T) {
 	if err := st.PutMCPServer(domain.MCPServerDefinition{ID: "market", Name: "Market", MarketID: "gongfeng", Scope: "project", ProjectID: "platform", Transport: "http", URL: "https://example.com/mcp"}); err != nil {
 		t.Fatal(err)
 	}
+	market, _ := st.MCPServer("market")
 	s := &Server{deps: &deps{repo: st}}
 	s.mcp = &mcpHandlers{deps: s.deps}
 	g := gin.New()
 	g.PUT("/api/mcp-servers", s.mcp.mcpServers)
 	req := httptest.NewRequest(http.MethodPut, "/api/mcp-servers", bytes.NewBufferString(`{"id":"market","name":"Changed","transport":"http","url":"https://changed.example/mcp"}`))
+	req.Header.Set("If-Match", `"`+market.SourceRevision+`"`)
 	rec := httptest.NewRecorder()
 	g.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {

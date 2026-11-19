@@ -441,6 +441,12 @@ func (e *Engine) retryContext(ctx context.Context, runID, nodeID, reason, humanC
 	if !ok {
 		return fmt.Errorf("run not found")
 	}
+	if err := domain.ValidateRunExecutionBudget(r); err != nil {
+		return err
+	}
+	if err := e.ValidateRunIntelligence(r); err != nil {
+		return err
+	}
 	if e.executes() && e.workspaceBlocked(r) {
 		return fmt.Errorf("run %s 的工作区绑定在 %s:%s，请在绑定实例上重试（或清理该 run 的 workspace 绑定后重试）", runID, r.WorkspaceHost, r.WorkspaceRoot)
 	}

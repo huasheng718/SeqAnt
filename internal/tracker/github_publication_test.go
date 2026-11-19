@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"agentflow/internal/domain"
+	"agentflow/internal/gitwork"
 	"agentflow/internal/repo"
 )
 
@@ -20,13 +21,15 @@ const publicationTestSHA = "1111111111111111111111111111111111111111"
 const publicationTestBranch = "superagent/integration/immutable-test"
 
 type publicationGitHubFixture struct {
-	mu       sync.Mutex
-	mode     string
-	exists   bool
-	posts    int
-	reads    int
-	requests []string
-	draft    bool
+	mu            sync.Mutex
+	mode          string
+	exists        bool
+	posts         int
+	reads         int
+	hiddenReads   int
+	requests      []string
+	draft         bool
+	expectedToken string
 }
 
 func (f *publicationGitHubFixture) pull() map[string]any {
@@ -47,7 +50,7 @@ func (f *publicationGitHubFixture) pull() map[string]any {
 	case "auto-merge":
 		autoMerge = map[string]any{"merge_method": "squash"}
 	}
-	value := map[string]any{"number": 17, "html_url": "https://github.com/example/repo/pull/17", "state": state, "merged": merged, "merged_at": mergedAt, "auto_merge": autoMerge,
+	value := map[string]any{"number": 17, "html_url": "https://github.com/example/repo/pull/17", "state": state, "merged": merged, "merged_at": mergedAt, "auto_merge": autoMerge, "draft": f.draft,
 		"head": map[string]any{"ref": publicationTestBranch, "sha": headSHA, "repo": map[string]any{"full_name": headRepo}},
 		"base": map[string]any{"ref": base, "repo": map[string]any{"full_name": "example/repo"}}}
 	if f.mode == "missing-auto-merge" {
@@ -57,6 +60,28 @@ func (f *publicationGitHubFixture) pull() map[string]any {
 		value["html_url"] = "https://attacker.invalid/pull/17"
 	}
 	return value
+}
+
+func TestPublicationReceiptPreservesProviderDraftReadback(t *testing.T) {
+	for _, draft := range []bool{true, false} {
+		t.Run(fmt.Sprint(draft), func(t *testing.T) {
+			fixture := &publicationGitHubFixture{exists: true, draft: draft}
+			service := publicationGitHubService(t, fixture)
+			receipt, err := service.FindOpenBranchPRAtSHA(context.Background(), "github:example/repo", publicationTestBranch, "main", publicationTestSHA, "review", "")
+			if err != nil || receipt.Draft != draft || fixture.posts != 0 {
+				t.Fatalf("draft readback=%+v err=%v posts=%d", receipt, err, fixture.posts)
+			}
+		})
+	}
+}
+
+func TestGitHubPublicationUsesExplicitControllerCredential(t *testing.T) {
+	fixture := &publicationGitHubFixture{exists: true, draft: true, expectedToken: "explicit-project-controller"}
+	service := publicationGitHubService(t, fixture)
+	ctx := gitwork.WithToken(context.Background(), fixture.expectedToken)
+	if _, err := service.FindOpenBranchPRAtSHA(ctx, "github:example/repo", publicationTestBranch, "main", publicationTestSHA, "review", ""); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func publicationGitHubService(t *testing.T, fixture *publicationGitHubFixture) *Service {
@@ -80,7 +105,11 @@ func publicationGitHubService(t *testing.T, fixture *publicationGitHubFixture) *
 		fixture.mu.Lock()
 		defer fixture.mu.Unlock()
 		fixture.requests = append(fixture.requests, r.Method+" "+r.URL.Path)
-		if r.Header.Get("Authorization") != "Bearer private-project-token" {
+		expectedToken := fixture.expectedToken
+		if expectedToken == "" {
+			expectedToken = "private-project-token"
+		}
+		if r.Header.Get("Authorization") != "Bearer "+expectedToken {
 			t.Error("project owner token was not used")
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -101,7 +130,7 @@ func publicationGitHubService(t *testing.T, fixture *publicationGitHubFixture) *
 				for i := 0; i < 100; i++ {
 					list = append(list, map[string]any{"head": map[string]any{"ref": fmt.Sprintf("unrelated-%d", i)}})
 				}
-			} else if fixture.exists {
+			} else if fixture.exists && !(fixture.mode == "post-hidden" && fixture.hiddenReads > 0) {
 				pull := fixture.pull()
 				if fixture.mode == "paged-closed" {
 					pull["state"] = "closed"
@@ -110,6 +139,9 @@ func publicationGitHubService(t *testing.T, fixture *publicationGitHubFixture) *
 				if fixture.mode == "ambiguous" {
 					list = append(list, pull)
 				}
+			}
+			if fixture.mode == "post-hidden" && fixture.exists && fixture.hiddenReads > 0 {
+				fixture.hiddenReads--
 			}
 			_ = json.NewEncoder(w).Encode(list)
 		case r.Method == "POST" && r.URL.Path == "/repos/example/repo/pulls":
@@ -126,7 +158,7 @@ func publicationGitHubService(t *testing.T, fixture *publicationGitHubFixture) *
 				return
 			}
 			fixture.exists = true
-			if fixture.mode == "post-uncertain" {
+			if fixture.mode == "post-uncertain" || fixture.mode == "post-hidden" {
 				w.WriteHeader(500)
 				_, _ = w.Write([]byte("private-project-token secret response"))
 				return
@@ -221,6 +253,40 @@ func TestGitHubPublicationErrorsAreRedactedAndContextIsPreserved(t *testing.T) {
 	for _, project := range []string{"gongfeng:example/repo", "example/repo", "github:../repo"} {
 		if _, err := service.EnsureOpenBranchPRAtSHA(context.Background(), project, publicationTestBranch, "main", publicationTestSHA, "Review", ""); err == nil {
 			t.Fatalf("unsupported project accepted: %s", project)
+		}
+	}
+}
+
+// The first create reaches the provider, but both its response and discovery
+// are uncertain. A later replay must rediscover that same stable-branch PR.
+func TestGitHubPublicationReplaysAfterDelayedVisibilityWithoutReplacement(t *testing.T) {
+	fixture := &publicationGitHubFixture{mode: "post-hidden", hiddenReads: 3}
+	service := publicationGitHubService(t, fixture)
+	if _, err := service.EnsureOpenBranchPRAtSHA(context.Background(), "github:example/repo", publicationTestBranch, "main", publicationTestSHA, "Review", ""); err == nil {
+		t.Fatal("hidden create outcome must remain uncertain")
+	}
+	if fixture.posts != 1 || !fixture.exists {
+		t.Fatalf("first outcome posts=%d exists=%v", fixture.posts, fixture.exists)
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := service.FindOpenBranchPRAtSHA(context.Background(), "github:example/repo", publicationTestBranch, "main", publicationTestSHA, "Review", ""); err == nil {
+			t.Fatal("hidden PR should remain uncertain")
+		}
+		if fixture.posts != 1 {
+			t.Fatal("discovery retried POST")
+		}
+	}
+	receipt, err := service.FindOpenBranchPRAtSHA(context.Background(), "github:example/repo", publicationTestBranch, "main", publicationTestSHA, "Review", "")
+	if err != nil || receipt.Number != 17 || receipt.HeadSHA != publicationTestSHA || fixture.posts != 1 {
+		t.Fatalf("replay=%+v err=%v posts=%d", receipt, err, fixture.posts)
+	}
+	for _, state := range []string{"closed", "merged"} {
+		fixture.mode = state
+		if _, err := service.FindOpenBranchPRAtSHA(context.Background(), "github:example/repo", publicationTestBranch, "main", publicationTestSHA, "Review", ""); err == nil {
+			t.Fatalf("human %s PR must not be replaced", state)
+		}
+		if fixture.posts != 1 {
+			t.Fatalf("human %s state created replacement", state)
 		}
 	}
 }

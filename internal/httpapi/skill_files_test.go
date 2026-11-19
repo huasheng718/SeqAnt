@@ -35,7 +35,7 @@ func skillFileHandler(t *testing.T, s *repo.Store) http.Handler {
 	return New(s, engine.New(s, runtime.NewManager(filepath.Join(t.TempDir(), "workspaces"))), tracker.NewService(), "", "")
 }
 
-func requestMultipart(t *testing.T, h http.Handler, method, path string, build func(w *multipart.Writer)) *httptest.ResponseRecorder {
+func requestMultipart(t *testing.T, h http.Handler, method, path string, build func(w *multipart.Writer), headers ...map[string]string) *httptest.ResponseRecorder {
 	t.Helper()
 	var buf bytes.Buffer
 	w := multipart.NewWriter(&buf)
@@ -45,6 +45,11 @@ func requestMultipart(t *testing.T, h http.Handler, method, path string, build f
 	}
 	req := httptest.NewRequest(method, path, &buf)
 	req.Header.Set("Content-Type", w.FormDataContentType())
+	for _, values := range headers {
+		for key, value := range values {
+			req.Header.Set(key, value)
+		}
+	}
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	return rec
@@ -110,15 +115,16 @@ func TestSkillFileUploadDownloadDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := skillFileHandler(t, s)
+	skill, _ := s.Skill("up-skill")
 
 	rec := requestMultipart(t, h, http.MethodPost, "/api/skills/up-skill/files", func(w *multipart.Writer) {
 		addFilePartWithPath(w, "assets/logo.png", []byte{0x89, 0x50, 0x4e, 0x47})
 		addFilePartWithPath(w, "docs/readme.md", []byte("readme"))
-	})
+	}, map[string]string{"If-Match": `"` + skill.SourceRevision + `"`})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("upload status %d: %s", rec.Code, rec.Body.String())
 	}
-	skill := decodeSkillResponse(t, rec)
+	skill = decodeSkillResponse(t, rec)
 	if len(skill.FileRefs) != 2 {
 		t.Fatalf("unexpected manifest: %#v", skill.FileRefs)
 	}
@@ -138,6 +144,7 @@ func TestSkillFileUploadDownloadDelete(t *testing.T) {
 
 	// Delete removes the file and refreshes the manifest.
 	del := httptest.NewRequest(http.MethodDelete, "/api/skills/up-skill/files/docs/readme.md", nil)
+	del.Header.Set("If-Match", `"`+skill.SourceRevision+`"`)
 	dr := httptest.NewRecorder()
 	h.ServeHTTP(dr, del)
 	if dr.Code != http.StatusOK {
@@ -154,6 +161,7 @@ func TestSkillZipUploadStripsTopDirAndKeepsMode(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := skillFileHandler(t, s)
+	skill, _ := s.Skill("zip-skill")
 	archive := zipBytes(t,
 		map[string]string{
 			"my-skill/scripts/check.sh": "#!/bin/sh\n",
@@ -165,11 +173,11 @@ func TestSkillZipUploadStripsTopDirAndKeepsMode(t *testing.T) {
 
 	rec := requestMultipart(t, h, http.MethodPost, "/api/skills/zip-skill/files", func(w *multipart.Writer) {
 		addFilePart(w, "files", "bundle.zip", archive)
-	})
+	}, map[string]string{"If-Match": `"` + skill.SourceRevision + `"`})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("upload status %d: %s", rec.Code, rec.Body.String())
 	}
-	skill := decodeSkillResponse(t, rec)
+	skill = decodeSkillResponse(t, rec)
 	byPath := map[string]domain.SkillFileRef{}
 	for _, ref := range skill.FileRefs {
 		byPath[ref.Path] = ref
@@ -191,11 +199,12 @@ func TestSkillZipRejectsTraversalAndSymlinks(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := skillFileHandler(t, s)
+	skill, _ := s.Skill("evil-skill")
 
 	traversal := zipBytes(t, map[string]string{"ok.txt": "fine", "../escape.txt": "evil"}, nil)
 	rec := requestMultipart(t, h, http.MethodPost, "/api/skills/evil-skill/files", func(w *multipart.Writer) {
 		addFilePart(w, "files", "evil.zip", traversal)
-	})
+	}, map[string]string{"If-Match": `"` + skill.SourceRevision + `"`})
 	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "无效路径") {
 		t.Fatalf("traversal not rejected: %d %s", rec.Code, rec.Body.String())
 	}
@@ -206,7 +215,7 @@ func TestSkillZipRejectsTraversalAndSymlinks(t *testing.T) {
 	symlinkZip := zipBytes(t, map[string]string{"link": "/etc/passwd"}, map[string]fs.FileMode{"link": fs.ModeSymlink | 0o777})
 	rec = requestMultipart(t, h, http.MethodPost, "/api/skills/evil-skill/files", func(w *multipart.Writer) {
 		addFilePart(w, "files", "link.zip", symlinkZip)
-	})
+	}, map[string]string{"If-Match": `"` + skill.SourceRevision + `"`})
 	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "非常规文件") {
 		t.Fatalf("symlink not rejected: %d %s", rec.Code, rec.Body.String())
 	}
@@ -218,10 +227,11 @@ func TestSkillFileUploadLimits(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := skillFileHandler(t, s)
+	skill, _ := s.Skill("limit-skill")
 
 	rec := requestMultipart(t, h, http.MethodPost, "/api/skills/limit-skill/files", func(w *multipart.Writer) {
 		addFilePart(w, "files", "big.bin", bytes.Repeat([]byte("x"), int(domain.SkillFileMaxBytes)+1))
-	})
+	}, map[string]string{"If-Match": `"` + skill.SourceRevision + `"`})
 	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "1MB") {
 		t.Fatalf("per-file limit not enforced: %d %s", rec.Code, rec.Body.String())
 	}
@@ -231,7 +241,7 @@ func TestSkillFileUploadLimits(t *testing.T) {
 		for i := 0; i < domain.SkillMaxFileCount+1; i++ {
 			addFilePart(w, "files", fmt.Sprintf("f%04d.txt", i), []byte("x"))
 		}
-	})
+	}, map[string]string{"If-Match": `"` + skill.SourceRevision + `"`})
 	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "500") {
 		t.Fatalf("count limit not enforced: %d %s", rec.Code, rec.Body.String())
 	}
@@ -243,10 +253,11 @@ func TestSkillFileUploadConflictsAndMissingSkill(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := skillFileHandler(t, s)
+	skill, _ := s.Skill("text-skill")
 
 	rec := requestMultipart(t, h, http.MethodPost, "/api/skills/text-skill/files", func(w *multipart.Writer) {
 		addFilePart(w, "files", "a.txt", []byte("binary"))
-	})
+	}, map[string]string{"If-Match": `"` + skill.SourceRevision + `"`})
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("text collision not rejected: %d %s", rec.Code, rec.Body.String())
 	}
@@ -265,12 +276,13 @@ func TestSkillPutPreservesServerFileManifest(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := skillFileHandler(t, s)
+	skill, _ := s.Skill("keep-skill")
 
 	rec := requestMultipart(t, h, http.MethodPost, "/api/skills/keep-skill/files", func(w *multipart.Writer) {
 		// A folder pick of "img/" with one file: the shared top-level
 		// directory is stripped, so the stored path is logo.png.
 		addFilePartWithPath(w, "img/logo.png", []byte("png"))
-	})
+	}, map[string]string{"If-Match": `"` + skill.SourceRevision + `"`})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("upload status %d: %s", rec.Code, rec.Body.String())
 	}
@@ -278,10 +290,13 @@ func TestSkillPutPreservesServerFileManifest(t *testing.T) {
 		t.Fatalf("unexpected stored path: %#v", stored.FileRefs)
 	}
 
-	// A plain PUT must not wipe the manifest even though its JSON response
-	// is only {"ok": true}; the stored payload keeps the server manifest.
+	skill = decodeSkillResponse(t, rec)
+	// A metadata PUT returns the new revision and retains the server manifest.
 	body := domain.SkillDefinition{ID: "keep-skill", Name: "Keep v2", ProjectID: "platform", Content: "# keep2"}
-	requestJSON[map[string]bool](t, h, http.MethodPut, "/api/skills", body, http.StatusOK)
+	rec = requestWithHeaders(t, h, http.MethodPut, "/api/skills", body, map[string]string{"If-Match": `"` + skill.SourceRevision + `"`})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("metadata update status %d: %s", rec.Code, rec.Body.String())
+	}
 	if stored, _ := s.Skill("keep-skill"); len(stored.FileRefs) != 1 || stored.FileRefs[0].Path != "logo.png" {
 		t.Fatalf("stored manifest lost: %#v", stored.FileRefs)
 	}
@@ -293,20 +308,22 @@ func TestSkillFileUploadReplacesPreviousBatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := skillFileHandler(t, s)
+	skill, _ := s.Skill("replace-skill")
 
 	rec := requestMultipart(t, h, http.MethodPost, "/api/skills/replace-skill/files", func(w *multipart.Writer) {
 		addFilePartWithPath(w, "a/keep.txt", []byte("first"))
 		addFilePartWithPath(w, "a/lose.txt", []byte("first"))
-	})
+	}, map[string]string{"If-Match": `"` + skill.SourceRevision + `"`})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("first upload status %d: %s", rec.Code, rec.Body.String())
 	}
+	skill = decodeSkillResponse(t, rec)
 
 	// Second upload replaces the first batch entirely (shared top-level
 	// directory "b/" is stripped, so the stored path is "only.txt").
 	rec = requestMultipart(t, h, http.MethodPost, "/api/skills/replace-skill/files", func(w *multipart.Writer) {
 		addFilePartWithPath(w, "b/only.txt", []byte("second"))
-	})
+	}, map[string]string{"If-Match": `"` + skill.SourceRevision + `"`})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("second upload status %d: %s", rec.Code, rec.Body.String())
 	}
@@ -322,22 +339,24 @@ func TestSkillMdUploadReplacesEntireSet(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := skillFileHandler(t, s)
+	skill, _ := s.Skill("md-skill")
 
 	rec := requestMultipart(t, h, http.MethodPost, "/api/skills/md-skill/files", func(w *multipart.Writer) {
 		addFilePartWithPath(w, "SKILL.md", []byte("# old\n"))
 		addFilePartWithPath(w, "scripts/run.sh", []byte("#!/bin/sh\n"))
-	})
+	}, map[string]string{"If-Match": `"` + skill.SourceRevision + `"`})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("seed upload status %d: %s", rec.Code, rec.Body.String())
 	}
+	skill = decodeSkillResponse(t, rec)
 
 	rec = requestMultipart(t, h, http.MethodPost, "/api/skills/md-skill/files", func(w *multipart.Writer) {
 		addFilePartWithPath(w, "SKILL.md", []byte("# only\n"))
-	})
+	}, map[string]string{"If-Match": `"` + skill.SourceRevision + `"`})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("skill.md upload status %d: %s", rec.Code, rec.Body.String())
 	}
-	skill := decodeSkillResponse(t, rec)
+	skill = decodeSkillResponse(t, rec)
 	if len(skill.FileRefs) != 1 || skill.FileRefs[0].Path != "SKILL.md" {
 		t.Fatalf("SKILL.md upload must leave only SKILL.md: %#v", skill.FileRefs)
 	}

@@ -306,6 +306,8 @@ func (h issuesHandlers) dispatchIssueRoute(c *gin.Context, issue domain.Issue) {
 		RunnerWorkspaceLayout string                                 `json:"runnerWorkspaceLayout,omitempty"`
 		WorkspaceBaseSHAs     map[string]string                      `json:"workspaceBaseSHAs,omitempty"`
 		NodePlacements        map[string]domain.NodePlacementRequest `json:"nodePlacements,omitempty"`
+		ExecutionBudget       *domain.ExecutionBudgetPolicy          `json:"executionBudget,omitempty"`
+		TeamContext           *domain.TeamContextSelection           `json:"teamContext,omitempty"`
 		Rerun                 bool                                   `json:"rerun"`
 		WorkflowID            string                                 `json:"workflowId"`
 	}
@@ -316,7 +318,7 @@ func (h issuesHandlers) dispatchIssueRoute(c *gin.Context, issue domain.Issue) {
 	if current, ok := h.requestUser(c.Request, true); ok && current != nil && current.ID > 0 {
 		triggerUserID = current.ID
 	}
-	task, err := dispatchIssue(h.deps, dispatchRequest{IssueID: issue.ID, WorkflowID: request.WorkflowID, Rerun: request.Rerun, TriggerUserID: triggerUserID, RunnerWorkspaceLayout: request.RunnerWorkspaceLayout, WorkspaceBaseSHAs: request.WorkspaceBaseSHAs, NodePlacements: request.NodePlacements})
+	task, err := dispatchIssue(h.deps, dispatchRequest{IssueID: issue.ID, WorkflowID: request.WorkflowID, Rerun: request.Rerun, TriggerUserID: triggerUserID, RunnerWorkspaceLayout: request.RunnerWorkspaceLayout, WorkspaceBaseSHAs: request.WorkspaceBaseSHAs, NodePlacements: request.NodePlacements, ExecutionBudget: request.ExecutionBudget, TeamContext: request.TeamContext})
 	if err != nil {
 		respond(c, err)
 		return

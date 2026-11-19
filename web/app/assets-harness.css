@@ -248,6 +248,7 @@
 
 /* ---------- Detail: body ---------- */
 #assetsView .asset-dbody { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 20px; align-items: start; margin: 0; padding: 0; border: 0; background: none; box-shadow: none; }
+#assetsView .asset-dbody > [data-source-edit-conflict] { grid-column: 1 / -1; min-width: 0; overflow-wrap: anywhere; }
 #assetsView .asset-panel { min-width: 0; overflow: hidden; border: 1px solid var(--hui-border); border-radius: 10px; background: var(--hui-surface); }
 #assetsView .asset-panel-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 46px; padding: 0 12px 0 8px; border-bottom: 1px solid var(--hui-border); }
 #assetsView .asset-panel-hint { min-width: 0; overflow: hidden; color: var(--hui-tertiary); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
@@ -576,7 +577,7 @@
   #assetsView .asset-heading { align-items: flex-start; }
   #assetsView .asset-search { width: 100%; }
   #assetsView .asset-dhead { position: static; }
-  #assetsView .asset-acts { flex-wrap: wrap; }
+  #assetsView .asset-acts { flex-wrap: wrap; max-width: 100%; }
   #assetsView .asset-grid { grid-template-columns: minmax(0, 1fr); }
   #assetsView .skillhub-filters { flex-wrap: wrap; }
   #assetsView .skillhub-filters .skillhub-search { flex-basis: 100%; }

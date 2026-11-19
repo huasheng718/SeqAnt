@@ -120,6 +120,7 @@ function renderAssetDetailHead(a){
   const head=$('#assetDetailHead');if(!head)return;
   closeAssetMenu();
   head.innerHTML=assetDetailHeadHTML(a,{creating,dirty:!!state.assetDirty});
+  if(!creating&&typeof mountDistributionAction==='function')mountDistributionAction(head.querySelector('.asset-acts'),state.assetType,a);
   $$('#assetDetailPane [data-asset-back], #assetDetailPane [data-asset-cancel]').forEach(el=>el.onclick=e=>{e.preventDefault();closeAssetDetail()});
   const share=head.querySelector('[data-asset-share]');if(share)share.onclick=()=>toggleAssetShare(a.id);
   const more=$('#assetMoreBtn');if(more)more.onclick=e=>{e.stopPropagation();$('#assetMoreMenu')?.classList.contains('is-open')?closeAssetMenu(true):openAssetMenu()};
@@ -219,7 +220,7 @@ function openAssetDetail(id,defaults={}){
   if(!id||state.selectedAsset===id)return;
   const type=state.assetType;
   if(id==='__new__'){state[assetScopeKey(type)]='project';state.assetCreateDefaults=defaults}
-  state.selectedAsset=id;state.assetDirty=false;state.assetTab=null;state.assetDetailKey='';state.skillUploadStatus='';
+  state.selectedAsset=id;state.assetDirty=false;state.assetTab=null;state.assetDetailKey='';state.skillUploadStatus='';state.skillPendingUpload=null;
   const next=assetViewHash(type,id);
   if(location.hash!==next)history.pushState({assetFrom:assetViewHash(type)},'',next);
   renderAssets();
@@ -241,9 +242,10 @@ async function toggleAssetShare(id){
   const item=(state.data[state.assetType]||[]).find(x=>x.id===id);
   if(!item||!catalogOwned(item.projectId))return toast('只能共享本项目的资产');
   try{
-    const saved={...item,shared:!item.shared};
-    await api(`/api/${state.assetType}`,{method:'PUT',body:JSON.stringify(saved)});
+    const oldRevision=item.sourceRevision,draft={...item,shared:!item.shared};
+    const saved=await api(`/api/${state.assetType}`,{method:'PUT',headers:sourceEditHeaders(item),body:JSON.stringify(draft)});
     Object.assign(item,saved);
+    if(state.selectedAsset===id&&$("#assetForm")?.dataset.sourceRevision===oldRevision)$("#assetForm").dataset.sourceRevision=saved.sourceRevision;
     if(state.selectedAsset===id){renderAssetDetailHead(item);refreshAssetAside(item)}
     else renderAssets();
     const agent=state.data.agents.find(a=>a.id===state.selectedAgent)||state.agentDraft;if(agent)renderAgentAssetsPanel(agent);
@@ -280,7 +282,7 @@ async function deleteAsset(id){
   const label=assetKindLabel();
   if(!await afConfirm({title:`删除${label}确认`,message:`确认删除${label}「${item.name}」？此操作不可恢复。`,confirmText:'确认删除',danger:true}))return;
   try{
-    await api(`/api/${state.assetType}?id=${encodeURIComponent(id)}`,{method:'DELETE'});
+    await api(`/api/${state.assetType}?id=${encodeURIComponent(id)}`,{method:'DELETE',...(isProjectSharedAsset(state.assetType)?{headers:sourceEditHeaders(item)}:{})});
     state.data[state.assetType]=(state.data[state.assetType]||[]).filter(x=>x.id!==id);
     if(state.selectedAsset===id)await closeAssetDetail({force:true});
     else renderAssets();
@@ -348,6 +350,7 @@ function setAssetTab(key){
 }
 function renderAssetForm(a){
   const f=$('#assetForm');if(!f||!a)return;
+  f.dataset.sourceRevision=a.sourceRevision||'';
   const creating=state.selectedAsset==='__new__',readonly=!creating&&!catalogOwned(a.projectId);
   const tabs=assetPaneTabs(),kind=assetKindLabel();
   const summary=state.assetType==='skills'&&!creating?`<span data-skill-summary>${skillFileSummary(a)}</span>`:'';
@@ -448,8 +451,20 @@ function skillUploadButtons(disabled){
     const el=$('#'+id); if(el)el.disabled=!!disabled;
   });
 }
+// A rejected upload retains browser File objects until explicit review and retry.
+function reviewSkillUploadBase(latest){
+  const form=$('#assetForm');if(form)form.dataset.sourceRevision=latest.sourceRevision;
+  const pending=state.skillPendingUpload;
+  if(!pending||pending.id!==state.selectedAsset)return;
+  const host=$('#skillUploadStatus');if(!host)return;
+  host.querySelector('[data-source-upload-retry]')?.remove();
+  const retry=document.createElement('button');retry.type='button';retry.className='button small';retry.dataset.sourceUploadRetry='';retry.textContent=`按已比较基线重新上传 ${pending.files.length} 个已选文件`;
+  retry.onclick=()=>{if(pending.id!==state.selectedAsset)return;const input={files:pending.files,value:''};if(pending.md)uploadSkillMd(input);else uploadSkillFiles(input)};
+  host.append(retry);
+}
 let skillUploadLastStart=0;
 async function uploadSkillFiles(input){
+  const expectedSourceRevision=$('#assetForm')?.dataset.sourceRevision;
   const now=Date.now();
   if(now-skillUploadLastStart<800)return; // change + 轮询双触发去重
   skillUploadLastStart=now;
@@ -478,13 +493,17 @@ async function uploadSkillFiles(input){
     return fd;
   };
   const finishOk=data=>{
+    state.skillPendingUpload=null;$('#assetForm')?.querySelector('[data-source-edit-conflict]')?.remove();
     const i=(state.data.skills||[]).findIndex(x=>x.id===id);
     if(i>=0)state.data.skills[i]=data;else state.data.skills.push(data);
+    if($("#assetForm"))$("#assetForm").dataset.sourceRevision=data.sourceRevision;
     setSkillUploadStatus(`<div class="skill-upload-ok">✓ 已替换为 ${files.length} 个文件 · ${totalLabel}（${new Date().toLocaleTimeString()}）</div>`);
     renderAssets();renderProperties();
     toast(`已替换为 ${files.length} 个文件`,'ok');
   };
   const showFail=err=>{
+    if(err.code==='source_edit_conflict'||err.code==='source_precondition_required')state.skillPendingUpload={id,files,md:false};
+    showSourceEditConflict(err,$("#assetForm"),"skills",id,reviewSkillUploadBase);
     setSkillUploadStatus(`<div class="skill-upload-err">✕ ${escapeHTML(err.message)}。现有文件未改动。</div>`);
     toast(err.message,'err',8000);
   };
@@ -533,12 +552,12 @@ async function uploadSkillFiles(input){
   let fetchP=null;
   if(!readErr){
     const fd=buildFd(parts);
-    fetchP=fetch(`/api/skills/${encodeURIComponent(id)}/files`,{method:'POST',body:fd,signal:ctrl.signal});
+    fetchP=fetch(`/api/skills/${encodeURIComponent(id)}/files`,{method:'POST',headers:sourceEditHeaders(expectedSourceRevision,false,true),body:fd,signal:ctrl.signal});
   }else{
     // ===== 方式 B（降级）：流式直传原始 File，由浏览器网络进程读取 =====
     setStatusRow(`读取受阻，正在尝试流式直传 ${files.length} 个文件…`,-1);
     const fd=buildFd(files.map(f=>({path:f.webkitRelativePath||f.name,blob:f})));
-    fetchP=fetch(`/api/skills/${encodeURIComponent(id)}/files`,{method:'POST',body:fd,signal:ctrl.signal});
+    fetchP=fetch(`/api/skills/${encodeURIComponent(id)}/files`,{method:'POST',headers:sourceEditHeaders(expectedSourceRevision,false,true),body:fd,signal:ctrl.signal});
   }
 
   // ===== 上传等待：模拟进度 + 看门狗 15s 必给结论 =====
@@ -556,7 +575,7 @@ async function uploadSkillFiles(input){
     clearTimeout(watchdog);clearInterval(ticker);
 
     const data=await res.json().catch(()=>({}));
-    if(!res.ok)throw new Error(data.error||`HTTP ${res.status}`);
+    if(!res.ok){const error=new Error(data.error||`HTTP ${res.status}`);error.code=data.code;error.status=res.status;throw error}
     finishOk(data);
   }catch(err){
     clearTimeout(watchdog);clearInterval(ticker);
@@ -572,6 +591,7 @@ async function uploadSkillFiles(input){
 }
 let skillMdUploadLastStart=0;
 async function uploadSkillMd(input){
+  const expectedSourceRevision=$('#assetForm')?.dataset.sourceRevision;
   const now=Date.now();
   if(now-skillMdUploadLastStart<800)return;
   skillMdUploadLastStart=now;
@@ -603,15 +623,19 @@ async function uploadSkillMd(input){
     const fd=new FormData();
     fd.append('paths','SKILL.md');
     fd.append('files',file,'SKILL.md');
-    const res=await fetch(`/api/skills/${encodeURIComponent(id)}/files`,{method:'POST',body:fd});
+    const res=await fetch(`/api/skills/${encodeURIComponent(id)}/files`,{method:'POST',headers:sourceEditHeaders(expectedSourceRevision,false,true),body:fd});
     const data=await res.json().catch(()=>({}));
-    if(!res.ok)throw new Error(data.error||`HTTP ${res.status}`);
+    if(!res.ok){const error=new Error(data.error||`HTTP ${res.status}`);error.code=data.code;error.status=res.status;throw error}
     const i=(state.data.skills||[]).findIndex(x=>x.id===id);
     if(i>=0)state.data.skills[i]=data;else state.data.skills.push(data);
+    state.skillPendingUpload=null;$("#assetForm")?.querySelector('[data-source-edit-conflict]')?.remove();
+    if($("#assetForm"))$("#assetForm").dataset.sourceRevision=data.sourceRevision;
     setSkillUploadStatus(`<div class="skill-upload-ok">✓ 已覆盖为仅 SKILL.md · ${fmtBytes(file.size)}（${new Date().toLocaleTimeString()}）</div>`);
     renderAssets();renderProperties();
     toast('已覆盖为仅 SKILL.md','ok');
   }catch(err){
+    if(err.code==='source_edit_conflict'||err.code==='source_precondition_required')state.skillPendingUpload={id,files,md:true};
+    showSourceEditConflict(err,$("#assetForm"),"skills",id,reviewSkillUploadBase);
     setSkillUploadStatus(`<div class="skill-upload-err">✕ ${escapeHTML(err.message)}。现有文件未改动。</div>`);
     toast(err.message,'err',8000);
   }finally{
@@ -619,18 +643,19 @@ async function uploadSkillMd(input){
   }
 }
 async function deleteSkillFile(path){
+  const expectedSourceRevision=$('#assetForm')?.dataset.sourceRevision;
   if(!path)return;
   if(!await afConfirm({title:'删除文件',message:`确定删除 ${path} 吗？此操作不可恢复。`,confirmText:'确认删除',danger:true}))return;
   const id=state.selectedAsset;
   try{
-    const res=await fetch(`/api/skills/${encodeURIComponent(id)}/files/${path.split('/').map(encodeURIComponent).join('/')}`,{method:'DELETE'});
+    const res=await fetch(`/api/skills/${encodeURIComponent(id)}/files/${path.split('/').map(encodeURIComponent).join('/')}`,{method:'DELETE',headers:sourceEditHeaders(expectedSourceRevision,false,true)});
     const data=await res.json().catch(()=>({}));
-    if(!res.ok)throw new Error(data.error||`HTTP ${res.status}`);
+    if(!res.ok){const error=new Error(data.error||`HTTP ${res.status}`);error.code=data.code;error.status=res.status;throw error}
     const i=(state.data.skills||[]).findIndex(x=>x.id===id);
-    if(i>=0)state.data.skills[i]=data;
+    if(i>=0)state.data.skills[i]=data;if($("#assetForm"))$("#assetForm").dataset.sourceRevision=data.sourceRevision;
     renderAssets();renderProperties();
     toast('文件已删除','ok');
-  }catch(err){toast(err.message,'err')}
+  }catch(err){showSourceEditConflict(err,$('#assetForm'),'skills',id,latest=>{$('#assetForm').dataset.sourceRevision=latest.sourceRevision});toast(err.message,'err')}
 }
 async function openSkillFilePreview(skill, path){
   if(!path)return toast('无法预览：缺少文件路径','err');
@@ -673,9 +698,9 @@ async function saveAsset(e){e.preventDefault();const f=e.currentTarget,items=sta
   if(state.assetType==='dockerfiles')Object.assign(value,{content:f.elements.content.value,files:JSON.parse(f.elements.files.value||'{}')});
   if(state.assetType==='environments')Object.assign(value,{variables:JSON.parse(f.elements.variables.value||'{}'),pathEntries:lines(f.elements.pathEntries.value),installScript:f.elements.installScript.value});
   if(state.assetType==='sandboxes'){const driver=f.elements.driver.value,sandbox={driver,environment:JSON.parse(f.elements.environment.value||'{}')};if(driver==='docker')Object.assign(sandbox,{dockerfileId:f.elements.dockerfileId.value,readOnlyRootFS:f.elements.readOnlyRootFS.checked});if(driver==='native')Object.assign(sandbox,{environmentId:f.elements.environmentId.value});Object.assign(value,sandbox)}
-  const endpoints={rules:'rules',skills:'skills',dockerfiles:'dockerfiles',environments:'environments',sandboxes:'sandboxes'};await api(`/api/${endpoints[state.assetType]}`,{method:'PUT',body:JSON.stringify(value)});const i=items.findIndex(x=>x.id===value.id);if(state.assetType==='skills'&&existing)value={...existing,...value,fileRefs:existing.fileRefs||[],content:existing.content||'',files:existing.files||{}};if(i>=0)items[i]=value;else items.push(value);state.selectedAsset=value.id;state.assetDirty=false;
+  const endpoints={rules:'rules',skills:'skills',dockerfiles:'dockerfiles',environments:'environments',sandboxes:'sandboxes'};const saved=await api(`/api/${endpoints[state.assetType]}`,{method:'PUT',...(projectScoped?{headers:sourceEditHeaders(f.dataset.sourceRevision,identity.created)}:{}),body:JSON.stringify(value)});if(projectScoped){value=saved;f.dataset.sourceRevision=saved.sourceRevision;f.querySelector('[data-source-edit-conflict]')?.remove()}const i=items.findIndex(x=>x.id===value.id);if(i>=0)items[i]=value;else items.push(value);state.selectedAsset=value.id;state.assetDirty=false;
   if(identity.created){history.replaceState(history.state,'',assetViewHash(state.assetType,value.id));state.assetDetailKey='';renderAssets()}
   else{renderAssetDetailHead(value);refreshAssetAside(value)}
   renderWorkflowMeta();renderProperties();toast(identity.created?'资产已创建':'资产修改已保存');
-  }catch(err){toast(err.message)}
+  }catch(err){showSourceEditConflict(err,f,state.assetType,value.id,latest=>{f.dataset.sourceRevision=latest.sourceRevision});toast(err.message)}
 }

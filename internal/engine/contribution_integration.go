@@ -155,6 +155,12 @@ func (e *Engine) acceptedIntegrationInputs(controller domain.Run, repositoryID s
 		if !ok || source.Status != "succeeded" || source.CancelRequested || source.ExecutionContext.ProjectID != controller.ExecutionContext.ProjectID {
 			return nil, errors.New("source run is unavailable, cancelled or outside controller project")
 		}
+		if err := domain.ValidateRunExecutionBudget(source); err != nil {
+			return nil, err
+		}
+		if err := e.ValidateRunIntelligence(source); err != nil {
+			return nil, err
+		}
 		if source.ExecutionContext.RunnerWorkspaceLayout != domain.RunnerWorkspaceLayoutAttempt || !domain.ControlledDelivery(source.ExecutionContext.DeliveryPolicy) {
 			return nil, errors.New("source run lacks frozen isolated contribution delivery")
 		}
@@ -244,6 +250,12 @@ func (e *Engine) contributionIntegrationController(runID, repositoryID string) (
 	run, ok := e.repo.RunState(runID)
 	if !ok || run.Status != "succeeded" || run.CancelRequested || !e.controlledRun(run) || run.ExecutionContext.RunnerWorkspaceLayout != domain.RunnerWorkspaceLayoutAttempt {
 		return run, errors.New("controller integration requires a successful controlled isolated run")
+	}
+	if err := domain.ValidateRunExecutionBudget(run); err != nil {
+		return run, err
+	}
+	if err := e.ValidateRunIntelligence(run); err != nil {
+		return run, err
 	}
 	repository, ok := e.repo.Repository(repositoryID)
 	if !ok || repositoryID == "" || repository.ProjectID != run.ExecutionContext.ProjectID {

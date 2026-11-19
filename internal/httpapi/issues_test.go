@@ -1705,7 +1705,8 @@ func TestImportTAPDIssueFromURL(t *testing.T) {
 		}
 	}))
 	t.Cleanup(gateway.Close)
-	if err := s.PutMCPServer(domain.MCPServerDefinition{ID: "mcp-70-project-platform", Name: "TAPD MCP", ProjectID: "platform", MarketID: "70", Scope: "project", Transport: "http", URL: gateway.URL, Headers: map[string]string{"Authorization": "Bearer tapd-token"}, TimeoutSec: 30}); err != nil {
+	observedTAPD, _ := s.MCPServer("mcp-70-project-platform")
+	if err := s.PutMCPServer(domain.MCPServerDefinition{SourceRevision: observedTAPD.SourceRevision, ID: "mcp-70-project-platform", Name: "TAPD MCP", ProjectID: "platform", MarketID: "70", Scope: "project", Transport: "http", URL: gateway.URL, Headers: map[string]string{"Authorization": "Bearer tapd-token"}, TimeoutSec: 30}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.PutSyncConfig(domain.SyncConfig{TAPDMCPURL: gateway.URL, AutoSyncIntervalSec: 300}); err != nil {
@@ -2043,7 +2044,8 @@ func newTAPDImportHandler(t *testing.T, s *repo.Store, root, payload string) htt
 		}
 	}))
 	t.Cleanup(gateway.Close)
-	if err := s.PutMCPServer(domain.MCPServerDefinition{ID: "mcp-70-project-platform", Name: "TAPD MCP", ProjectID: "platform", MarketID: "70", Scope: "project", Transport: "http", URL: gateway.URL, Headers: map[string]string{"Authorization": "Bearer tapd-token"}, TimeoutSec: 30}); err != nil {
+	observedTAPD, _ := s.MCPServer("mcp-70-project-platform")
+	if err := s.PutMCPServer(domain.MCPServerDefinition{SourceRevision: observedTAPD.SourceRevision, ID: "mcp-70-project-platform", Name: "TAPD MCP", ProjectID: "platform", MarketID: "70", Scope: "project", Transport: "http", URL: gateway.URL, Headers: map[string]string{"Authorization": "Bearer tapd-token"}, TimeoutSec: 30}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.PutSyncConfig(domain.SyncConfig{TAPDMCPURL: gateway.URL, AutoSyncIntervalSec: 300}); err != nil {

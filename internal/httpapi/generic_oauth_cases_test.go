@@ -47,19 +47,19 @@ func TestGenericWorkflowHelperBranches(t *testing.T) {
 	}
 
 	now := time.Now().UTC()
-	rules, err := h.cloneGenericTemplateRules([]domain.RuleDefinition{{ID: "cvb-r2-rule", Name: "Rule"}}, "platform", now)
+	rules, err := h.cloneGenericTemplateRules([]domain.RuleDefinition{{ID: "cvb-r2-rule", Name: "Rule"}}, "platform", "", now)
 	if err != nil || rules["cvb-r2-rule"] == "" {
 		t.Fatalf("rules = %#v %v", rules, err)
 	}
-	rules, err = h.cloneGenericTemplateRules([]domain.RuleDefinition{{ID: "cvb-r2-rule", Name: "Rule"}}, "platform", now)
+	rules, err = h.cloneGenericTemplateRules([]domain.RuleDefinition{{ID: "cvb-r2-rule", Name: "Rule"}}, "platform", "", now)
 	if err != nil || rules["cvb-r2-rule"] != "cvb-r2-rule" {
 		t.Fatalf("reused rules = %#v %v", rules, err)
 	}
-	skills, err := h.cloneGenericTemplateSkills([]domain.SkillDefinition{{ID: "cvb-r2-skill", Name: "Skill"}}, "platform", now)
+	skills, err := h.cloneGenericTemplateSkills([]domain.SkillDefinition{{ID: "cvb-r2-skill", Name: "Skill"}}, "platform", "", now)
 	if err != nil || skills["cvb-r2-skill"] == "" {
 		t.Fatalf("skills = %#v %v", skills, err)
 	}
-	skills, err = h.cloneGenericTemplateSkills([]domain.SkillDefinition{{ID: "cvb-r2-skill", Name: "Skill"}}, "platform", now)
+	skills, err = h.cloneGenericTemplateSkills([]domain.SkillDefinition{{ID: "cvb-r2-skill", Name: "Skill"}}, "platform", "", now)
 	if err != nil || skills["cvb-r2-skill"] != "cvb-r2-skill" {
 		t.Fatalf("reused skills = %#v %v", skills, err)
 	}

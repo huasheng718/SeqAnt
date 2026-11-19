@@ -17,15 +17,17 @@ func TestSkillFileUploadValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := skillFileHandler(t, s)
+	skill, _ := s.Skill("cvb-round2-skill")
 
 	req := httptest.NewRequest(http.MethodPost, "/api/skills/cvb-round2-skill/files", bytes.NewReader([]byte("not multipart")))
 	req.Header.Set("Content-Type", "multipart/form-data; boundary=missing")
+	req.Header.Set("If-Match", `"`+skill.SourceRevision+`"`)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("malformed multipart = %d", rec.Code)
 	}
-	rec = requestMultipart(t, h, http.MethodPost, "/api/skills/cvb-round2-skill/files", func(w *multipart.Writer) {})
+	rec = requestMultipart(t, h, http.MethodPost, "/api/skills/cvb-round2-skill/files", func(w *multipart.Writer) {}, map[string]string{"If-Match": `"` + skill.SourceRevision + `"`})
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("empty upload = %d", rec.Code)
 	}
@@ -33,20 +35,20 @@ func TestSkillFileUploadValidation(t *testing.T) {
 		_ = w.WriteField("paths", "one")
 		_ = w.WriteField("paths", "two")
 		addFilePart(w, "files", "one", []byte("x"))
-	})
+	}, map[string]string{"If-Match": `"` + skill.SourceRevision + `"`})
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("path mismatch = %d", rec.Code)
 	}
 	rec = requestMultipart(t, h, http.MethodPost, "/api/skills/cvb-round2-skill/files", func(w *multipart.Writer) {
 		addFilePartWithPath(w, "../bad", []byte("x"))
-	})
+	}, map[string]string{"If-Match": `"` + skill.SourceRevision + `"`})
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("invalid path = %d", rec.Code)
 	}
 	rec = requestMultipart(t, h, http.MethodPost, "/api/skills/cvb-round2-skill/files", func(w *multipart.Writer) {
 		addFilePartWithPath(w, "folder/same.txt", []byte("one"))
 		addFilePartWithPath(w, "folder/same.txt", []byte("two"))
-	})
+	}, map[string]string{"If-Match": `"` + skill.SourceRevision + `"`})
 	if rec.Code != http.StatusConflict {
 		t.Errorf("duplicate path = %d: %s", rec.Code, rec.Body.String())
 	}
@@ -75,10 +77,11 @@ func TestSkillZipEmptyInvalidAndDuplicate(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := skillFileHandler(t, s)
+	skill, _ := s.Skill("cvb-round2-zip")
 	for _, archive := range [][]byte{nil, []byte("invalid zip"), cvBEmptyZipRound2(t)} {
 		rec := requestMultipart(t, h, http.MethodPost, "/api/skills/cvb-round2-zip/files", func(w *multipart.Writer) {
 			addFilePart(w, "files", "bundle.zip", archive)
-		})
+		}, map[string]string{"If-Match": `"` + skill.SourceRevision + `"`})
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("invalid zip = %d: %s", rec.Code, rec.Body.String())
 		}
@@ -87,7 +90,7 @@ func TestSkillZipEmptyInvalidAndDuplicate(t *testing.T) {
 	rec := requestMultipart(t, h, http.MethodPost, "/api/skills/cvb-round2-zip/files", func(w *multipart.Writer) {
 		addFilePart(w, "files", "one.zip", archive)
 		addFilePart(w, "files", "two.zip", archive)
-	})
+	}, map[string]string{"If-Match": `"` + skill.SourceRevision + `"`})
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("duplicate zip = %d: %s", rec.Code, rec.Body.String())
 	}

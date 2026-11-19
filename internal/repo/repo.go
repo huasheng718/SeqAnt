@@ -121,7 +121,9 @@ type RunsRepo struct {
 // RunnersRepo owns the CLI runner registry, runner tasks and runner events.
 type RunnersRepo struct {
 	*deps
-	runs *RunsRepo
+	runs    *RunsRepo
+	catalog *CatalogRepo
+	memory  *MemoryRepo
 }
 
 // DeliveryRepo owns MR delivery state and the delivery locking that follows.
@@ -169,6 +171,8 @@ type Store struct {
 	*RoomsRepo
 	*SpacesRepo
 	*KnowledgeRepo
+	*MemoryRepo
+	*ExtractionsRepo
 	*FeedbackRepo
 	*NotificationsRepo
 	*BotInteractionsRepo
@@ -192,7 +196,9 @@ func newStore(db *gorm.DB) *Store {
 	s.IssuesRepo = &IssuesRepo{deps: d, projects: s.ProjectsRepo, users: s.UsersRepo, tasks: s.TasksRepo}
 	s.NotificationsRepo.issues = s.IssuesRepo
 	s.RunsRepo = &RunsRepo{deps: d, assistant: s.AssistantRepo, issues: s.IssuesRepo, catalog: s.CatalogRepo, notifications: s.NotificationsRepo}
-	s.RunnersRepo = &RunnersRepo{deps: d, runs: s.RunsRepo}
+	s.MemoryRepo = &MemoryRepo{deps: d, runs: s.RunsRepo}
+	s.RunnersRepo = &RunnersRepo{deps: d, runs: s.RunsRepo, catalog: s.CatalogRepo, memory: s.MemoryRepo}
+	s.ExtractionsRepo = &ExtractionsRepo{deps: d, runs: s.RunsRepo, runners: s.RunnersRepo, catalog: s.CatalogRepo, memory: s.MemoryRepo, projects: s.ProjectsRepo, users: s.UsersRepo}
 	s.DeliveryRepo = &DeliveryRepo{deps: d, issues: s.IssuesRepo, tasks: s.TasksRepo, catalog: s.CatalogRepo, runs: s.RunsRepo}
 	s.InsightsRepo = &InsightsRepo{deps: d}
 	s.AnalyticsRepo = &AnalyticsRepo{deps: d, runs: s.RunsRepo, catalog: s.CatalogRepo, delivery: s.DeliveryRepo, issues: s.IssuesRepo, tasks: s.TasksRepo, projects: s.ProjectsRepo, insights: s.InsightsRepo}

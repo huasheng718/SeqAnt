@@ -5,13 +5,15 @@ async function importMcpJsonFile(e){
     const data=JSON.parse(await file.text());
     const res=await api('/api/mcp-servers/import',{method:'POST',body:JSON.stringify(data)});
     (res.servers||[]).forEach(v=>{const i=(state.data.mcpServers||[]).findIndex(x=>x.id===v.id);if(i>=0)state.data.mcpServers[i]=v;else state.data.mcpServers.push(v)});
-    state.assetType='mcpServers';state.selectedAsset=res.servers?.[0]?.id||state.selectedAsset;renderAssets();toast(`已导入 ${res.imported} 个 MCP`);
+    state.assetType='mcpServers';state.selectedAsset=res.servers?.[0]?.id||state.selectedAsset;renderAssets();toast(`已创建导入 ${res.imported} 个 MCP；现有标识请通过编辑器修改`);
   }catch(err){toast(err.message||'JSON 无效')}
 }
 function closeRevisionHistory(){$('#revisionModal')?.classList.remove('open');state.revisionSelected=null}
 async function openRevisionHistory(kind,id,name){
   if(!id)return toast('先保存再看历史');
   state.revisionKind=kind;state.revisionEntity=id;state.revisionSelected=null;
+  $('#revisionModal')?.querySelector('[data-source-edit-conflict]')?.remove();
+  state.revisionSourceRevision=kind==='agent'?(state.data.agents||[]).find(a=>a.id===id)?.sourceRevision:'';
   $('#revisionTitle').textContent=`${name||id} 的版本历史`;
   const items=await api(kind==='workflow'?`/api/workflows/${encodeURIComponent(id)}/revisions`:`/api/agents/${encodeURIComponent(id)}/revisions`);
   state.revisionItems=items||[];
@@ -43,9 +45,9 @@ async function restoreSelectedRevision(){
   if(!await afConfirm({title:'版本回退确认',message:'回退会把当前定义换成这一版，并再记一条新历史。已经跑完的 SOP 不受影响。继续？',confirmText:'确认回退',isDanger:true}))return;
   try{
     const kind=state.revisionKind,entity=state.revisionEntity;
-    const saved=await api(kind==='workflow'?`/api/workflows/${encodeURIComponent(entity)}/revisions/${encodeURIComponent(id)}/restore`:`/api/agents/${encodeURIComponent(entity)}/revisions/${encodeURIComponent(id)}/restore`,{method:'POST',body:'{}'});
+    const saved=await api(kind==='workflow'?`/api/workflows/${encodeURIComponent(entity)}/revisions/${encodeURIComponent(id)}/restore`:`/api/agents/${encodeURIComponent(entity)}/revisions/${encodeURIComponent(id)}/restore`,{method:'POST',...(kind==='agent'?{headers:sourceEditHeaders(state.revisionSourceRevision)}:{}),body:'{}'});
     if(kind==='workflow'){state.workflow=clone(saved);const i=state.data.workflows.findIndex(w=>w.id===saved.id);if(i>=0)state.data.workflows[i]=clone(saved);markWorkflowClean();renderAll()}
     else{const i=state.data.agents.findIndex(a=>a.id===saved.id);if(i>=0)state.data.agents[i]=saved;else state.data.agents.push(saved);selectAgent(saved,true)}
     closeRevisionHistory();toast('已回退到所选版本');
-  }catch(err){toast(err.message)}
+  }catch(err){if(state.revisionKind==='agent')showSourceEditConflict(err,$('#revisionModal'),'agents',state.revisionEntity,latest=>{state.revisionSourceRevision=latest.sourceRevision});toast(err.message)}
 }

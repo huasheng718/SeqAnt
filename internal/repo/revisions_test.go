@@ -48,16 +48,18 @@ func TestAgentRevisionRestore(t *testing.T) {
 	if err := s.PutAgent(agent); err != nil {
 		t.Fatal(err)
 	}
+	agent, _ = s.Agent(agent.ID)
 	agent.Prompt = "v2"
 	agent.Version = 2
 	if err := s.PutAgent(agent); err != nil {
 		t.Fatal(err)
 	}
+	agent, _ = s.Agent(agent.ID)
 	revs := s.Revisions("agent", agent.ID)
 	if len(revs) == 0 {
 		t.Fatal("expected a snapshot of the previous agent")
 	}
-	restored, err := s.RestoreAgentRevision(revs[0].ID)
+	restored, err := s.RestoreAgentRevision(revs[0].ID, agent.SourceRevision)
 	if err != nil {
 		t.Fatal(err)
 	}

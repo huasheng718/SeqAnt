@@ -40,11 +40,15 @@ func (e *Engine) updateRunAt(id string, allowExpiredLease bool, mutate func(*dom
 	}
 	if err := e.repo.PutRun(r); err != nil {
 		log.Printf("put run %s: %v", id, err)
+		if r.ExecutionBudget != nil {
+			e.restorePendingObservations(pending)
+		}
 		return false
 	}
 	if current, ok := e.repo.RunStreamView(id); ok {
 		e.publishRun(current)
 	}
+	e.stopBudgetExecutions(r)
 	return true
 }
 

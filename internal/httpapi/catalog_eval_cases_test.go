@@ -41,9 +41,14 @@ func cvBDirectHandlerRequest(t *testing.T, f cvBHTTPFixture, method, path string
 
 func TestCatalogAssetLifecycle(t *testing.T) {
 	f := cvBNewHTTPFixture(t)
-	request := func(method, path string, body any, want int) {
+	request := func(method, path string, body any, want int, headers ...map[string]string) {
 		t.Helper()
-		rec := cvBRequest(t, f, method, path, body, true)
+		var rec *httptest.ResponseRecorder
+		if len(headers) == 1 {
+			rec = sourceEditRequest(t, f.h, f.user, method, path, body, headers[0])
+		} else {
+			rec = cvBRequest(t, f, method, path, body, true)
+		}
 		if rec.Code != want {
 			t.Errorf("%s %s = %d want %d: %s", method, path, rec.Code, want, rec.Body.String())
 		}
@@ -93,16 +98,19 @@ func TestCatalogAssetLifecycle(t *testing.T) {
 	}, http.StatusOK)
 	request(http.MethodPost, "/api/agents/cvb-r2-delete-agent/clone",
 		map[string]any{"id": "cvb-r2-cloned-agent", "name": "Clone", "projectId": "platform"}, http.StatusCreated)
-	request(http.MethodDelete, "/api/agents/cvb-r2-delete-agent", nil, http.StatusNoContent)
+	observedDeleteAgent, _ := f.s.Agent("cvb-r2-delete-agent")
+	request(http.MethodDelete, "/api/agents/cvb-r2-delete-agent", nil, http.StatusNoContent, map[string]string{"If-Match": "\"" + observedDeleteAgent.SourceRevision + "\""})
 
 	unused := domain.RuleDefinition{ID: "cvb-r2-unused-rule", Name: "Unused", ProjectID: "platform"}
 	if err := f.s.PutRule(unused); err != nil {
 		t.Fatal(err)
 	}
-	request(http.MethodDelete, "/api/rules?id="+unused.ID, nil, http.StatusNoContent)
+	unused, _ = f.s.Rule(unused.ID)
+	request(http.MethodDelete, "/api/rules?id="+unused.ID, nil, http.StatusNoContent, map[string]string{"If-Match": "\"" + unused.SourceRevision + "\""})
+	observedSharedSkill, _ := f.s.Skill(skill.ID)
 	request(http.MethodPut, "/api/skills", domain.SkillDefinition{
 		ID: skill.ID, Name: skill.Name, ProjectID: skill.ProjectID, Shared: false,
-	}, http.StatusConflict)
+	}, http.StatusConflict, map[string]string{"If-Match": "\"" + observedSharedSkill.SourceRevision + "\""})
 
 	if err := f.s.PutSandbox(domain.SandboxProfile{ID: "cvb-r2-global-sandbox", Name: "Global sandbox", ProjectID: "platform", Driver: "local"}); err != nil {
 		t.Fatal(err)
@@ -501,13 +509,13 @@ func TestCatalogMCPAndGenericHelperBranches(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	got, err := h.cloneAgentMCPServers([]string{
+	got, _, err := h.cloneAgentMCPServers([]string{
 		"missing", definitions[0].ID, definitions[1].ID, definitions[3].ID,
 	}, "platform", f.user.ID)
 	if err != nil || len(got) != 3 {
 		t.Fatalf("cloned MCPs: %#v %v", got, err)
 	}
-	if _, err := h.cloneAgentMCPServers([]string{definitions[3].ID}, "platform", 0); err == nil {
+	if _, _, err := h.cloneAgentMCPServers([]string{definitions[3].ID}, "platform", 0); err == nil {
 		t.Fatal("anonymous personal MCP clone accepted")
 	}
 
@@ -670,9 +678,10 @@ func TestCatalogRemainingReachableBranches(t *testing.T) {
 	if err := f.s.PutAgent(agent); err != nil {
 		t.Fatal(err)
 	}
+	agent, _ = f.s.Agent(agent.ID)
 	agent.ProjectID = ""
 	agent.Name = "Existing updated"
-	rec = cvBRequest(t, f, http.MethodPut, "/api/agents", agent, true)
+	rec = sourceEditRequest(t, f.h, f.user, http.MethodPut, "/api/agents", agent, map[string]string{"If-Match": "\"" + agent.SourceRevision + "\""})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("agent inherited project = %d: %s", rec.Code, rec.Body.String())
 	}
@@ -703,8 +712,8 @@ func TestCatalogRemainingReachableBranches(t *testing.T) {
 		{map[string]any{"id": "missing-role", "name": "Missing", "executorId": "unsupported"}, http.StatusBadRequest},
 		{map[string]any{"id": "missing-role", "name": "Missing"}, http.StatusNotFound},
 	} {
-		rec = cvBRequest(t, f, http.MethodPut,
-			"/api/workflows/"+repo.GenericBackendDeliveryWorkflowID+"/agents", tc.body, true)
+		rec = sourceEditRequest(t, f.h, f.user, http.MethodPut,
+			"/api/workflows/"+repo.GenericBackendDeliveryWorkflowID+"/agents", tc.body, map[string]string{"If-Match": "\"" + genericTemplate.Agents[0].SourceRevision + "\""})
 		if rec.Code != tc.want {
 			t.Errorf("generic agent update = %d want %d: %s", rec.Code, tc.want, rec.Body.String())
 		}
@@ -717,14 +726,17 @@ func TestCatalogRemainingReachableBranches(t *testing.T) {
 	if len(template.Agents) > 0 {
 		update := template.Agents[0]
 		update.Name += " updated"
-		rec = cvBRequest(t, f, http.MethodPut,
-			"/api/workflows/"+repo.GenericBackendDeliveryWorkflowID+"/agents", update, true)
+		rec = sourceEditRequest(t, f.h, f.user, http.MethodPut,
+			"/api/workflows/"+repo.GenericBackendDeliveryWorkflowID+"/agents", update, map[string]string{"If-Match": "\"" + update.SourceRevision + "\""})
 		if rec.Code != http.StatusOK {
 			t.Errorf("valid generic agent update = %d: %s", rec.Code, rec.Body.String())
 		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &update); err != nil {
+			t.Fatal(err)
+		}
 		update.Effort = "definitely-invalid"
-		rec = cvBRequest(t, f, http.MethodPut,
-			"/api/workflows/"+repo.GenericBackendDeliveryWorkflowID+"/agents", update, true)
+		rec = sourceEditRequest(t, f.h, f.user, http.MethodPut,
+			"/api/workflows/"+repo.GenericBackendDeliveryWorkflowID+"/agents", update, map[string]string{"If-Match": "\"" + update.SourceRevision + "\""})
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("invalid generic effort = %d: %s", rec.Code, rec.Body.String())
 		}

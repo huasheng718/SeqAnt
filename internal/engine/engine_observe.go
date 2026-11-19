@@ -105,6 +105,20 @@ func (e *Engine) takePendingObservations(runID string) []pendingObservation {
 	return taken
 }
 
+// A budget writer may lose a revision race with a transactional Runner/API
+// update. Keep uncommitted usage in order so Finish/Begin can flush it again;
+// dropping it would incorrectly grant more observed allowance.
+func (e *Engine) restorePendingObservations(items []pendingObservation) {
+	if len(items) == 0 {
+		return
+	}
+	e.obsMu.Lock()
+	defer e.obsMu.Unlock()
+	restored := make([]pendingObservation, 0, len(items)+len(e.obsPending))
+	restored = append(restored, items...)
+	e.obsPending = append(restored, e.obsPending...)
+}
+
 func (e *Engine) applyObservation(r *domain.Run, nodeID string, observation domain.TelemetryEvent) {
 	if isTerminalRunStatus(r.Status) && observation.Name != "sandbox.closed" {
 		return
@@ -178,7 +192,7 @@ func (e *Engine) applyObservation(r *domain.Run, nodeID string, observation doma
 			nr.SessionID = observation.SessionID
 			nr.ResumeSessionID = ""
 		}
-		metricsSideChannel := observation.Source.Adapter == observability.AdapterHooks || observation.Source.Adapter == observability.AdapterOTEL
+		metricsSideChannel := observation.Source.Adapter == observability.AdapterHooks || observation.Source.Adapter == observability.AdapterLegacyHooks || observation.Source.Adapter == observability.AdapterOTEL
 		if !metricsSideChannel {
 			switch observation.Category {
 			case "reasoning":
@@ -218,6 +232,9 @@ func (e *Engine) applyObservation(r *domain.Run, nodeID string, observation doma
 			}
 			if observation.Usage != nil {
 				applyUsage(r, nr, observation.SessionID, *observation.Usage)
+				if r.ExecutionBudget != nil {
+					_ = r.ExecutionBudget.Observe(r.ExecutionContext.ExecutionBudget, nodeID, observation.SessionID, *observation.Usage)
+				}
 			}
 		}
 	}

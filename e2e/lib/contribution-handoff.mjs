@@ -92,7 +92,7 @@ with tempfile.TemporaryDirectory(prefix='fresh-contribution-reader-') as temp:
                       'bundleVerification': verification, 'gatePassed': True, 'gateResultSHA': metadata['resultSHA']}), flush=True)
 `;
 
-export async function runContributionHandoff(t, { phase = "full", evidenceDir, entrySource, entryName = "40-contribution-handoff.test.mjs", repositoryMetadata = {}, sensitiveValues = [], sensitiveEndpoints = [], onIntegrated } = {}) {
+export async function runContributionHandoff(t, { phase = "full", evidenceDir, entrySource, entryName = "40-contribution-handoff.test.mjs", repositoryMetadata = {}, sensitiveValues = [], sensitiveEndpoints = [], onIntegrated, onWritersReady } = {}) {
   assert.ok(['receipts', 'full'].includes(phase));
   await ensureProject();
   const productRoot = git(process.cwd(), 'rev-parse', '--show-toplevel');
@@ -104,7 +104,7 @@ export async function runContributionHandoff(t, { phase = "full", evidenceDir, e
   const report = { startedAt: new Date().toISOString(), phase, acceptanceLevel: 'incomplete', gatePassed: false,
     publicSource, baseSHA, productBaseSHA: git(process.cwd(), 'rev-parse', 'HEAD'),
     harnessSHA256: hash(entrySource), helperSHA256: hash(helperSource), productTrackedDiffSHA256: hash(execFileSync('git', ['diff', 'HEAD'])),
-    boundaries: { physicalDevices: 1, linux: 'local Docker OS/process/network namespace', modelUsed: false,
+    boundaries: { scope: 'base contribution handoff; extension runs report their own boundaries', physicalDevices: 1, linux: 'local Docker OS/process/network namespace', modelUsed: false,
       authority: 'one existing Engine; two independent Runs', sourceAccess: 'read-only HTTP; no hosting-write credential',
       publication: 'not attempted', controllerIntegration: phase === 'full' ? 'required' : 'pending separate full phase' },
     runners: [], runs: [], sourceRequests: [], findings: [],
@@ -158,7 +158,7 @@ export async function runContributionHandoff(t, { phase = "full", evidenceDir, e
     for (const token of sessions.values()) await api('POST', '/runners/deregister', {}, { auth: false, headers: { Authorization: `Bearer ${token}` }, expect: [200, 401] }).catch(() => {});
     sourceServer?.closeAllConnections();
     if (sourceServer) await new Promise(resolve => sourceServer.close(resolve));
-    for (const name of ['native-state.json', 'agentflow-runner-mac', 'agentflow-runner-linux', 'native-home', 'native-workspace', 'native-tmp', 'native-reader-home', 'native-reader-tmp']) rmSync(join(dir, name), { recursive: true, force: true });
+    for (const name of ['native-state.json', 'agentflow-gate-mcp', 'agentflow-runner-mac', 'agentflow-runner-linux', 'native-home', 'native-workspace', 'native-tmp', 'native-reader-home', 'native-reader-tmp']) rmSync(join(dir, name), { recursive: true, force: true });
     report.finishedAt = new Date().toISOString();
     report.cleanup = { nativeProcessStopped: !native || native.exitCode !== null || native.signalCode !== null,
       linuxContainerRemoved: (() => { try { execFileSync('docker', ['inspect', container], { stdio: 'pipe' }); return false; } catch { return true; } })(),
@@ -223,8 +223,11 @@ export async function runContributionHandoff(t, { phase = "full", evidenceDir, e
     let proc;
     if (kind === 'mac') {
       for (const name of ['native-home', 'native-tmp']) mkdirSync(join(dir, name), { mode: 0o700 });
+      // A workflow Agent needs the packaged gate tool even with no user MCPs.
+      const gateBinary = join(dir, 'agentflow-gate-mcp');
+      execFileSync('go', ['build', '-o', gateBinary, './cmd/agentflow-gate-mcp'], { cwd: productRoot, stdio: 'pipe' });
       proc = native = spawn(nativeBinary, ['--server', cfg.base, '--name', names.mac, '--state', join(dir, 'native-state.json'), '--workspace', join(dir, 'native-workspace'), '--heartbeat', '2s', '--auto-update=false'], {
-        cwd: dir, env: { PATH: process.env.PATH, HOME: join(dir, 'native-home'), TMPDIR: join(dir, 'native-tmp'), LANG: 'en_US.UTF-8', AGENTFLOW_BROWSER: 'off', AGENTFLOW_RUNNER_BOOTSTRAP_TOKEN: code }, stdio: ['ignore', 'pipe', 'pipe'],
+        cwd: dir, env: { PATH: process.env.PATH, HOME: join(dir, 'native-home'), TMPDIR: join(dir, 'native-tmp'), LANG: 'en_US.UTF-8', AGENTFLOW_BROWSER: 'off', AGENTFLOW_GATE_MCP_BINARY: gateBinary, AGENTFLOW_RUNNER_BOOTSTRAP_TOKEN: code }, stdio: ['ignore', 'pipe', 'pipe'],
       });
     } else {
       const targetBase = `http://host.docker.internal:${new URL(cfg.base).port}`;
@@ -258,6 +261,7 @@ export async function runContributionHandoff(t, { phase = "full", evidenceDir, e
   track(`repository ${repositoryId}`, () => del(`/api/repositories?id=${repositoryId}`));
   await post('/api/repositories', { id: repositoryId, projectId: cfg.projectId, provider: 'gongfeng', name: repositoryId, gongfengProjectId: `e2e-auto/${repositoryId}`, cloneUrl: sourceURL, defaultBranch: 'main', ...repositoryMetadata });
   report.repositoryId = repositoryId;
+  if (onWritersReady) await onWritersReady({ report, repositoryId, baseSHA, sourceURL, persist, sessions, onBeforeCleanup: fn => beforeCleanup.push(fn) });
   for (const runner of report.runners) {
     await put('/api/runners/default', { runnerId: runner.id });
     const workflowId = await createWorkflow(`handoff-${runner.kind}`, [script('writer', writerScript(runner.kind), {

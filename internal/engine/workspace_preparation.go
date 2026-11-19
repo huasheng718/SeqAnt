@@ -40,6 +40,9 @@ func (e *Engine) workspaceSandboxProfile(run domain.Run) (domain.SandboxProfile,
 // lease. The workspace-use lease fences cleanup; the sandbox's workspace flock
 // fences another process. An active local scheduler shares its existing handle.
 func (e *Engine) acquireConversationEnvironment(ctx context.Context, run domain.Run) (*runEnvironment, error) {
+	if err := e.ValidateRunIntelligence(run); err != nil {
+		return nil, err
+	}
 	if err := e.validateDeliveryRepositories(run); err != nil {
 		return nil, err
 	}
@@ -95,7 +98,11 @@ func (e *Engine) prepareLocalEnvironment(ctx context.Context, run domain.Run, en
 	defer env.preparing.Store(false)
 	// Caller owns env.nodeMu so reconstruction is serialized without turning
 	// environment preparation into business-node attempts.
-	assets := e.deliveryAssets(run, e.resolveScriptMCPAssets(run.ExecutionContext.ProjectID, run.ExecutionContext.ResponsibleUserID))
+	assets, err := e.RunScriptAssets(run)
+	if err != nil {
+		return runtime.WorkspacePreparationStatus{Status: "failed", Error: err.Error(), Steps: []runtime.WorkspacePreparationStep{}}, err
+	}
+	assets = e.deliveryAssets(run, assets)
 	if len(runtime.PreparationNodes(workspacePreparationPlan(run))) > 0 {
 		if err := runtime.ProvisionMCPAssets(ctx, env, env.Workspace(), assets, nil); err != nil {
 			return runtime.WorkspacePreparationStatus{Status: "failed", Error: err.Error(), Steps: []runtime.WorkspacePreparationStep{}}, err
@@ -149,7 +156,11 @@ func (e *Engine) preparedWorkspaceRequest(run domain.Run, request domain.RunnerW
 	credentials := e.resolveRunCredentials(run)
 	invocation := &domain.RunnerInvocation{}
 	bindRunnerRepositories(invocation, run, credentials.GitToken, credentials.GitUserName, credentials.GitUserEmail)
-	assets := e.deliveryAssets(run, e.resolveScriptMCPAssets(run.ExecutionContext.ProjectID, run.ExecutionContext.ResponsibleUserID))
+	assets, err := e.RunScriptAssets(run)
+	if err != nil {
+		return request, err
+	}
+	assets = e.deliveryAssets(run, assets)
 	invocation.Assets = assets
 	invocation.MCPCallServers = assets.MCPServers
 	task := domain.RunnerTask{Invocation: invocation, Sandbox: request.Sandbox}

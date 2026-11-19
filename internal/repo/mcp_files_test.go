@@ -15,7 +15,8 @@ func TestMCPFilesRoundTripRefreshesManifestAndDelete(t *testing.T) {
 	if err := store.PutMCPServer(server); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.PutMCPFiles(server.ID, []SkillFileInput{{Path: "server.py", Content: []byte("print('ok')\n"), Mode: 0o755}, {Path: "pkg/data.txt", Content: []byte("data")}}); err != nil {
+	server, _ = store.MCPServer(server.ID)
+	if err := store.PutMCPFiles(server.ID, []SkillFileInput{{Path: "server.py", Content: []byte("print('ok')\n"), Mode: 0o755}, {Path: "pkg/data.txt", Content: []byte("data")}}, server.SourceRevision); err != nil {
 		t.Fatal(err)
 	}
 	stored, _ := store.MCPServer(server.ID)
@@ -34,14 +35,14 @@ func TestMCPFilesRoundTripRefreshesManifestAndDelete(t *testing.T) {
 	if len(stored.FileRefs) != 2 {
 		t.Fatalf("definition update erased fileRefs: %#v", stored.FileRefs)
 	}
-	if err := store.DeleteMCPFile(server.ID, "pkg/data.txt"); err != nil {
+	if err := store.DeleteMCPFile(server.ID, "pkg/data.txt", stored.SourceRevision); err != nil {
 		t.Fatal(err)
 	}
 	stored, _ = store.MCPServer(server.ID)
 	if len(stored.FileRefs) != 1 || stored.FileRefs[0].Path != "server.py" {
 		t.Fatalf("fileRefs after delete=%#v", stored.FileRefs)
 	}
-	if err := store.DeleteMCPServer(server.ID); err != nil {
+	if err := store.DeleteMCPServer(server.ID, stored.SourceRevision); err != nil {
 		t.Fatal(err)
 	}
 	if refs := store.MCPFileRefs(server.ID); len(refs) != 0 {

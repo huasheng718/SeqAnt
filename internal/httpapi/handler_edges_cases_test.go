@@ -622,6 +622,7 @@ func TestMCPImportFilesAndServerBranches(t *testing.T) {
 	if err := st.PutMCPServer(custom); err != nil {
 		t.Fatal(err)
 	}
+	custom, _ = st.MCPServer(custom.ID)
 	upload := func(paths []string, names []string) (*gin.Context, *httptest.ResponseRecorder) {
 		var buf bytes.Buffer
 		writer := multipart.NewWriter(&buf)
@@ -638,12 +639,16 @@ func TestMCPImportFilesAndServerBranches(t *testing.T) {
 		c.Request.Body = http.NoBody
 		c.Request = httptest.NewRequest(http.MethodPost, "/api/mcp/cva-r3-files/files", bytes.NewReader(buf.Bytes()))
 		c.Request.Header.Set("Content-Type", writer.FormDataContentType())
+		c.Request.Header.Set("If-Match", `"`+custom.SourceRevision+`"`)
 		return c, rec
 	}
 	c, rec = upload([]string{"src/a.txt"}, []string{"a.txt"})
 	h.mcpFiles(c)
 	if rec.Code != 200 {
 		t.Fatalf("file upload=%d %s", rec.Code, rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &custom); err != nil {
+		t.Fatal(err)
 	}
 	if content, ok := st.MCPFileContent(custom.ID, "a.txt"); !ok || string(content) != "content-a" {
 		t.Fatalf("stored file=%q %v", content, ok)
@@ -670,6 +675,7 @@ func TestMCPImportFilesAndServerBranches(t *testing.T) {
 		t.Fatalf("delete missing=%d", rec.Code)
 	}
 	c, rec = cvAContext(t, http.MethodPut, "/api/mcp-servers", `{"id":"cva-r3-files","name":"Updated","transport":"http","url":"https://example.test/new"}`, nil)
+	c.Request.Header.Set("If-Match", `"`+custom.SourceRevision+`"`)
 	h.mcpServers(c)
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "Updated") {
 		t.Fatalf("update=%d %s", rec.Code, rec.Body.String())

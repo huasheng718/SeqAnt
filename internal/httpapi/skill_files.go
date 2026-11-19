@@ -37,6 +37,10 @@ func (h *catalogHandlers) skillFiles(c *gin.Context) {
 		return
 	}
 
+	expected, allowed := sourceEditPrecondition(c, true)
+	if !allowed {
+		return
+	}
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, skillUploadBodyLimit)
 	if err := c.Request.ParseMultipartForm(32 << 20); err != nil {
 		c.JSON(http.StatusBadRequest, map[string]string{"error": "上传内容无效或超过 65MB 请求上限"})
@@ -152,11 +156,11 @@ func (h *catalogHandlers) skillFiles(c *gin.Context) {
 		return
 	}
 
-	if err := h.repo.PutSkillFiles(skillID, inputs); err != nil {
+	saved, err := h.repo.SaveSkillFiles(skillID, inputs, expected)
+	if err != nil {
 		respond(c, err)
 		return
 	}
-	saved, _ := h.repo.Skill(skillID)
 	c.JSON(http.StatusOK, saved)
 }
 
@@ -170,12 +174,19 @@ func (h *catalogHandlers) skillFile(c *gin.Context) {
 		c.JSON(http.StatusNotFound, map[string]string{"error": "skill not found"})
 		return
 	}
+	if c.Request.Method == http.MethodGet && !h.requireCatalogRead(c, skill.ProjectID, skill.Shared) {
+		return
+	}
 	if err := domain.ValidateRelativeFilePath(filePath); err != nil {
 		c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
 	switch c.Request.Method {
 	case http.MethodGet:
+		if err := domain.CheckDistribution(skill, "export"); err != nil {
+			respond(c, err)
+			return
+		}
 		content, ok := h.repo.SkillFileContent(skillID, filePath)
 		if !ok {
 			c.JSON(http.StatusNotFound, map[string]string{"error": "file not found"})
@@ -187,11 +198,15 @@ func (h *catalogHandlers) skillFile(c *gin.Context) {
 		if rejectSourcedSkillWrite(c, skill) {
 			return
 		}
-		if err := h.repo.DeleteSkillFile(skillID, filePath); err != nil {
+		expected, allowed := sourceEditPrecondition(c, true)
+		if !allowed {
+			return
+		}
+		saved, err := h.repo.RemoveSkillFile(skillID, filePath, expected)
+		if err != nil {
 			respond(c, err)
 			return
 		}
-		saved, _ := h.repo.Skill(skillID)
 		c.JSON(http.StatusOK, saved)
 	default:
 		c.JSON(http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})

@@ -188,7 +188,7 @@ test('SkillHub market helpers, list, drawer, and install/update modal workflows'
   // Configure installed skills in project-1: git-helper (older v1.0.0 -> update) and log-analyzer (v1.0.0 -> installed)
   app.evaluate(`
     state.data.skills.push(
-      { id: 'git-helper', name: 'Git Helper', projectId: 'project-1', source: { provider: 'skillhub', namespace: 'tencent', slug: 'git-helper', version: '1.0.0' } },
+      { id: 'git-helper', name: 'Git Helper', projectId: 'project-1',sourceRevision:'market-review-base', source: { provider: 'skillhub', namespace: 'tencent', slug: 'git-helper', version: '1.0.0' } },
       { id: 'log-analyzer', name: 'Log Analyzer', projectId: 'project-1', source: { provider: 'skillhub', namespace: 'tencent', slug: 'log-analyzer', version: '1.0.0' } },
     );
     state.assetType = 'skills';
@@ -266,6 +266,7 @@ test('SkillHub market helpers, list, drawer, and install/update modal workflows'
   // Trigger install modal from drawer
   app.router.post('/api/skillhub/install', (call) => ({
     id: call.body.id,
+    sourceRevision:'market-install-saved',
     name: call.body.name,
     projectId: call.body.projectId,
     source: { provider: 'skillhub', namespace: call.body.namespace, slug: call.body.slug, version: call.body.version },
@@ -285,6 +286,7 @@ test('SkillHub market helpers, list, drawer, and install/update modal workflows'
   // Trigger update modal from market card and submit update
   app.router.post('/api/skillhub/update', (call) => ({
     id: call.body.skillId,
+    sourceRevision:'market-update-saved',
     name: 'Git Helper',
     projectId: 'project-1',
     source: { provider: 'skillhub', namespace: 'tencent', slug: 'git-helper', version: call.body.version },
@@ -296,6 +298,9 @@ test('SkillHub market helpers, list, drawer, and install/update modal workflows'
   modal.querySelector('form').dispatchEvent(new app.window.Event('submit', { bubbles: true, cancelable: true }));
   await settle(10);
   assert.equal(modal.hidden, true);
+
+  assert.equal(app.router.calls.find(c=>c.path==='/api/skillhub/update'&&c.method==='POST').options.headers['If-Match'],'"market-review-base"');
+  assert.equal(app.evaluate("state.data.skills.find(s=>s.id==='git-helper').sourceRevision"),'market-update-saved');
 
   // Check update helper & close drawer
   const checkBtn = app.document.createElement('button');

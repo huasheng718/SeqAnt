@@ -226,7 +226,7 @@ func (h *catalogHandlers) repository(c *gin.Context) {
 
 func (h *catalogHandlers) agents(c *gin.Context) {
 	if c.Request.Method == http.MethodGet {
-		agents := h.repo.Agents()
+		agents := filterCatalogRead(h.repo.Agents(), h.catalogReadPredicate(c), agentReadScope)
 		if projectID := strings.TrimSpace(c.Query("projectId")); projectID != "" {
 			agents = filterAgentsForProject(agents, projectID)
 		}
@@ -276,17 +276,21 @@ func (h *catalogHandlers) agents(c *gin.Context) {
 			if v.Version == 0 {
 				v.Version = 1
 			}
-			if v.Shared {
-				if err := h.shareAgentAssets(v); err != nil {
-					respond(c, err)
-					return
-				}
+
+			_, exists := h.repo.Agent(v.ID)
+			if !ordinaryDistributionCreate(c, v.DistributionState, exists) {
+				return
 			}
-			if err := h.repo.PutAgent(v); err != nil {
+			expected, allowed := sourceEditPrecondition(c, exists)
+			if !allowed {
+				return
+			}
+			v.SourceRevision = expected
+			stored, err := h.repo.SaveAgentWithSharing(v)
+			if err != nil {
 				respond(c, err)
 				return
 			}
-			stored, _ := h.repo.Agent(v.ID)
 			c.JSON(200, stored)
 		}
 	}
@@ -334,6 +338,9 @@ func (h *catalogHandlers) agent(c *gin.Context) {
 		c.JSON(404, map[string]string{"error": "agent not found"})
 		return
 	}
+	if (c.Request.Method == http.MethodGet || c.FullPath() == "/api/agents/:id/clone") && !h.requireCatalogRead(c, current.ProjectID, current.Shared) {
+		return
+	}
 	if c.Request.Method != http.MethodGet && c.FullPath() != "/api/agents/:id/clone" && !h.requireProjectWriter(c, current.ProjectID) {
 		return
 	}
@@ -349,7 +356,11 @@ func (h *catalogHandlers) agent(c *gin.Context) {
 				c.JSON(http.StatusConflict, map[string]string{"error": fmt.Sprintf("角色仍被 %d 个流程引用（%s），请先解除引用", len(referencing), strings.Join(referencing, ", "))})
 				return
 			}
-			if err := h.repo.DeleteAgent(id); err != nil {
+			expected, allowed := sourceEditPrecondition(c, true)
+			if !allowed {
+				return
+			}
+			if err := h.repo.DeleteAgent(id, expected); err != nil {
 				respond(c, err)
 				return
 			}
@@ -359,16 +370,25 @@ func (h *catalogHandlers) agent(c *gin.Context) {
 		v, _ := h.repo.Agent(id)
 		c.JSON(200, v)
 	case "/api/agents/:id/revisions":
-		c.JSON(200, h.repo.Revisions("agent", id))
+		c.JSON(200, h.readableCatalogRevisions(c, "agent", id))
 	case "/api/agents/:id/revisions/:rev":
 		revision, ok := h.repo.Revision(c.Param("rev"))
-		if !ok || revision.Kind != "agent" || revision.EntityID != id {
+		if !ok || !catalogRevisionVisible(revision, "agent", id, h.catalogReadPredicate(c)) {
 			c.JSON(http.StatusNotFound, map[string]string{"error": "agent revision not found"})
 			return
 		}
 		c.JSON(http.StatusOK, revision)
 	case "/api/agents/:id/revisions/:rev/restore":
-		stored, err := h.repo.RestoreAgentRevision(c.Param("rev"))
+		revision, found := h.repo.Revision(c.Param("rev"))
+		if !found || !catalogRevisionVisible(revision, "agent", id, h.catalogReadPredicate(c)) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "agent revision not found"})
+			return
+		}
+		expected, allowed := sourceEditPrecondition(c, true)
+		if !allowed {
+			return
+		}
+		stored, err := h.repo.RestoreAgentRevision(c.Param("rev"), expected)
 		if err != nil {
 			respond(c, err)
 			return
@@ -392,21 +412,22 @@ func (h *catalogHandlers) agent(c *gin.Context) {
 			c.JSON(http.StatusNotFound, map[string]string{"error": "project not found"})
 			return
 		}
-		taken, _ := h.repo.Agent(req.ID)
+		taken, collision := h.repo.Agent(req.ID)
+		if collision {
+			sourceEditError(c, repo.ErrSourceConflict)
+			return
+		}
 		if !h.requireProjectWriter(c, strings.TrimSpace(req.ProjectID), taken.ProjectID) {
 			return
 		}
-		if v.Shared {
-			if err := h.shareAgentAssets(v); err != nil {
-				respond(c, err)
-				return
-			}
+		if !h.allowAgentCloneSources(c, v, strings.TrimSpace(req.ProjectID)) {
+			return
 		}
 		userID := int64(0)
 		if current, ok := h.requestUser(c.Request, true); ok {
 			userID = current.ID
 		}
-		mcpServers, err := h.cloneAgentMCPServers(v.MCPServers, strings.TrimSpace(req.ProjectID), userID)
+		mcpServers, newMCPs, err := h.cloneAgentMCPServers(v.MCPServers, strings.TrimSpace(req.ProjectID), userID)
 		if err != nil {
 			if errors.Is(err, errPersonalMCPCloneRequiresLogin) {
 				c.JSON(http.StatusUnauthorized, map[string]string{"error": err.Error()})
@@ -421,11 +442,12 @@ func (h *catalogHandlers) agent(c *gin.Context) {
 		v.Shared = false
 		v.Version = 1
 		v.UpdatedAt = time.Time{}
-		if err := h.repo.PutAgent(v); err != nil {
+		v.SourceRevision = ""
+		stored, err := h.repo.CreateAgentClone(v, newMCPs, current)
+		if err != nil {
 			respond(c, err)
 			return
 		}
-		stored, _ := h.repo.Agent(v.ID)
 		c.JSON(201, stored)
 	default:
 		c.Status(http.StatusNotFound)
@@ -434,32 +456,9 @@ func (h *catalogHandlers) agent(c *gin.Context) {
 
 var errPersonalMCPCloneRequiresLogin = errors.New("复制包含个人 MCP 的角色前请先登录")
 
-func (h *catalogHandlers) shareAgentAssets(agent domain.AgentDefinition) error {
-	for _, id := range agent.Rules {
-		item, ok := h.repo.Rule(id)
-		if !ok || item.Shared || (item.ProjectID != "" && item.ProjectID != agent.ProjectID) {
-			continue
-		}
-		item.Shared = true
-		if err := h.repo.PutRule(item); err != nil {
-			return fmt.Errorf("share rule %q: %w", id, err)
-		}
-	}
-	for _, id := range agent.Skills {
-		item, ok := h.repo.Skill(id)
-		if !ok || item.Shared || (item.ProjectID != "" && item.ProjectID != agent.ProjectID) {
-			continue
-		}
-		item.Shared = true
-		if err := h.repo.PutSkill(item); err != nil {
-			return fmt.Errorf("share skill %q: %w", id, err)
-		}
-	}
-	return nil
-}
-
-func (h *catalogHandlers) cloneAgentMCPServers(ids []string, projectID string, userID int64) ([]string, error) {
+func (h *catalogHandlers) cloneAgentMCPServers(ids []string, projectID string, userID int64) ([]string, []domain.MCPServerDefinition, error) {
 	out := make([]string, 0, len(ids))
+	var pending []domain.MCPServerDefinition
 	for _, id := range ids {
 		source, ok := h.repo.MCPServer(id)
 		if !ok || source.Scope == "" {
@@ -477,15 +476,25 @@ func (h *catalogHandlers) cloneAgentMCPServers(ids []string, projectID string, u
 					goto nextMCP
 				}
 			}
+			state, err := domain.CopyDistribution(source)
+			if err != nil {
+				return nil, nil, err
+			}
+			source.DistributionState = state
 			source.ProjectID, source.OwnerUserID = projectID, 0
 		} else if source.Scope == "personal" {
 			if userID <= 0 {
-				return nil, errPersonalMCPCloneRequiresLogin
+				return nil, nil, errPersonalMCPCloneRequiresLogin
 			}
 			if source.OwnerUserID == userID {
 				out = append(out, source.ID)
 				continue
 			}
+			state, err := domain.CopyDistribution(source)
+			if err != nil {
+				return nil, nil, err
+			}
+			source.DistributionState = state
 			ownerKey = strconv.FormatInt(userID, 10)
 			source.ProjectID, source.OwnerUserID, source.MarketID = "", userID, ""
 		} else {
@@ -493,15 +502,25 @@ func (h *catalogHandlers) cloneAgentMCPServers(ids []string, projectID string, u
 		}
 		source.ID = mcpInstallID("clone-"+id, source.Scope, ownerKey)
 		source.UpdatedAt = time.Time{}
-		if _, exists := h.repo.MCPServer(source.ID); !exists {
-			if err := h.repo.PutMCPServer(source); err != nil {
-				return nil, fmt.Errorf("clone MCP %q: %w", id, err)
+		source.SourceRevision = ""
+		if existing, exists := h.repo.MCPServer(source.ID); exists {
+			// A deterministic ID is insufficient: reuse only the exact planned
+			// target-scoped definition, never a foreign or edited binding.
+			existing.SourceRevision = ""
+			existing.UpdatedAt = time.Time{}
+			left, leftErr := json.Marshal(existing)
+			right, rightErr := json.Marshal(source)
+			if leftErr != nil || rightErr != nil || string(left) != string(right) {
+				return nil, nil, repo.ErrSourceConflict
 			}
+			out = append(out, existing.ID)
+			continue
 		}
+		pending = append(pending, source)
 		out = append(out, source.ID)
 	nextMCP:
 	}
-	return out, nil
+	return out, pending, nil
 }
 
 // normalizeGlobalRule keeps workflow bindings only while the rule is global.
@@ -541,7 +560,7 @@ func normalizeGlobalRule(st *repo.Store, v *domain.RuleDefinition) error {
 
 func (h *catalogHandlers) rules(c *gin.Context) {
 	if c.Request.Method == http.MethodGet {
-		items := h.repo.Rules()
+		items := filterCatalogRead(h.repo.Rules(), h.catalogReadPredicate(c), ruleReadScope)
 		if projectID := strings.TrimSpace(c.Query("projectId")); projectID != "" {
 			filtered := make([]domain.RuleDefinition, 0, len(items))
 			for _, item := range items {
@@ -555,10 +574,15 @@ func (h *catalogHandlers) rules(c *gin.Context) {
 		return
 	}
 	if c.Request.Method == http.MethodDelete {
+		_, exists := h.repo.Rule(strings.TrimSpace(c.Query("id")))
+		expected, allowed := sourceEditPrecondition(c, exists)
+		if !allowed {
+			return
+		}
 		h.deleteCatalogAsset(c, "规则", "rule not found", func(id string) (bool, bool) {
 			item, ok := h.repo.Rule(id)
 			return item.Shared, ok
-		}, func(id string) []string { return h.agentNamesReferencing("rule", id) }, "角色", h.repo.DeleteRule)
+		}, func(id string) []string { return h.agentNamesReferencing("rule", id) }, "角色", func(id string) error { return h.repo.DeleteRule(id, expected) })
 		return
 	}
 	if c.Request.Method == http.MethodPut {
@@ -584,13 +608,27 @@ func (h *catalogHandlers) rules(c *gin.Context) {
 				c.JSON(400, map[string]string{"error": err.Error()})
 				return
 			}
-			respond(c, h.repo.PutRule(v))
+			_, exists := h.repo.Rule(v.ID)
+			if !ordinaryDistributionCreate(c, v.DistributionState, exists) {
+				return
+			}
+			expected, allowed := sourceEditPrecondition(c, exists)
+			if !allowed {
+				return
+			}
+			v.SourceRevision = expected
+			saved, err := h.repo.SaveRule(v)
+			if err != nil {
+				respond(c, err)
+				return
+			}
+			c.JSON(200, saved)
 		}
 	}
 }
 func (h *catalogHandlers) skills(c *gin.Context) {
 	if c.Request.Method == http.MethodGet {
-		items := h.repo.Skills()
+		items := filterCatalogRead(h.repo.Skills(), h.catalogReadPredicate(c), skillReadScope)
 		if projectID := strings.TrimSpace(c.Query("projectId")); projectID != "" {
 			filtered := make([]domain.SkillDefinition, 0, len(items))
 			for _, item := range items {
@@ -604,10 +642,15 @@ func (h *catalogHandlers) skills(c *gin.Context) {
 		return
 	}
 	if c.Request.Method == http.MethodDelete {
+		_, exists := h.repo.Skill(strings.TrimSpace(c.Query("id")))
+		expected, allowed := sourceEditPrecondition(c, exists)
+		if !allowed {
+			return
+		}
 		h.deleteCatalogAsset(c, "技能", "skill not found", func(id string) (bool, bool) {
 			item, ok := h.repo.Skill(id)
 			return item.Shared, ok
-		}, func(id string) []string { return h.agentNamesReferencing("skill", id) }, "角色", h.repo.DeleteSkill)
+		}, func(id string) []string { return h.agentNamesReferencing("skill", id) }, "角色", func(id string) error { return h.repo.DeleteSkill(id, expected) })
 		return
 	}
 	if c.Request.Method == http.MethodPut {
@@ -644,7 +687,21 @@ func (h *catalogHandlers) skills(c *gin.Context) {
 				v.Files = nil
 				v.Source = nil
 			}
-			respond(c, h.repo.PutSkill(v))
+			_, exists := h.repo.Skill(v.ID)
+			if !ordinaryDistributionCreate(c, v.DistributionState, exists) {
+				return
+			}
+			expected, allowed := sourceEditPrecondition(c, exists)
+			if !allowed {
+				return
+			}
+			v.SourceRevision = expected
+			saved, err := h.repo.SaveSkillMetadata(v)
+			if err != nil {
+				respond(c, err)
+				return
+			}
+			c.JSON(200, saved)
 		}
 	}
 }
@@ -743,7 +800,7 @@ func (h *catalogHandlers) executors(c *gin.Context) {
 }
 func (h *catalogHandlers) dockerfiles(c *gin.Context) {
 	if c.Request.Method == http.MethodGet {
-		items := h.repo.Dockerfiles()
+		items := filterCatalogRead(h.repo.Dockerfiles(), h.catalogReadPredicate(c), dockerfileReadScope)
 		if projectID := strings.TrimSpace(c.Query("projectId")); projectID != "" {
 			items = filterEnvironmentAssets(items, projectID, func(item domain.DockerfileDefinition) (string, bool) { return item.ProjectID, item.Shared })
 		}
@@ -778,7 +835,7 @@ func (h *catalogHandlers) dockerfiles(c *gin.Context) {
 }
 func (h *catalogHandlers) environments(c *gin.Context) {
 	if c.Request.Method == http.MethodGet {
-		items := h.repo.Environments()
+		items := filterCatalogRead(h.repo.Environments(), h.catalogReadPredicate(c), environmentReadScope)
 		if projectID := strings.TrimSpace(c.Query("projectId")); projectID != "" {
 			items = filterEnvironmentAssets(items, projectID, func(item domain.EnvironmentDefinition) (string, bool) { return item.ProjectID, item.Shared })
 		}
@@ -813,7 +870,7 @@ func (h *catalogHandlers) environments(c *gin.Context) {
 }
 func (h *catalogHandlers) sandboxes(c *gin.Context) {
 	if c.Request.Method == http.MethodGet {
-		items := h.repo.Sandboxes()
+		items := filterCatalogRead(h.repo.Sandboxes(), h.catalogReadPredicate(c), sandboxReadScope)
 		if projectID := strings.TrimSpace(c.Query("projectId")); projectID != "" {
 			items = filterEnvironmentAssets(items, projectID, func(item domain.SandboxProfile) (string, bool) { return item.ProjectID, item.Shared })
 		}
@@ -929,7 +986,7 @@ func (h *catalogHandlers) workflows(c *gin.Context) {
 	if c.Request.Method == http.MethodGet {
 		projectID := strings.TrimSpace(c.Query("projectId"))
 		needle := strings.ToLower(strings.TrimSpace(c.Query("q")))
-		all := h.repo.Workflows()
+		all := filterCatalogRead(h.repo.Workflows(), h.catalogReadPredicate(c), workflowReadScope)
 		if projectID == "" && needle == "" {
 			c.JSON(200, all)
 			return
@@ -1087,6 +1144,9 @@ func (h *catalogHandlers) workflow(c *gin.Context) {
 		c.JSON(404, map[string]string{"error": "workflow not found"})
 		return
 	}
+	if (c.Request.Method == http.MethodGet || c.FullPath() == "/api/workflows/:id/clone") && !h.requireCatalogRead(c, v.ProjectID, v.Shared || v.Generic) {
+		return
+	}
 	if c.Request.Method != http.MethodGet && workflowHasNotifications(v) && !h.notifications.access(c, v.ProjectID, true) {
 		return
 	}
@@ -1127,17 +1187,17 @@ func (h *catalogHandlers) workflow(c *gin.Context) {
 		}
 		c.Status(http.StatusNoContent)
 	case "/api/workflows/:id/revisions":
-		c.JSON(200, h.repo.Revisions("workflow", id))
+		c.JSON(200, h.readableCatalogRevisions(c, "workflow", id))
 	case "/api/workflows/:id/revisions/:rev":
 		rev, ok := h.repo.Revision(c.Param("rev"))
-		if !ok || rev.EntityID != id {
+		if !ok || !catalogRevisionVisible(rev, "workflow", id, h.catalogReadPredicate(c)) {
 			c.JSON(404, map[string]string{"error": "revision not found"})
 			return
 		}
 		c.JSON(200, rev)
 	case "/api/workflows/:id/revisions/:rev/restore":
 		revision, exists := h.repo.Revision(c.Param("rev"))
-		if !exists || revision.EntityID != id {
+		if !exists || !catalogRevisionVisible(revision, "workflow", id, h.catalogReadPredicate(c)) {
 			c.JSON(404, gin.H{"error": "revision not found"})
 			return
 		}
@@ -1189,6 +1249,11 @@ func (h *catalogHandlers) workflow(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
+		expected, allowed := sourceEditPrecondition(c, true)
+		if !allowed {
+			return
+		}
+		agent.SourceRevision = expected
 		saved, err := h.repo.UpdateGenericAgent(id, agent)
 		if err != nil {
 			if strings.Contains(err.Error(), "不属于") {

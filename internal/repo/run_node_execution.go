@@ -280,6 +280,9 @@ func (r *RunsRepo) validateRunnerExecutionTaskShapeMode(run domain.Run, task dom
 	} else if task.Provider != "terminal" || execution.PreviousAuthorTaskID == "" {
 		return nil, runnerExecutionConflict("verification provider or author reference is invalid")
 	}
+	if err := domain.ValidateRunnerGovernedContextForRun(run, task); err != nil {
+		return nil, runnerExecutionConflict(err.Error())
+	}
 	invocation := task.Invocation
 	if invocation == nil || invocation.RunID != run.ID || invocation.NodeID != task.NodeID || invocation.WorkspaceIsolation == nil || invocation.WorkspaceIsolation.Version != domain.RunnerWorkspaceIsolationVersion || !domain.ValidWorkspaceContextSHA256(invocation.WorkspaceIsolation.ContextSHA256) || invocation.ResumeSessionID != "" {
 		return nil, runnerExecutionConflict("invocation lacks exact isolated execution identity")

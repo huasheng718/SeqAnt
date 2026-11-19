@@ -35,14 +35,21 @@ func BaselineAlignResolverAgent() domain.AgentDefinition {
 func (r *CatalogRepo) Agents() []domain.AgentDefinition {
 	out := payloadList[domain.AgentDefinition](r.DB, "agents", "")
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	for i := range out {
+		out[i].SourceRevision = sourceRevision("agents", out[i])
+	}
 	return out
 }
 
 func (r *CatalogRepo) Agent(id string) (domain.AgentDefinition, bool) {
-	return payloadOne[domain.AgentDefinition](r.DB, "agents", id)
+	v, ok := payloadOne[domain.AgentDefinition](r.DB, "agents", id)
+	if ok {
+		v.SourceRevision = sourceRevision("agents", v)
+	}
+	return v, ok
 }
 
-func (r *CatalogRepo) PutAgent(v domain.AgentDefinition) error {
+func (r *CatalogRepo) saveAgent(v domain.AgentDefinition, saved *domain.AgentDefinition, shareOwned ...bool) error {
 	if strings.TrimSpace(v.ID) == "" || strings.TrimSpace(v.Name) == "" {
 		return errors.New("agent id and name are required")
 	}
@@ -98,18 +105,8 @@ func (r *CatalogRepo) PutAgent(v domain.AgentDefinition) error {
 			return fmt.Errorf("agent hook %q timeoutSec must be between 1 and 600", hook.ID)
 		}
 	}
-	v.UpdatedAt = time.Now().UTC()
-	v.Rules = normalizeRefs(v.Rules, "rules/")
-	v.Skills = normalizeRefs(v.Skills, "skills/")
-	if old, ok := r.Agent(v.ID); ok {
-		v.ProjectID = domain.KeepCatalogProjectID(v.ProjectID, old.ProjectID)
-		if err := r.snapshotRevision("agent", old.ID, old.Name, old.Version, 0, old); err != nil {
-			return err
-		}
-	}
-	return upsert(r.DB, "agents", map[string]any{
-		"id": v.ID, "name": v.Name, "payload": mustJSON(v), "updated_at": timePtr(v.UpdatedAt),
-	})
+	return r.editAgentSource(v, saved, len(shareOwned) > 0 && shareOwned[0])
+
 }
 
 // ---------- Rules / Skills / MCP servers ----------
@@ -117,97 +114,92 @@ func (r *CatalogRepo) PutAgent(v domain.AgentDefinition) error {
 func (r *CatalogRepo) Rules() []domain.RuleDefinition {
 	out := payloadList[domain.RuleDefinition](r.DB, "rules", "")
 	sort.Slice(out, func(i, j int) bool { return out[i].Priority > out[j].Priority })
+	for i := range out {
+		out[i].SourceRevision = sourceRevision("rules", out[i])
+	}
 	return out
 }
 
 func (r *CatalogRepo) Rule(id string) (domain.RuleDefinition, bool) {
-	return payloadOne[domain.RuleDefinition](r.DB, "rules", id)
-}
-
-func (r *CatalogRepo) PutRule(v domain.RuleDefinition) error {
-	v.UpdatedAt = time.Now().UTC()
-	return upsert(r.DB, "rules", map[string]any{
-		"id": v.ID, "name": v.Name, "payload": mustJSON(v), "updated_at": timePtr(v.UpdatedAt),
-	})
-}
-
-func (r *CatalogRepo) DeleteRule(id string) error {
-	if _, ok := r.Rule(id); !ok {
-		return fmt.Errorf("rule not found")
+	v, ok := payloadOne[domain.RuleDefinition](r.DB, "rules", id)
+	if ok {
+		v.SourceRevision = sourceRevision("rules", v)
 	}
-	return r.DB.Table("rules").Where("id = ?", id).Delete(nil).Error
+	return v, ok
+}
+
+func (r *CatalogRepo) DeleteRule(id string, expected ...string) error {
+	return r.editSource("rules", id, firstSourceRevision(expected), func(catalog *CatalogRepo, raw []byte, token string, exists bool) error {
+		if !exists {
+			return ErrSourceConflict
+		}
+		return catalog.DB.Table("rules").Where("id = ?", id).Delete(nil).Error
+	})
 }
 
 func (r *CatalogRepo) Skills() []domain.SkillDefinition {
-	return payloadList[domain.SkillDefinition](r.DB, "skills", "")
+	out := payloadList[domain.SkillDefinition](r.DB, "skills", "")
+	for i := range out {
+		out[i].SourceRevision = sourceRevision("skills", out[i])
+	}
+	return out
 }
 
 func (r *CatalogRepo) Skill(id string) (domain.SkillDefinition, bool) {
-	return payloadOne[domain.SkillDefinition](r.DB, "skills", id)
-}
-
-func (r *CatalogRepo) PutSkill(v domain.SkillDefinition) error {
-	v.UpdatedAt = time.Now().UTC()
-	return upsert(r.DB, "skills", map[string]any{
-		"id": v.ID, "name": v.Name, "payload": mustJSON(v), "updated_at": timePtr(v.UpdatedAt),
-	})
-}
-
-func (r *CatalogRepo) DeleteSkill(id string) error {
-	if _, ok := r.Skill(id); !ok {
-		return fmt.Errorf("skill not found")
+	v, ok := payloadOne[domain.SkillDefinition](r.DB, "skills", id)
+	if ok {
+		v.SourceRevision = sourceRevision("skills", v)
 	}
-	return r.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("skill_id = ?", id).Delete(&skillFileRow{}).Error; err != nil {
+	return v, ok
+}
+
+func (r *CatalogRepo) DeleteSkill(id string, expected ...string) error {
+	return r.editSource("skills", id, firstSourceRevision(expected), func(catalog *CatalogRepo, raw []byte, token string, exists bool) error {
+		if !exists {
+			return ErrSourceConflict
+		}
+		if err := catalog.DB.Table("skill_files").Where("skill_id = ?", id).Delete(nil).Error; err != nil {
 			return err
 		}
-		return tx.Table("skills").Where("id = ?", id).Delete(nil).Error
+		return catalog.DB.Table("skills").Where("id = ?", id).Delete(nil).Error
 	})
 }
 
 func (r *CatalogRepo) MCPServers() []domain.MCPServerDefinition {
-	return payloadList[domain.MCPServerDefinition](r.DB, "mcp_servers", "")
+	out := payloadList[domain.MCPServerDefinition](r.DB, "mcp_servers", "")
+	for i := range out {
+		out[i].SourceRevision = sourceRevision("mcp_servers", domain.PublicMCPServer(out[i]))
+	}
+	return out
 }
 
 func (r *CatalogRepo) MCPServer(id string) (domain.MCPServerDefinition, bool) {
-	return payloadOne[domain.MCPServerDefinition](r.DB, "mcp_servers", id)
+	v, ok := payloadOne[domain.MCPServerDefinition](r.DB, "mcp_servers", id)
+	if ok {
+		v.SourceRevision = sourceRevision("mcp_servers", domain.PublicMCPServer(v))
+	}
+	return v, ok
 }
 
-func (r *CatalogRepo) PutMCPServer(v domain.MCPServerDefinition) error {
-	// Uploaded contents and their manifest are owned by the mcp_files API.
-	// Definition-only updates (including JSON import) must not orphan existing
-	// rows merely because fileRefs was omitted by an older client.
-	if v.FileRefs == nil {
-		if existing, ok := r.MCPServer(v.ID); ok {
-			v.FileRefs = existing.FileRefs
+func (r *CatalogRepo) DeleteMCPServer(id string, expected ...string) error {
+	return r.editSource("mcp_servers", id, firstSourceRevision(expected), func(catalog *CatalogRepo, raw []byte, token string, exists bool) error {
+		if !exists {
+			return ErrSourceConflict
 		}
-	}
-	if err := domain.ValidateMCPServer(v); err != nil {
-		return err
-	}
-	v.UpdatedAt = time.Now().UTC()
-	return upsert(r.DB, "mcp_servers", map[string]any{
-		"id": v.ID, "name": v.Name, "payload": mustJSON(v), "updated_at": timePtr(v.UpdatedAt),
-	})
-}
-
-func (r *CatalogRepo) DeleteMCPServer(id string) error {
-	if _, ok := r.MCPServer(id); !ok {
-		return fmt.Errorf("MCP not found")
-	}
-	return r.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("mcp_id = ?", id).Delete(&mcpFileRow{}).Error; err != nil {
+		if err := catalog.DB.Table("mcp_files").Where("mcp_id = ?", id).Delete(nil).Error; err != nil {
 			return err
 		}
-		return tx.Table("mcp_servers").Where("id = ?", id).Delete(nil).Error
+		return catalog.DB.Table("mcp_servers").Where("id = ?", id).Delete(nil).Error
 	})
 }
 
-func (r *CatalogRepo) DeleteAgent(id string) error {
-	if _, ok := payloadOne[domain.AgentDefinition](r.DB, "agents", id); !ok {
-		return fmt.Errorf("agent not found")
-	}
-	return r.DB.Table("agents").Where("id = ?", id).Delete(nil).Error
+func (r *CatalogRepo) DeleteAgent(id string, expected ...string) error {
+	return r.editSource("agents", id, firstSourceRevision(expected), func(catalog *CatalogRepo, raw []byte, token string, exists bool) error {
+		if !exists {
+			return ErrSourceConflict
+		}
+		return catalog.DB.Table("agents").Where("id = ?", id).Delete(nil).Error
+	})
 }
 
 // ---------- Executors ----------
@@ -768,7 +760,7 @@ func (r *CatalogRepo) RestoreWorkflowRevision(id string) (domain.WorkflowDefinit
 	return wf, r.PutWorkflow(wf)
 }
 
-func (r *CatalogRepo) RestoreAgentRevision(id string) (domain.AgentDefinition, error) {
+func (r *CatalogRepo) RestoreAgentRevision(id string, expected ...string) (domain.AgentDefinition, error) {
 	rev, ok := r.Revision(id)
 	if !ok || rev.Kind != "agent" {
 		return domain.AgentDefinition{}, fmt.Errorf("revision not found")
@@ -779,8 +771,10 @@ func (r *CatalogRepo) RestoreAgentRevision(id string) (domain.AgentDefinition, e
 	}
 	if current, found := r.Agent(agent.ID); found {
 		agent.Version = current.Version + 1
+		agent.DistributionState = current.DistributionState
 	}
-	return agent, r.PutAgent(agent)
+	agent.SourceRevision = firstSourceRevision(expected)
+	return r.SaveAgent(agent)
 }
 
 // ---------- Production SOP ids ----------

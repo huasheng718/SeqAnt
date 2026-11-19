@@ -1,5 +1,12 @@
 # LoopForge platform
 
+## 宪法
+
+- 先写最简单、显而易见正确的版本。
+- 写完自问：能不能更少行？这个抽象值不值？
+- 三行重复代码，好过一个过早的抽象。
+- 只为当前需求写，不为臆想中的未来需求过度设计。
+
 Preserve the platform architecture; keep deployment-specific adapters isolated. Detailed source synchronization records are maintained locally and are not required for community changes. The original local workflow runtime lives in `local/`; follow `local/AGENTS.md` there. Never copy private deployment files, credentials, staff data, or internal infrastructure into this repository.
 
 # AGENTS.md
@@ -27,6 +34,8 @@ Preserve the platform architecture; keep deployment-specific adapters isolated. 
 | `PreviewsRepo` | run previews |
 | `EngineInstancesRepo` | engine instances |
 | `FeedbackRepo` | page feedbacks、page feedback images（独立表，不关联项目/Issue） |
+| `MemoryRepo` | 原生记忆、人审生命周期、派生检索镜像及召回凭证 |
+| `ExtractionsRepo` | 固定模型产物的提炼凭证与幂等；通过显式注入调用原领域事务 writer |
 
 规则：
 

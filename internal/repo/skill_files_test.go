@@ -6,11 +6,13 @@ import (
 	"agentflow/internal/domain"
 )
 
-func putTestSkill(t *testing.T, s *Store, id string) {
+func putTestSkill(t *testing.T, s *Store, id string) domain.SkillDefinition {
 	t.Helper()
-	if err := s.PutSkill(domain.SkillDefinition{ID: id, Name: "Skill " + id, ProjectID: "platform", Content: "# " + id}); err != nil {
+	skill, err := s.SaveSkillMetadata(domain.SkillDefinition{ID: id, Name: "Skill " + id, ProjectID: "platform", Content: "# " + id})
+	if err != nil {
 		t.Fatal(err)
 	}
+	return skill
 }
 
 func TestSkillFilesRoundTripAndManifest(t *testing.T) {
@@ -19,12 +21,12 @@ func TestSkillFilesRoundTripAndManifest(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { s.Close() })
-	putTestSkill(t, s, "bin-skill")
+	skill := putTestSkill(t, s, "bin-skill")
 
 	if err := s.PutSkillFiles("bin-skill", []SkillFileInput{
 		{Path: "assets/logo.png", Content: []byte{0x89, 0x50, 0x4e, 0x47}, Mode: 0o644},
 		{Path: "scripts/run.sh", Content: []byte("#!/bin/sh\n"), Mode: 0o755},
-	}); err != nil {
+	}, skill.SourceRevision); err != nil {
 		t.Fatal(err)
 	}
 
@@ -60,13 +62,15 @@ func TestSkillFileDeleteAndUpsert(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { s.Close() })
-	putTestSkill(t, s, "mut-skill")
+	skill := putTestSkill(t, s, "mut-skill")
 
-	if err := s.PutSkillFiles("mut-skill", []SkillFileInput{{Path: "a.txt", Content: []byte("one"), Mode: 0o644}}); err != nil {
+	skill, err = s.SaveSkillFiles("mut-skill", []SkillFileInput{{Path: "a.txt", Content: []byte("one"), Mode: 0o644}}, skill.SourceRevision)
+	if err != nil {
 		t.Fatal(err)
 	}
 	// Upsert replaces content and refreshes the manifest.
-	if err := s.PutSkillFiles("mut-skill", []SkillFileInput{{Path: "a.txt", Content: []byte("two"), Mode: 0o644}}); err != nil {
+	skill, err = s.SaveSkillFiles("mut-skill", []SkillFileInput{{Path: "a.txt", Content: []byte("two"), Mode: 0o644}}, skill.SourceRevision)
+	if err != nil {
 		t.Fatal(err)
 	}
 	if content, _ := s.SkillFileContent("mut-skill", "a.txt"); string(content) != "two" {
@@ -76,7 +80,7 @@ func TestSkillFileDeleteAndUpsert(t *testing.T) {
 		t.Fatalf("unexpected refs after upsert: %#v", refs)
 	}
 
-	if err := s.DeleteSkillFile("mut-skill", "a.txt"); err != nil {
+	if err := s.DeleteSkillFile("mut-skill", "a.txt", skill.SourceRevision); err != nil {
 		t.Fatal(err)
 	}
 	if refs := s.SkillFileRefs("mut-skill"); len(refs) != 0 {
@@ -84,9 +88,6 @@ func TestSkillFileDeleteAndUpsert(t *testing.T) {
 	}
 	if skill, _ := s.Skill("mut-skill"); len(skill.FileRefs) != 0 {
 		t.Fatalf("manifest not refreshed after delete: %#v", skill.FileRefs)
-	}
-	if err := s.DeleteSkillFiles("mut-skill"); err != nil {
-		t.Fatal(err)
 	}
 }
 
@@ -96,14 +97,14 @@ func TestSkillFilesRejectInvalidPathsAndOversize(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { s.Close() })
-	putTestSkill(t, s, "guard-skill")
+	skill := putTestSkill(t, s, "guard-skill")
 
 	for _, input := range []SkillFileInput{
 		{Path: "../escape", Content: []byte("x")},
 		{Path: "/abs", Content: []byte("x")},
 		{Path: "ok.txt", Content: make([]byte, domain.SkillFileMaxBytes+1)},
 	} {
-		if err := s.PutSkillFiles("guard-skill", []SkillFileInput{input}); err == nil {
+		if err := s.PutSkillFiles("guard-skill", []SkillFileInput{input}, skill.SourceRevision); err == nil {
 			t.Fatalf("expected rejection for %s", input.Path)
 		}
 	}

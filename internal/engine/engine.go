@@ -60,6 +60,9 @@ type Engine struct {
 	// CreateContributionPR is a create-only adapter. It must verify the exact
 	// branch SHA and refuse merged/closed/auto-merge-enabled PRs.
 	CreateContributionPR func(context.Context, string, string, string, string, string, string) (domain.ContributionPRReceipt, error)
+	// DiscoverContributionPR must never POST. Sticky uncertain create phases use
+	// it across restart/reclaim; absence is an error, never create authorization.
+	DiscoverContributionPR func(context.Context, string, string, string, string, string, string) (domain.ContributionPRReceipt, error)
 	// PublishContributionObjects is a provider-specific create-only transport
 	// for exact Git objects. Nil uses the verified native Git HTTPS transport.
 	PublishContributionObjects func(context.Context, string, string, string, string, string, string) error

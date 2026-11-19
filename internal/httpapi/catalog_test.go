@@ -31,10 +31,10 @@ func TestPutAgentValidatesEffortLevel(t *testing.T) {
 	if saved.Effort != "xhigh" {
 		t.Fatalf("saved effort = %q, want xhigh", saved.Effort)
 	}
-	errBody := requestJSON[map[string]string](t, h, http.MethodPut, "/api/agents", domain.AgentDefinition{
+	errBody := sourceJSON(t, requestWithHeaders(t, h, http.MethodPut, "/api/agents", domain.AgentDefinition{
 		ID: "effort-role", Name: "Effort", Version: 2, ProjectID: "gslb", ExecutorID: "codex", Effort: "ultracode",
-	}, http.StatusBadRequest)
-	if !strings.Contains(errBody["error"], "思考强度") {
+	}, map[string]string{"If-Match": "\"" + saved.SourceRevision + "\""}), http.StatusBadRequest)
+	if !strings.Contains(errBody["error"].(string), "思考强度") {
 		t.Fatalf("error = %#v", errBody)
 	}
 }
@@ -286,19 +286,23 @@ func TestAgentDeleteRequiresUnusedAndUnshared(t *testing.T) {
 		t.Fatalf("workflow was not saved: %+v", saved)
 	}
 
+	observedReferenced, _ := s.Agent("referenced-role")
+	observedShared, _ := s.Agent("shared-role")
+	observedFree, _ := s.Agent("free-role")
 	// referenced agent must be rejected with 409
-	requestEmptyJSON[map[string]any](t, h, http.MethodDelete, "/api/agents/referenced-role", http.StatusConflict)
+	sourceJSON(t, requestWithHeaders(t, h, http.MethodDelete, "/api/agents/referenced-role", nil, map[string]string{"If-Match": "\"" + observedReferenced.SourceRevision + "\""}), http.StatusConflict)
 	if _, ok := s.Agent("referenced-role"); !ok {
 		t.Fatal("referenced agent was deleted despite workflow usage")
 	}
 	// shared agent must be rejected with 409
-	requestEmptyJSON[map[string]any](t, h, http.MethodDelete, "/api/agents/shared-role", http.StatusConflict)
+	sourceJSON(t, requestWithHeaders(t, h, http.MethodDelete, "/api/agents/shared-role", nil, map[string]string{"If-Match": "\"" + observedShared.SourceRevision + "\""}), http.StatusConflict)
 	if _, ok := s.Agent("shared-role"); !ok {
 		t.Fatal("shared agent was deleted despite shared flag")
 	}
 	// unused, unshared agent is deleted with 204
 	doDelete := func(path string) int {
 		req := httptest.NewRequest(http.MethodDelete, path, nil)
+		req.Header.Set("If-Match", "\""+observedFree.SourceRevision+"\"")
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
 		return rec.Code
@@ -336,7 +340,8 @@ func TestCatalogAssetDeleteRequiresUnusedAndUnshared(t *testing.T) {
 	must(s.PutSkill(domain.SkillDefinition{ID: "free-skill", Name: "Free skill", ProjectID: "alpha"}))
 	must(s.PutSkill(domain.SkillDefinition{ID: "used-skill", Name: "Used skill", ProjectID: "alpha"}))
 	must(s.PutSkill(domain.SkillDefinition{ID: "shared-skill", Name: "Shared skill", ProjectID: "alpha", Shared: true}))
-	must(s.PutSkillFiles("free-skill", []repo.SkillFileInput{{Path: "SKILL.md", Content: []byte("# free\n")}}))
+	observedFreeSkill, _ := s.Skill("free-skill")
+	must(s.PutSkillFiles("free-skill", []repo.SkillFileInput{{Path: "SKILL.md", Content: []byte("# free\n")}}, observedFreeSkill.SourceRevision))
 	must(s.PutDockerfile(domain.DockerfileDefinition{ID: "free-df", Name: "Free df", ProjectID: "alpha", Content: "FROM scratch"}))
 	must(s.PutDockerfile(domain.DockerfileDefinition{ID: "used-df", Name: "Used df", ProjectID: "alpha", Content: "FROM scratch"}))
 	must(s.PutDockerfile(domain.DockerfileDefinition{ID: "shared-df", Name: "Shared df", ProjectID: "alpha", Shared: true, Content: "FROM scratch"}))
@@ -358,31 +363,43 @@ func TestCatalogAssetDeleteRequiresUnusedAndUnshared(t *testing.T) {
 		Nodes: []domain.WorkflowNode{{ID: "work", Name: "Work", Type: "agent", AgentID: "asset-user"}},
 	}, http.StatusOK)
 
-	doDelete := func(path string) int {
+	observedFreeRule, _ := s.Rule("free-rule")
+	observedUsedRule, _ := s.Rule("used-rule")
+	observedSharedRule, _ := s.Rule("shared-rule")
+	observedFreeSkill, _ = s.Skill("free-skill")
+	observedUsedSkill, _ := s.Skill("used-skill")
+	observedSharedSkill, _ := s.Skill("shared-skill")
+	doDelete := func(path string, base ...string) int {
 		t.Helper()
 		req := httptest.NewRequest(http.MethodDelete, path, nil)
+		if len(base) == 1 {
+			req.Header.Set("If-Match", "\""+base[0]+"\"")
+		}
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
 		return rec.Code
 	}
-	assertConflict := func(path string) {
+	assertConflict := func(path string, base ...string) {
 		t.Helper()
 		req := httptest.NewRequest(http.MethodDelete, path, nil)
+		if len(base) == 1 {
+			req.Header.Set("If-Match", "\""+base[0]+"\"")
+		}
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
 		if rec.Code != http.StatusConflict {
 			t.Fatalf("%s status = %d, want 409; body %s", path, rec.Code, rec.Body.String())
 		}
 	}
-	assertGone := func(path string, stillThere func() bool, label string) {
+	assertGone := func(path string, stillThere func() bool, label string, base ...string) {
 		t.Helper()
-		if code := doDelete(path); code != http.StatusNoContent {
+		if code := doDelete(path, base...); code != http.StatusNoContent {
 			t.Fatalf("%s status = %d, want 204", path, code)
 		}
 		if stillThere() {
 			t.Fatalf("%s was not deleted", label)
 		}
-		if code := doDelete(path); code != http.StatusNotFound {
+		if code := doDelete(path, base...); code != http.StatusNotFound {
 			t.Fatalf("repeat %s status = %d, want 404", path, code)
 		}
 	}
@@ -390,13 +407,13 @@ func TestCatalogAssetDeleteRequiresUnusedAndUnshared(t *testing.T) {
 	if code := doDelete("/api/rules"); code != http.StatusBadRequest {
 		t.Fatalf("missing id status = %d", code)
 	}
-	assertConflict("/api/rules?id=used-rule")
-	assertConflict("/api/rules?id=shared-rule")
-	assertGone("/api/rules?id=free-rule", func() bool { _, ok := s.Rule("free-rule"); return ok }, "free rule")
+	assertConflict("/api/rules?id=used-rule", observedUsedRule.SourceRevision)
+	assertConflict("/api/rules?id=shared-rule", observedSharedRule.SourceRevision)
+	assertGone("/api/rules?id=free-rule", func() bool { _, ok := s.Rule("free-rule"); return ok }, "free rule", observedFreeRule.SourceRevision)
 
-	assertConflict("/api/skills?id=used-skill")
-	assertConflict("/api/skills?id=shared-skill")
-	assertGone("/api/skills?id=free-skill", func() bool { _, ok := s.Skill("free-skill"); return ok }, "free skill")
+	assertConflict("/api/skills?id=used-skill", observedUsedSkill.SourceRevision)
+	assertConflict("/api/skills?id=shared-skill", observedSharedSkill.SourceRevision)
+	assertGone("/api/skills?id=free-skill", func() bool { _, ok := s.Skill("free-skill"); return ok }, "free skill", observedFreeSkill.SourceRevision)
 	if _, ok := s.SkillFileContent("free-skill", "SKILL.md"); ok {
 		t.Fatal("skill_files rows were not cascaded")
 	}
@@ -486,8 +503,11 @@ func TestCloneAgentMCPServersCopiesByTargetScope(t *testing.T) {
 	}
 	server := &Server{deps: &deps{repo: s}}
 	server.catalog = &catalogHandlers{deps: server.deps}
-	ids, err := server.catalog.cloneAgentMCPServers([]string{"project-source", "personal-source"}, "target", 2)
+	ids, pending, err := server.catalog.cloneAgentMCPServers([]string{"project-source", "personal-source"}, "target", 2)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateAgentClone(domain.AgentDefinition{ID: "clone-plan-target", Name: "Clone", ProjectID: "target", MCPServers: ids}, pending); err != nil {
 		t.Fatal(err)
 	}
 	if len(ids) != 2 {
@@ -756,7 +776,7 @@ func TestGlobalRuleWorkflowBinding(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := New(s, engine.New(s, runtime.NewManager(filepath.Join(t.TempDir(), "workspaces"))), tracker.NewService(), "", "")
-	requestJSON[map[string]bool](t, h, http.MethodPut, "/api/rules", domain.RuleDefinition{
+	requestJSON[domain.RuleDefinition](t, h, http.MethodPut, "/api/rules", domain.RuleDefinition{
 		ID: "alpha-global", Name: "全局约束", ProjectID: "alpha", Content: "所有节点都要遵守", Priority: 50,
 		Global: true, WorkflowIDs: []string{" alpha-sop ", "alpha-sop", ""},
 	}, http.StatusOK)
@@ -764,24 +784,24 @@ func TestGlobalRuleWorkflowBinding(t *testing.T) {
 	if !ok || !saved.Global || len(saved.WorkflowIDs) != 1 || saved.WorkflowIDs[0] != "alpha-sop" {
 		t.Fatalf("saved rule = %#v", saved)
 	}
-	missing := requestJSON[map[string]string](t, h, http.MethodPut, "/api/rules", domain.RuleDefinition{
+	missing := sourceJSON(t, requestWithHeaders(t, h, http.MethodPut, "/api/rules", domain.RuleDefinition{
 		ID: "alpha-global", Name: "全局约束", ProjectID: "alpha", Content: "所有节点都要遵守",
 		Global: true, WorkflowIDs: []string{"missing-sop"},
-	}, http.StatusBadRequest)
+	}, map[string]string{"If-Match": "\"" + saved.SourceRevision + "\""}), http.StatusBadRequest)
 	if missing["error"] == "" {
 		t.Fatal("expected missing SOP error")
 	}
-	foreign := requestJSON[map[string]string](t, h, http.MethodPut, "/api/rules", domain.RuleDefinition{
+	foreign := sourceJSON(t, requestWithHeaders(t, h, http.MethodPut, "/api/rules", domain.RuleDefinition{
 		ID: "alpha-global", Name: "全局约束", ProjectID: "alpha", Content: "所有节点都要遵守",
 		Global: true, WorkflowIDs: []string{"beta-private"},
-	}, http.StatusBadRequest)
+	}, map[string]string{"If-Match": "\"" + saved.SourceRevision + "\""}), http.StatusBadRequest)
 	if foreign["error"] == "" {
 		t.Fatal("expected foreign SOP error")
 	}
-	requestJSON[map[string]bool](t, h, http.MethodPut, "/api/rules", domain.RuleDefinition{
+	sourceJSON(t, requestWithHeaders(t, h, http.MethodPut, "/api/rules", domain.RuleDefinition{
 		ID: "alpha-global", Name: "全局约束", ProjectID: "alpha", Content: "所有节点都要遵守",
 		Global: false, WorkflowIDs: []string{"alpha-sop"},
-	}, http.StatusOK)
+	}, map[string]string{"If-Match": "\"" + saved.SourceRevision + "\""}), http.StatusOK)
 	cleared, _ := s.Rule("alpha-global")
 	if cleared.Global || len(cleared.WorkflowIDs) != 0 {
 		t.Fatalf("turning the switch off must drop SOP bindings: %#v", cleared)

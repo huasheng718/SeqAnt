@@ -77,7 +77,7 @@ func objectPublicationInput(object gitwork.GitHubContributionObject) any {
 
 func TestPublishContributionObjectsCreateOnlyAndReconcile(t *testing.T) {
 	checkout, base, result, objects := contributionObjectsCheckout(t)
-	for _, mode := range []string{"normal", "existing-same", "existing-other", "unrelated-base", "missing-target", "forbidden-ref", "blob-sha", "tree-sha", "commit-sha", "uncertain-created", "conflict-created", "malformed-created", "uncertain-absent", "create-wrong-sha", "object-error"} {
+	for _, mode := range []string{"normal", "bound-credential", "existing-same", "existing-other", "unrelated-base", "missing-target", "forbidden-ref", "blob-sha", "tree-sha", "commit-sha", "uncertain-created", "conflict-created", "malformed-created", "uncertain-absent", "create-wrong-sha", "object-error"} {
 		t.Run(mode, func(t *testing.T) {
 			objectPosts, refPosts := 0, 0
 			created := mode == "existing-same" || mode == "existing-other"
@@ -91,6 +91,9 @@ func TestPublishContributionObjectsCreateOnlyAndReconcile(t *testing.T) {
 				write(w, map[string]any{"ref": "refs/heads/" + branch, "object": map[string]string{"type": "commit", "sha": sha}})
 			}
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if mode == "bound-credential" && r.Header.Get("Authorization") != "Bearer explicit-project-controller" {
+					t.Error("explicit object publisher credential not used")
+				}
 				path := strings.TrimPrefix(r.URL.Path, "/repos/example/repo")
 				switch {
 				case r.Method == "GET" && path == "/git/ref/heads/main":
@@ -175,8 +178,12 @@ func TestPublishContributionObjectsCreateOnlyAndReconcile(t *testing.T) {
 			}))
 			defer server.Close()
 			s := &Service{githubAPIBase: server.URL}
-			err := s.PublishContributionObjects(context.Background(), "github:example/repo", checkout, publicationTestBranch, "main", base, result)
-			success := mode == "normal" || mode == "existing-same" || mode == "uncertain-created" || mode == "conflict-created" || mode == "malformed-created"
+			ctx := context.Background()
+			if mode == "bound-credential" {
+				ctx = gitwork.WithToken(ctx, "explicit-project-controller")
+			}
+			err := s.PublishContributionObjects(ctx, "github:example/repo", checkout, publicationTestBranch, "main", base, result)
+			success := mode == "normal" || mode == "bound-credential" || mode == "existing-same" || mode == "uncertain-created" || mode == "conflict-created" || mode == "malformed-created"
 			if (err == nil) != success {
 				t.Fatalf("success=%t error=%v", success, err)
 			}

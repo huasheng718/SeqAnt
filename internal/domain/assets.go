@@ -9,13 +9,15 @@ import (
 )
 
 type RuleDefinition struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	ProjectID   string `json:"projectId,omitempty"`
-	Shared      bool   `json:"shared,omitempty"`
-	Description string `json:"description"`
-	Content     string `json:"content"`
-	Priority    int    `json:"priority"`
+	DistributionState
+	SourceRevision string `json:"sourceRevision,omitempty"`
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	ProjectID      string `json:"projectId,omitempty"`
+	Shared         bool   `json:"shared,omitempty"`
+	Description    string `json:"description"`
+	Content        string `json:"content"`
+	Priority       int    `json:"priority"`
 	// Global marks the rule as a workflow-wide constraint. When true, every
 	// node of a workflow listed in WorkflowIDs receives this rule at run time,
 	// in addition to the rules already bound on that node's role.
@@ -25,13 +27,15 @@ type RuleDefinition struct {
 }
 
 type SkillDefinition struct {
-	ID          string            `json:"id"`
-	Name        string            `json:"name"`
-	ProjectID   string            `json:"projectId,omitempty"`
-	Shared      bool              `json:"shared,omitempty"`
-	Description string            `json:"description"`
-	Content     string            `json:"content"`
-	Files       map[string]string `json:"files,omitempty"`
+	DistributionState
+	SourceRevision string            `json:"sourceRevision,omitempty"`
+	ID             string            `json:"id"`
+	Name           string            `json:"name"`
+	ProjectID      string            `json:"projectId,omitempty"`
+	Shared         bool              `json:"shared,omitempty"`
+	Description    string            `json:"description"`
+	Content        string            `json:"content"`
+	Files          map[string]string `json:"files,omitempty"`
 	// FileRefs is the manifest of binary assets stored in the skill_files
 	// table (one row per file). Only metadata travels in the payload; the
 	// content is loaded on demand when a run is dispatched.
@@ -49,13 +53,14 @@ const SkillSourceSkillHub = "skillhub"
 // SkillSource identifies the market version a skill snapshot was taken from.
 // SkillHub slugs are only unique per publisher namespace, so both are kept.
 type SkillSource struct {
-	Provider    string    `json:"provider"`
-	Namespace   string    `json:"namespace,omitempty"`
-	Slug        string    `json:"slug"`
-	Version     string    `json:"version"`
-	Homepage    string    `json:"homepage,omitempty"`
-	InstalledAt time.Time `json:"installedAt"`
-	UpdatedAt   time.Time `json:"updatedAt"`
+	ReviewedCandidate *ReviewedSkillProvenance `json:"reviewedCandidate,omitempty"`
+	Provider          string                   `json:"provider"`
+	Namespace         string                   `json:"namespace,omitempty"`
+	Slug              string                   `json:"slug"`
+	Version           string                   `json:"version"`
+	Homepage          string                   `json:"homepage,omitempty"`
+	InstalledAt       time.Time                `json:"installedAt"`
+	UpdatedAt         time.Time                `json:"updatedAt"`
 }
 
 // SkillFileRef describes one binary file of a skill. Path is relative to the
@@ -71,6 +76,8 @@ type SkillFileRef struct {
 }
 
 type MCPServerDefinition struct {
+	DistributionState
+	SourceRevision   string            `json:"sourceRevision,omitempty"`
 	ID               string            `json:"id"`
 	Name             string            `json:"name"`
 	ProjectID        string            `json:"projectId,omitempty"`

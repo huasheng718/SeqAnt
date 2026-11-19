@@ -17,13 +17,14 @@ var (
 	ErrContributionPublicationConflict  = errors.New("immutable contribution publication conflicts")
 	ErrContributionPublicationNotReady  = errors.New("contribution publication gates are not ready")
 	ErrContributionPublicationLeaseLost = errors.New("contribution publication lease lost")
+	ErrContributionPRCreateUncertain    = errors.New("PR creation was already authorized; reconcile only")
 )
 
 // Gates and the outbox share one DeliveryRepo-owned durable row. Integration
 // rows stay immutable; no generic task scheduler or Issue transition is added.
 type contributionPublicationRow struct {
 	ID           string     `gorm:"column:id;primaryKey;size:64"`
-	RunID        string     `gorm:"column:run_id;index;size:64;not null"`
+	RunID        *string    `gorm:"column:run_id;index;size:64"`
 	RepositoryID string     `gorm:"column:repository_id;index;size:64;not null"`
 	State        string     `gorm:"column:state;index;size:32;not null"`
 	Attempt      int        `gorm:"column:attempt;not null"`
@@ -37,7 +38,12 @@ type contributionPublicationRow struct {
 func (contributionPublicationRow) TableName() string { return "contribution_publications" }
 
 func publicationRow(value domain.ContributionPublication) contributionPublicationRow {
-	return contributionPublicationRow{ID: value.ID, RunID: value.RunID, RepositoryID: value.RepositoryID,
+	var runID *string
+	if value.RunID != "" {
+		id := value.RunID
+		runID = &id
+	}
+	return contributionPublicationRow{ID: value.ID, RunID: runID, RepositoryID: value.RepositoryID,
 		State: value.State, Attempt: value.Attempt, LeaseOwner: value.LeaseOwner, LeaseUntil: value.LeaseUntil,
 		Payload: string(mustJSON(value)), CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt}
 }
@@ -45,6 +51,13 @@ func publicationRow(value domain.ContributionPublication) contributionPublicatio
 func decodePublication(row contributionPublicationRow) (domain.ContributionPublication, error) {
 	var value domain.ContributionPublication
 	if json.Unmarshal([]byte(row.Payload), &value) != nil || value.ID != row.ID {
+		return value, ErrContributionPublicationInvalid
+	}
+	if value.SourceKind == "teamai_proposal" {
+		if row.RunID != nil || value.RunID != "" || value.ProjectID == "" || !validContributionSHA256(value.SourceSHA256) {
+			return value, ErrContributionPublicationInvalid
+		}
+	} else if value.SourceKind != "" || strings.TrimSpace(value.RunID) == "" || row.RunID == nil || *row.RunID != value.RunID {
 		return value, ErrContributionPublicationInvalid
 	}
 	// SQL columns remain authoritative for concurrent publisher ownership.
@@ -90,7 +103,7 @@ func (r *DeliveryRepo) PrepareContributionPublication(integrationID, targetBranc
 			return ErrContributionPublicationInvalid
 		}
 		created := leaseCheckTime(tx, now)
-		value = domain.ContributionPublication{ID: integration.ID, RunID: integration.RunID, RepositoryID: integration.RepositoryID,
+		value = domain.ContributionPublication{PhaseVersion: 1, ID: integration.ID, RunID: integration.RunID, RepositoryID: integration.RepositoryID,
 			ResultSHA: integration.ResultSHA, ContextSHA256: integration.ContextSHA256, ManifestSHA256: integration.ManifestSHA256,
 			TargetBranch: targetBranch, Branch: "superagent/integration/" + integration.ID, State: "gating",
 			Gates: []domain.ContributionGateEvidence{}, CreatedAt: created, UpdatedAt: created}
@@ -112,6 +125,9 @@ func (r *DeliveryRepo) PrepareContributionPublication(integrationID, targetBranc
 }
 
 func validatePublicationGate(value domain.ContributionPublication, gate domain.ContributionGateEvidence) error {
+	if value.SourceKind != "" {
+		return ErrContributionPublicationInvalid
+	}
 	if strings.TrimSpace(gate.ID) == "" || strings.TrimSpace(gate.ID) != gate.ID || len(gate.ID) > 128 || gate.IntegrationID != value.ID || gate.ResultSHA != value.ResultSHA || gate.ContextSHA256 != value.ContextSHA256 || gate.ManifestSHA256 != value.ManifestSHA256 || strings.TrimSpace(gate.EvidenceRef) == "" || len(gate.EvidenceRef) > 2048 || !validContributionSHA256(gate.EvidenceSHA256) {
 		return ErrContributionPublicationInvalid
 	}
@@ -208,6 +224,15 @@ func (r *DeliveryRepo) ClaimContributionPublication(id, owner string, ttl time.D
 		if value.State != "ready" && value.State != "publishing" {
 			return ErrContributionPublicationNotReady
 		}
+		if value.PhaseVersion < 0 || value.PhaseVersion > 1 {
+			return ErrContributionPublicationInvalid
+		}
+		// An old publisher could have sent POST before losing its local receipt.
+		// Absence of the new marker is not evidence that creation never happened.
+		if value.PhaseVersion == 0 && value.State == "publishing" {
+			value.PRCreateAttempted = true
+		}
+		value.PhaseVersion = 1
 		value.State, value.LeaseOwner = "publishing", owner
 		value.Attempt++
 		until := checked.Add(ttl)
@@ -246,6 +271,37 @@ func (r *DeliveryRepo) CompleteContributionPublication(id, owner string, attempt
 		// Retain the winning owner/attempt for idempotent callback attribution;
 		// the terminal state and cleared lease grant no ongoing capability.
 		value.LeaseUntil, value.UpdatedAt = nil, checked
+		return writePublication(tx, value)
+	})
+	return value, err
+}
+
+// MarkContributionPRCreateAttempted consumes automatic PR-create authority
+// under the same outbox row/lease/attempt fence. It is never cleared on reclaim,
+// cancellation, timeouts or absent provider discovery. No retry reset API exists.
+func (r *DeliveryRepo) MarkContributionPRCreateAttempted(id, owner string, attempt int, now time.Time) (domain.ContributionPublication, error) {
+	var value domain.ContributionPublication
+	if owner == "" || attempt < 1 {
+		return value, ErrContributionPublicationInvalid
+	}
+	err := r.DB.Transaction(func(tx *gorm.DB) error {
+		var err error
+		value, err = r.lockedPublication(tx, id)
+		if err != nil {
+			return err
+		}
+		checked := leaseCheckTime(tx, now)
+		if value.State != "publishing" || value.LeaseOwner != owner || value.Attempt != attempt || value.LeaseUntil == nil || !value.LeaseUntil.After(checked) {
+			return ErrContributionPublicationLeaseLost
+		}
+		if value.PhaseVersion != 1 {
+			return ErrContributionPublicationInvalid
+		}
+		if value.PRCreateAttempted {
+			return ErrContributionPRCreateUncertain
+		}
+		value.PRCreateAttempted = true
+		value.UpdatedAt = checked
 		return writePublication(tx, value)
 	})
 	return value, err

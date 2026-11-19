@@ -49,8 +49,12 @@ func TestMCPServerCredentialsAreMaskedAndSurviveEdits(t *testing.T) {
 	}
 	edited.Description = "改了描述"
 	edited.Headers["X-Unknown"] = domain.MaskedSecretValue
-	if rec := requestWithHeaders(t, h, http.MethodPut, "/api/mcp-servers", edited, nil); rec.Code != http.StatusOK {
+	rec = requestWithHeaders(t, h, http.MethodPut, "/api/mcp-servers", edited, map[string]string{"If-Match": `"` + edited.SourceRevision + `"`})
+	if rec.Code != http.StatusOK {
 		t.Fatalf("re-save = %d %s", rec.Code, rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &edited); err != nil {
+		t.Fatal(err)
 	}
 	stored, _ := s.MCPServer("gateway")
 	want := map[string]string{"X-Gateway-Api-Token": "gateway-secret", "X-Env": "prod", "Authorization": "Bearer ${secret:GATEWAY}"}
@@ -63,7 +67,10 @@ func TestMCPServerCredentialsAreMaskedAndSurviveEdits(t *testing.T) {
 		}
 	}
 	edited.Headers["X-Gateway-Api-Token"] = "rotated"
-	requestWithHeaders(t, h, http.MethodPut, "/api/mcp-servers", edited, nil)
+	rec = requestWithHeaders(t, h, http.MethodPut, "/api/mcp-servers", edited, map[string]string{"If-Match": `"` + edited.SourceRevision + `"`})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("token rotation = %d %s", rec.Code, rec.Body.String())
+	}
 	if stored, _ := s.MCPServer("gateway"); stored.Headers["X-Gateway-Api-Token"] != "rotated" {
 		t.Fatalf("token rotation not saved: %v", stored.Headers)
 	}

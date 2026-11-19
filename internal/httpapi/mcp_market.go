@@ -102,10 +102,12 @@ func installMarketMCP(st *repo.Store, marketID, projectID string) (domain.MCPSer
 		URL: item.URL, AuthType: item.AuthType, Scope: "project", ProjectID: projectID,
 		TimeoutSec: 60, UpdatedAt: time.Now().UTC(),
 	}
-	if err := st.PutMCPServer(server); err != nil {
+	server.SourceRevision = ""
+	saved, err := st.SaveMCPServer(server)
+	if err != nil {
 		return domain.MCPServerDefinition{}, false, err
 	}
-	return server, true, nil
+	return saved, true, nil
 }
 
 func ensureDefaultProjectMCPs(st *repo.Store, projectID string) error {
@@ -292,12 +294,14 @@ func (h *marketHandlers) mcpCustomInstall(c *gin.Context) {
 		c.JSON(http.StatusConflict, map[string]string{"error": "当前范围已经存在相同标识的自定义 MCP"})
 		return
 	}
-	if err := h.repo.PutMCPServer(server); err != nil {
+	server.SourceRevision = ""
+	saved, err := h.repo.SaveMCPServer(server)
+	if err != nil {
 		respond(c, err)
 		return
 	}
 	h.configureSync(h.repo.SyncConfig())
-	c.JSON(http.StatusCreated, domain.PublicMCPServer(server))
+	c.JSON(http.StatusCreated, domain.PublicMCPServer(saved))
 }
 
 func visibleMCPServersForUser(items []domain.MCPServerDefinition, userID int64) []domain.MCPServerDefinition {

@@ -89,6 +89,9 @@ func (h *runsHandlers) runs(c *gin.Context) {
 	}
 	if r.Method == http.MethodPost {
 		var req struct {
+			RepositoryIDs         []string                               `json:"repositoryIds,omitempty"`
+			ExecutionBudget       *domain.ExecutionBudgetPolicy          `json:"executionBudget,omitempty"`
+			TeamContext           *domain.TeamContextSelection           `json:"teamContext,omitempty"`
 			RunnerWorkspaceLayout string                                 `json:"runnerWorkspaceLayout,omitempty"`
 			WorkspaceBaseSHAs     map[string]string                      `json:"workspaceBaseSHAs,omitempty"`
 			NodePlacements        map[string]domain.NodePlacementRequest `json:"nodePlacements,omitempty"`
@@ -127,7 +130,7 @@ func (h *runsHandlers) runs(c *gin.Context) {
 			return
 		}
 		var repositories []domain.RepositoryContext
-		if wf, ok := h.repo.Workflow(req.WorkflowID); ok && wf.Generic && strings.TrimSpace(project.DefaultRepositoryID) != "" {
+		if wf, ok := h.repo.Workflow(req.WorkflowID); ok && wf.Generic && len(req.RepositoryIDs) == 0 && strings.TrimSpace(project.DefaultRepositoryID) != "" {
 			repositoryID := strings.TrimSpace(project.DefaultRepositoryID)
 			repoDef, found := h.repo.Repository(repositoryID)
 			if !found || repoDef.ProjectID != req.ProjectID {
@@ -141,7 +144,25 @@ func (h *runsHandlers) runs(c *gin.Context) {
 				PipelineProjectID: repoDef.PipelineProjectID, PipelineDefID: repoDef.PipelineDefID, PipelineURLPattern: repoDef.PipelineURLPattern,
 			}}
 		}
-		v, err := h.engine.StartWithRepositoriesContext(req.WorkflowID, req.Input, repositories, domain.TelemetryContext{ProjectID: req.ProjectID, ResponsibleUserID: responsibleUserID, RunnerWorkspaceLayout: req.RunnerWorkspaceLayout, WorkspaceBaseSHAs: req.WorkspaceBaseSHAs, NodePlacements: req.NodePlacements})
+		if len(req.RepositoryIDs) > 0 {
+			if len(req.RepositoryIDs) > 32 {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "at most 32 repositories may be selected"})
+				return
+			}
+			repositories = nil
+			seen := map[string]bool{}
+			for _, id := range req.RepositoryIDs {
+				id = strings.TrimSpace(id)
+				r, ok := h.repo.Repository(id)
+				if !ok || id == "" || req.ProjectID == "" || r.ProjectID != req.ProjectID || seen[id] {
+					c.JSON(http.StatusBadRequest, gin.H{"error": "repository selection must be unique and belong to the selected project"})
+					return
+				}
+				seen[id] = true
+				repositories = append(repositories, domain.RepositoryContext{RepositoryID: r.ID, Provider: r.Provider, Name: r.Name, GongfengProjectID: r.GongfengProjectID, WebURL: r.WebURL, CloneURL: r.CloneURL, BaseBranch: r.DefaultBranch, DefaultBranch: r.DefaultBranch, LocalPath: r.LocalPath, PipelineProjectID: r.PipelineProjectID, PipelineDefID: r.PipelineDefID, PipelineURLPattern: r.PipelineURLPattern})
+			}
+		}
+		v, err := h.engine.StartWithRepositoriesContext(req.WorkflowID, req.Input, repositories, domain.TelemetryContext{ProjectID: req.ProjectID, ResponsibleUserID: responsibleUserID, RunnerWorkspaceLayout: req.RunnerWorkspaceLayout, WorkspaceBaseSHAs: req.WorkspaceBaseSHAs, NodePlacements: req.NodePlacements, ExecutionBudget: req.ExecutionBudget, TeamContext: req.TeamContext})
 		if err != nil {
 			respond(c, err)
 			return
@@ -344,6 +365,9 @@ func publicRun(run domain.Run, summary bool) domain.Run {
 		run.Timing = &timing
 	}
 	if summary {
+		// The summary is reused by global lists and issue projections. Exact
+		// reviewed memory/resources are available only on scoped detail routes.
+		run.Intelligence = nil
 		run.Artifacts = nil
 	}
 	run.Artifacts = append([]domain.Artifact(nil), run.Artifacts...)

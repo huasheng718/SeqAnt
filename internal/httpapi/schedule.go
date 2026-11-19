@@ -431,6 +431,9 @@ fi
 echo "校验通过：HEAD 为合并提交，无未解决冲突与残留标记"`
 
 func (h *scheduleHandlers) ensureBaselineAlignAgent() bool {
+	if _, ok := h.repo.Agent(domain.BaselineAlignAgentID); ok {
+		return true
+	}
 	if err := h.repo.PutAgent(repo.BaselineAlignResolverAgent()); err != nil {
 		log.Printf("baseline align agent upsert failed: %v", err)
 		return false

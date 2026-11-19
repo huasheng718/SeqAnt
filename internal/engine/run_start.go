@@ -184,6 +184,12 @@ func (e *Engine) startWorkflowDefinition(wf domain.WorkflowDefinition, input str
 			return domain.Run{}, err
 		}
 	}
+	if err := e.freezeExecutionBudget(&r); err != nil {
+		return domain.Run{}, err
+	}
+	if err := e.FreezeRunIntelligence(&r); err != nil {
+		return domain.Run{}, err
+	}
 	if err := e.validateDeliveryRepositories(r); err != nil {
 		return domain.Run{}, err
 	}

@@ -2,7 +2,7 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const vm = require("node:vm");
-const [projectsPath, drawerPath, issuesPath] = process.argv.slice(2);
+const [projectsPath, drawerPath, issuesPath, intelligencePath] = process.argv.slice(2);
 
 const same=(a,b,m)=>assert.deepEqual(JSON.parse(JSON.stringify(a)),b,m);
 
@@ -68,6 +68,7 @@ const ctx = {
 };
 ctx.document={activeElement:null,contains:()=>false};
 vm.createContext(ctx);
+vm.runInContext(extract(fs.readFileSync(intelligencePath,"utf8"),"teamIntelligencePanelHTML"),ctx);
 for (const name of ["parseGongfengRepoURL","repoDisplayPath","repoProviderLabel"]) vm.runInContext(extract(fs.readFileSync(issuesPath,"utf8"),name),ctx);
 vm.runInContext(fs.readFileSync(projectsPath,"utf8"),ctx);
 vm.runInContext(fs.readFileSync(drawerPath,"utf8"),ctx);
@@ -100,6 +101,7 @@ same(ids(ctx.filterAdminProjects(projects,repositories,"wc","all",1)),["web-cons
 same(ids(ctx.filterAdminProjects(projects,repositories,"nothing","all",1)),[]);
 
 // Routes.
+same({...ctx.parseProjectAdminRoute("#/projects/agentflow/intelligence")},{id:"agentflow",tab:"intelligence"});
 same({...ctx.parseProjectAdminRoute("#/projects/agentflow/repos")},{id:"agentflow",tab:"repos"});
 same({...ctx.parseProjectAdminRoute("#/projects/agentflow/bogus")},{id:"agentflow",tab:"basic"});
 same({...ctx.parseProjectAdminRoute("#/projects/new/repos")},{id:"new",tab:"basic"});
@@ -154,12 +156,13 @@ assert.match(empty,/粘贴 GitHub 仓库地址[^]*确认分支[^]*保存即生�
 assert.match(empty,/添加第一个仓库/);
 
 // Detail panels.
-same(vm.runInContext("PROJECT_ADMIN_TABS.map(t=>t.id)",ctx),["basic","repos","members","tapd"]);
+same(vm.runInContext("PROJECT_ADMIN_TABS.map(t=>t.id)",ctx),["basic","repos","members","intelligence","tapd"]);
 const draft=ctx.projectDraftFrom(projects[0]);
 same(draft.members.map(m=>m.userId),[2,3,4,5]);
 same([...ctx.projectPeopleIds(draft)],[1,2,3,4,5]);
 const edit=ctx.projectAdminFormHTML(draft,{creating:false,custom:false,repos:repositories.slice(0,2),saved:projects[0]});
-assert.equal((edit.match(/data-pa-panel="/g)||[]).length,4);
+assert.equal((edit.match(/data-pa-panel="/g)||[]).length,5);
+assert.match(edit,/data-pa-panel="intelligence"[^>]* hidden[^]*data-ti-project="agentflow"/,"governance panel is project-scoped and initially hidden");
 assert.match(edit,/name="id" value="agentflow" required readonly/);
 assert.match(edit,/修改 Key/);
 assert.match(edit,/标识用于接口与链接，创建后不可修改/);
@@ -184,6 +187,7 @@ assert.match(fresh,/恢复自动/);
 assert.match(fresh,/根据项目名称自动生成/);
 assert.match(fresh,/data-pa-panel="repos"[^>]*><\/section>/,"locked tabs render no content while creating");
 assert.match(fresh,/data-pa-panel="members"[^>]*><\/section>/);
+assert.match(fresh,/data-pa-panel="intelligence"[^>]*><\/section>/,"governance remains locked before project creation");
 assert.ok(!/name="id"[^>]*readonly/.test(fresh));
 assert.match(fresh,/保存项目后，在「代码仓库」中添加/);
 assert.ok(!fresh.includes('name="ownerId"'),"signed-in users own new projects without a picker");

@@ -351,7 +351,7 @@ func (e *Engine) executeNode(ctx context.Context, runID string, wf domain.Workfl
 		}
 		executionAttempt = nr.Attempt
 		executionDeadline = nr.ExecutionDeadline
-		if len(r.ExecutionContext.NodePlacements) > 0 {
+		if len(r.ExecutionContext.NodePlacements) > 0 && node.Type != "approval" {
 			if err := e.freezeNodeExecutionPlacement(r, node, nr); err != nil {
 				placementErr = err
 				return
@@ -380,6 +380,11 @@ func (e *Engine) executeNode(ctx context.Context, runID string, wf domain.Workfl
 		}()
 	}
 	defer e.registerNodeExecution(runID, node.ID, executionAttempt, cancelNode)()
+	defer func() {
+		if live, ok := e.repo.RunState(runID); ok && live.ExecutionBudget != nil && live.ExecutionBudget.StopReason != "" {
+			e.nodeFailedAt(runID, node, executionAttempt, executionGeneration, fmt.Errorf("%w: %s", domain.ErrExecutionBudgetStopped, live.ExecutionBudget.StopReason), false)
+		}
+	}()
 	if err := domain.ValidateWorkflowExecutionLimits(domain.WorkflowDefinition{Nodes: []domain.WorkflowNode{node}}); err != nil {
 		e.nodeFailedAt(runID, node, executionAttempt, executionGeneration, err, false)
 		return
@@ -432,6 +437,14 @@ func (e *Engine) executeNode(ctx context.Context, runID string, wf domain.Workfl
 		return
 	}
 	current, _ := e.repo.RunState(runID)
+	if err := e.ValidateRunIntelligence(current); err != nil {
+		failNode(err, false)
+		return
+	}
+	if err := current.ExecutionBudget.Check(current.ExecutionContext.ExecutionBudget); err != nil {
+		failNode(err, false)
+		return
+	}
 	var err error
 	if len(current.ExecutionContext.NodePlacements) > 0 {
 		current, err = e.nodeExecutionRun(current, node.ID)
@@ -501,6 +514,9 @@ func (e *Engine) executeNode(ctx context.Context, runID string, wf domain.Workfl
 	// (执行器) it is dispatched to that machine so gates run next to the CLI
 	// output in the runner-side task workspace.
 	gateExec := func(command string, target executionTarget, gateSink runtime.EventSink) (string, error) {
+		if err := e.ValidateRunIntelligence(current); err != nil {
+			return "", err
+		}
 		return sb.Exec(ctx, runtime.CommandSpec{Argv: []string{"sh", "-lc", bindExecutionTarget(command, target)}, Provider: "verification", CredentialBindings: []runtime.CredentialBinding{runtime.BindGit, runtime.BindMCP}}, gateSink)
 	}
 	current, _ = e.repo.RunState(runID)
@@ -643,7 +659,9 @@ func (e *Engine) executeNode(ctx context.Context, runID string, wf domain.Workfl
 	switch node.Type {
 	case "script", "command":
 		runOnce = func(string) (string, error) {
-
+			if err := e.ValidateRunIntelligence(current); err != nil {
+				return "", err
+			}
 			if reported != nil {
 				reported.reset()
 			}
@@ -661,7 +679,11 @@ func (e *Engine) executeNode(ctx context.Context, runID string, wf domain.Workfl
 			rawOutput, runErr := executeForTargets(current, node.ExecutionScope, func(target executionTarget) (string, error) {
 				bound := bindExecutionTarget(command, target)
 				targetSink := executionTargetSink(sink, target)
-				scriptAssets := e.deliveryAssets(current, e.resolveScriptMCPAssets(current.ExecutionContext.ProjectID, current.ExecutionContext.ResponsibleUserID))
+				scriptAssets, assetErr := e.RunScriptAssets(current)
+				if assetErr != nil {
+					return "", assetErr
+				}
+				scriptAssets = e.deliveryAssets(current, scriptAssets)
 				if execMachine := e.defaultExecutionRunner(current); execMachine != "" {
 					workspace := runnerWorkspaceRel(current, node.ID)
 					return e.dispatchRunnerScript(ctx, execMachine, current, node.ID, workspace, "shell", bound, target.directory(), effectiveNode.ArtifactOutputs, sb, sb.credentialSnapshot().GitToken, sb.credentialSnapshot().GitUserName, sb.credentialSnapshot().GitUserEmail, scriptAssets, targetSink)
@@ -700,7 +722,7 @@ func (e *Engine) executeNode(ctx context.Context, runID string, wf domain.Workfl
 	default:
 		// SOP agents submit a terminal decision for routing.
 		requiresSubmit = true
-		agent, found := workflowAgent(e.repo, wf, node.AgentID)
+		agent, found := e.RunAgent(current, wf, node.AgentID)
 		if !found {
 			err = fmt.Errorf("agent %q not found", node.AgentID)
 			break
@@ -725,7 +747,7 @@ func (e *Engine) executeNode(ctx context.Context, runID string, wf domain.Workfl
 			loopOnExhausted = agent.Loop.OnExhausted
 		}
 		agentLockOwner := workspaceRunID(current)
-		runOnce = func(feedback string) (string, error) {
+		runOnce = func(feedback string) (result string, invocationErr error) {
 			// Same-role nodes share the Agent's control directories in this
 			// checkout, so their CLI invocations take turns.
 			releaseAgent := e.lockAgentInvocation(agentLockOwner, agent.ID)
@@ -755,7 +777,18 @@ func (e *Engine) executeNode(ctx context.Context, runID string, wf domain.Workfl
 				}
 			}
 			invocationID := fmt.Sprintf("%s-%d-%d", nodeControlKey(current, node.ID), attempt, invocationSeq)
-			rendered := renderPromptWithStore(e.repo, wf, effectiveNode, current)
+			if err := e.ValidateRunIntelligence(current); err != nil {
+				return "", err
+			}
+			if err := e.beginBudgetInvocation(runID, node.ID, attempt, invocationID, ex.Kind); err != nil {
+				return "", err
+			}
+			defer func() {
+				if err := e.finishBudgetInvocation(runID, node.ID, attempt, invocationID); err != nil {
+					invocationErr = err
+				}
+			}()
+			rendered := applyPromptPlaceholders(e.repo, wf, effectiveNode, &agent, current)
 			hadCatalog := strings.Contains(rendered, "{{artifacts}}")
 			prompt := strings.ReplaceAll(rendered, "{{artifacts}}", artifactContext)
 			if !hadCatalog && artifactContext != "" {
@@ -773,7 +806,11 @@ func (e *Engine) executeNode(ctx context.Context, runID string, wf domain.Workfl
 			if requiresSubmit {
 				prompt = appendSubmitGateInstruction(prompt, node.RejectTo, feedback == gateMissingRetryMarker)
 			}
-			assets := e.deliveryAssets(current, e.resolveAssets(agent, current.ExecutionContext.ProjectID, wf.ID, current.ExecutionContext.ResponsibleUserID))
+			resolvedAssets, assetErr := e.RunAssets(current, agent)
+			if assetErr != nil {
+				return "", assetErr
+			}
+			assets := e.deliveryAssets(current, resolvedAssets)
 			warnMCPSkipped := func(message string) {
 				sink(domain.TelemetryEvent{Category: "mcp", Name: "mcp.skipped", Phase: "start", Level: "warn", Message: message})
 			}
@@ -988,7 +1025,12 @@ func (e *Engine) executeNode(ctx context.Context, runID string, wf domain.Workfl
 				}
 			}
 		}
-		if err == nil || iteration == maxIterations || ctx.Err() != nil {
+		if ctx.Err() == nil && (err == nil || failedAction == "loop") {
+			if progressErr := e.budgetProgress(ctx, runID, node.ID, sb.Workspace(), err); progressErr != nil {
+				err, failedAction = progressErr, "fail"
+			}
+		}
+		if err == nil || iteration == maxIterations || ctx.Err() != nil || errors.Is(err, domain.ErrExecutionBudgetStopped) || errors.Is(err, domain.ErrExecutionBudgetUnsupported) {
 			break
 		}
 		if failedAction != "loop" {

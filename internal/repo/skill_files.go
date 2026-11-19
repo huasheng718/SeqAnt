@@ -3,6 +3,7 @@ package repo
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -72,25 +73,51 @@ func (r *CatalogRepo) SkillFileTotalBytes(skillID string) int64 {
 // the skill (replace semantics): existing rows for the skill are removed
 // before the new ones are inserted, all inside one transaction. The skill
 // payload manifest is refreshed from the resulting rows.
-func (r *CatalogRepo) PutSkillFiles(skillID string, files []SkillFileInput) error {
-	if skillID == "" {
-		return errors.New("skill id is required")
+func (r *CatalogRepo) PutSkillFiles(skillID string, files []SkillFileInput, expected ...string) error {
+	_, err := r.SaveSkillFiles(skillID, files, firstSourceRevision(expected))
+	return err
+}
+
+func (r *CatalogRepo) SaveSkillFiles(skillID string, files []SkillFileInput, expected string) (domain.SkillDefinition, error) {
+	var saved domain.SkillDefinition
+	if skillID == "" || len(files) == 0 {
+		return saved, errors.New("skill id and files are required")
 	}
-	if len(files) == 0 {
-		return errors.New("no skill files to store")
-	}
-	now := time.Now().UTC()
-	return r.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("skill_id = ?", skillID).Delete(&skillFileRow{}).Error; err != nil {
+	err := r.editSource("skills", skillID, expected, func(catalog *CatalogRepo, raw []byte, token string, exists bool) error {
+		if !exists {
+			return ErrSourceConflict
+		}
+		var skill domain.SkillDefinition
+		if err := json.Unmarshal(raw, &skill); err != nil {
+			return err
+		}
+		if skill.Source != nil {
+			return ErrSkillSourceReadOnly
+		}
+		now := time.Now().UTC()
+		skill.SourceRevision = token
+		skill.UpdatedAt = now
+		if err := writeSource(catalog.DB, "skills", map[string]any{"id": skill.ID, "name": skill.Name, "payload": mustJSON(skill), "updated_at": timePtr(now)}, true); err != nil {
+			return err
+		}
+		if err := catalog.DB.Where("skill_id = ?", skillID).Delete(&skillFileRow{}).Error; err != nil {
 			return err
 		}
 		for _, file := range files {
-			if err := writeSkillFileRow(tx, skillID, file, now); err != nil {
+			if _, ok := skill.Files[file.Path]; ok {
+				return fmt.Errorf("path conflicts with text resource")
+			}
+			if err := writeSkillFileRow(catalog.DB, skillID, file, now); err != nil {
 				return err
 			}
 		}
-		return refreshSkillFileRefs(tx, skillID, now)
+		if err := refreshSkillFileRefs(catalog.DB, skillID, now); err != nil {
+			return err
+		}
+		saved, _ = catalog.Skill(skillID)
+		return nil
 	})
+	return saved, err
 }
 
 // ErrSkillExists is returned by PutSkillSnapshot when create is requested
@@ -101,39 +128,53 @@ var ErrSkillExists = errors.New("skill id already exists")
 // transaction, so a failed install or update leaves no partial skill and no
 // half-replaced files. With create=true the id must not exist yet.
 func (r *CatalogRepo) PutSkillSnapshot(v domain.SkillDefinition, files []SkillFileInput, create bool) error {
-	if v.ID == "" || v.Name == "" {
-		return errors.New("skill id and name are required")
+	_, err := r.SaveSkillSnapshot(v, files, create)
+	return err
+}
+
+func (r *CatalogRepo) SaveSkillSnapshot(v domain.SkillDefinition, files []SkillFileInput, create bool) (domain.SkillDefinition, error) {
+	var saved domain.SkillDefinition
+	if v.ID == "" || v.Name == "" || len(files) == 0 {
+		return saved, errors.New("skill id, name and files are required")
 	}
-	if len(files) == 0 {
-		return errors.New("no skill files to store")
+	if create {
+		v.SourceRevision = ""
 	}
-	now := time.Now().UTC()
-	v.UpdatedAt = now
-	return r.DB.Transaction(func(tx *gorm.DB) error {
-		if create {
-			var count int64
-			if err := tx.Table("skills").Where("id = ?", v.ID).Count(&count).Error; err != nil {
-				return err
-			}
-			if count > 0 {
+	err := r.editSource("skills", v.ID, v.SourceRevision, func(catalog *CatalogRepo, raw []byte, token string, exists bool) error {
+		if create && exists {
+			return ErrSkillExists
+		}
+		if !create && !exists {
+			return ErrSourceConflict
+		}
+		now := time.Now().UTC()
+		v.SourceRevision = token
+		v.UpdatedAt = now
+		values := map[string]any{"id": v.ID, "name": v.Name, "payload": mustJSON(v), "updated_at": timePtr(now)}
+		if err := writeSource(catalog.DB, "skills", values, exists); err != nil {
+			if create && errors.Is(err, ErrSourceConflict) {
 				return ErrSkillExists
 			}
-		}
-		if err := upsert(tx, "skills", map[string]any{
-			"id": v.ID, "name": v.Name, "payload": mustJSON(v), "updated_at": timePtr(now),
-		}); err != nil {
 			return err
 		}
-		if err := tx.Where("skill_id = ?", v.ID).Delete(&skillFileRow{}).Error; err != nil {
+		if err := catalog.DB.Where("skill_id = ?", v.ID).Delete(&skillFileRow{}).Error; err != nil {
 			return err
 		}
 		for _, file := range files {
-			if err := writeSkillFileRow(tx, v.ID, file, now); err != nil {
+			if err := writeSkillFileRow(catalog.DB, v.ID, file, now); err != nil {
 				return err
 			}
 		}
-		return refreshSkillFileRefs(tx, v.ID, now)
+		if err := refreshSkillFileRefs(catalog.DB, v.ID, now); err != nil {
+			return err
+		}
+		saved, _ = catalog.Skill(v.ID)
+		return nil
 	})
+	if create && errors.Is(err, ErrSourcePrecondition) {
+		err = ErrSkillExists
+	}
+	return saved, err
 }
 
 func writeSkillFileRow(tx *gorm.DB, skillID string, file SkillFileInput, now time.Time) error {
@@ -156,23 +197,39 @@ func writeSkillFileRow(tx *gorm.DB, skillID string, file SkillFileInput, now tim
 }
 
 // DeleteSkillFile removes one binary file and refreshes the manifest.
-func (r *CatalogRepo) DeleteSkillFile(skillID, path string) error {
-	if skillID == "" || path == "" {
-		return errors.New("skill id and path are required")
-	}
-	now := time.Now().UTC()
-	return r.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("skill_id = ? AND path = ?", skillID, path).Delete(&skillFileRow{}).Error; err != nil {
+func (r *CatalogRepo) DeleteSkillFile(skillID, path string, expected ...string) error {
+	_, err := r.RemoveSkillFile(skillID, path, firstSourceRevision(expected))
+	return err
+}
+func (r *CatalogRepo) RemoveSkillFile(skillID, path, expected string) (domain.SkillDefinition, error) {
+	var saved domain.SkillDefinition
+	err := r.editSource("skills", skillID, expected, func(catalog *CatalogRepo, raw []byte, token string, exists bool) error {
+		if !exists {
+			return ErrSourceConflict
+		}
+		var skill domain.SkillDefinition
+		if err := json.Unmarshal(raw, &skill); err != nil {
 			return err
 		}
-		return refreshSkillFileRefs(tx, skillID, now)
+		if skill.Source != nil {
+			return ErrSkillSourceReadOnly
+		}
+		now := time.Now().UTC()
+		skill.SourceRevision = token
+		skill.UpdatedAt = now
+		if err := writeSource(catalog.DB, "skills", map[string]any{"id": skill.ID, "name": skill.Name, "payload": mustJSON(skill), "updated_at": timePtr(now)}, true); err != nil {
+			return err
+		}
+		if err := catalog.DB.Where("skill_id = ? AND path = ?", skillID, path).Delete(&skillFileRow{}).Error; err != nil {
+			return err
+		}
+		if err := refreshSkillFileRefs(catalog.DB, skillID, now); err != nil {
+			return err
+		}
+		saved, _ = catalog.Skill(skillID)
+		return nil
 	})
-}
-
-// DeleteSkillFiles removes every binary file of a skill without touching the
-// payload manifest (used when the whole skill row goes away).
-func (r *CatalogRepo) DeleteSkillFiles(skillID string) error {
-	return r.DB.Where("skill_id = ?", skillID).Delete(&skillFileRow{}).Error
+	return saved, err
 }
 
 // refreshSkillFileRefs rewrites the fileRefs manifest on the skill payload

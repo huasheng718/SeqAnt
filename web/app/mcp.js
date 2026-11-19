@@ -134,11 +134,12 @@ async function importMCPJSONText(text){
   mcpApplyImportedServer(selected);toast(`已从 mcp.json 填入 ${selected.name}`,'ok');
 }
 function openCustomMCPModal(item=null){
+  state.editingMCPRevision=item?.sourceRevision||'';
   const form=$('#customMcpForm'),editing=Boolean(item?.id);state.editingMCPId=editing?item.id:'';form.reset();
   const jsonImport=$('#mcpJsonImport');if(jsonImport)jsonImport.open=false;
   form.elements.scope.value=editing?item.scope:state.mcpScope;form.elements.id.value=editing?item.id:'';form.elements.name.value=editing?item.name||'':'';form.elements.transport.value=editing?item.transport||'http':'http';form.elements.description.value=editing?item.description||'':'';form.elements.authType.value=editing?item.authType||'':'';form.elements.timeoutSecHttp.value=editing?item.timeoutSec||60:60;form.elements.timeoutSecStdio.value=editing?item.timeoutSec||60:60;form.elements.url.value=editing?item.url||'':'';form.elements.command.value=editing?item.command||'':'';form.elements.args.value=editing?(item.args||[]).join('\n'):'';form.elements.installScript.value=editing?item.installScript||'':'';form.elements.workingDirectory.value=editing?item.workingDirectory||'':'';form.elements.pathEntries.value=editing?(item.pathEntries||[]).join('\n'):'';
   mcpRenderKV('environment',editing?item.environment||{}:{});mcpRenderKV('headers',editing?item.headers||{}:{});mcpSetTransport(form.elements.transport.value);mcpUpdateFileSummary(null,editing?item.fileRefs||[]:[]);
-  form.elements.scope.disabled=editing;form.elements.id.disabled=editing;$('#customMcpTitle').textContent=editing?'修改自定义 MCP':'添加自定义 MCP';$('#customMcpSubmit').textContent=editing?'保存修改':'添加 MCP';$('#customMcpModal').classList.add('open');setTimeout(()=>form.elements.name.focus(),0)
+  form.elements.scope.disabled=editing;form.elements.id.disabled=editing;$('#customMcpTitle').textContent=editing?'修改自定义 MCP':'添加自定义 MCP';$('#customMcpSubmit').textContent=editing?'保存修改':'添加 MCP';$('#customMcpModal').classList.add('open');if(typeof mountDistributionAction==='function')mountDistributionAction(form.querySelector('.modal-actions'),'mcp-servers',item);setTimeout(()=>form.elements.name.focus(),0)
 }
 function mcpSetTransport(value){
   $$('[data-mcp-http]').forEach(el=>el.hidden=value!=='http');$$('[data-mcp-stdio]').forEach(el=>el.hidden=value!=='stdio');
@@ -158,10 +159,11 @@ function mcpRenderKV(kind,values){const root=mcpEditor(kind);if(!root)return;roo
 function mcpAddKVRow(kind,key='',value=''){const root=mcpEditor(kind);if(!root)return;const row=document.createElement('div');row.className='kv-editor-row';row.innerHTML=`<input data-kv-key placeholder="KEY" value="${escapeHTML(key)}"><input data-kv-value placeholder="VALUE" value="${escapeHTML(value)}"><button type="button" class="button ghost small" data-mcp-kv-del>删除</button>`;root.appendChild(row);}
 function mcpCollectKV(kind){const out={};mcpEditor(kind)?.querySelectorAll('.kv-editor-row').forEach(row=>{const key=row.querySelector('[data-kv-key]')?.value.trim()||'';if(key)out[key]=row.querySelector('[data-kv-value]')?.value||''});return out}
 function mcpUpdateFileSummary(files,refs=[]){const count=files?.length||refs.length;const el=$('#mcpFileSummary');if(el)el.textContent=count?`${count} 个文件${files?.length?'待上传':'已保存'}`:'未上传文件';}
-async function uploadMCPSelection(id){
+async function uploadMCPSelection(server){
+  const id=server.id;
   const folder=$('#mcpFolderPick'),zip=$('#mcpZipPick'),files=folder?.files?.length?folder.files:zip?.files;if(!files?.length)return null;
   const body=new FormData();for(const file of files){body.append('files',file,file.name);body.append('paths',file.webkitRelativePath||file.name)}
-  return api(`/api/mcp-servers/${encodeURIComponent(id)}/files`,{method:'POST',body});
+  return api(`/api/mcp-servers/${encodeURIComponent(id)}/files`,{method:'POST',headers:sourceEditHeaders(server,false,true),body});
 }
 async function saveCustomMCP(e){
 	e.preventDefault();const form=e.currentTarget,button=form.querySelector('button[type="submit"]'),wasEditing=Boolean(state.editingMCPId);button.disabled=true;button.textContent=wasEditing?'保存中…':'添加中…';
@@ -171,12 +173,13 @@ async function saveCustomMCP(e){
     else Object.assign(server,{command:form.elements.command.value.trim(),args:lines(form.elements.args.value),installScript:form.elements.installScript.value,workingDirectory:form.elements.workingDirectory.value.trim(),pathEntries:lines(form.elements.pathEntries.value),environment:mcpCollectKV('environment')});
     const editing=state.editingMCPId&&state.data.mcpServers.find(item=>item.id===state.editingMCPId);
     let saved;
-    if(editing){Object.assign(server,{id:editing.id,scope:editing.scope,projectId:editing.projectId||'',ownerUserId:editing.ownerUserId||0,marketId:'',iconUrl:''});saved=await api('/api/mcp-servers',{method:'PUT',body:JSON.stringify(server)});toast('自定义 MCP 已更新','ok')}
+    if(editing){Object.assign(server,{id:editing.id,scope:editing.scope,projectId:editing.projectId||'',ownerUserId:editing.ownerUserId||0,marketId:'',iconUrl:''});saved=await api('/api/mcp-servers',{method:'PUT',headers:sourceEditHeaders(state.editingMCPRevision),body:JSON.stringify(server)});toast('自定义 MCP 已更新','ok')}
     else{const scope=form.elements.scope.value;saved=await api('/api/mcp-servers/custom',{method:'POST',body:JSON.stringify({server,scope,projectId:scope==='project'?state.projectFilter:''})});state.mcpScope=scope;state.mcpTab='installed';toast('自定义 MCP 已添加','ok')}
-    if(transport==='stdio'){const uploaded=await uploadMCPSelection(saved.id);if(uploaded)saved=uploaded}
+    state.editingMCPRevision=saved.sourceRevision;const committedIndex=state.data.mcpServers.findIndex(item=>item.id===saved.id);if(committedIndex>=0)state.data.mcpServers[committedIndex]=saved;else state.data.mcpServers.push(saved);
+    if(transport==='stdio'){const uploaded=await uploadMCPSelection(saved);if(uploaded)saved=uploaded}
     const index=state.data.mcpServers.findIndex(item=>item.id===saved.id);if(index>=0)state.data.mcpServers[index]=saved;else state.data.mcpServers.push(saved);
     state.editingMCPId='';$('#customMcpModal').classList.remove('open');renderMCPManagement();renderAgents()
-	}catch(err){toast(err.message,'err')}finally{button.disabled=false;button.textContent=wasEditing?'保存修改':'添加 MCP'}
+	}catch(err){showSourceEditConflict(err,form,'mcp-servers',state.editingMCPId,latest=>{state.editingMCPRevision=latest.sourceRevision});toast(err.message,'err')}finally{button.disabled=false;button.textContent=wasEditing?'保存修改':'添加 MCP'}
 }
 function renderMCPManagement(){
   const grid=$('#mcpMarketGrid'),hint=$('#mcpScopeHint');if(!grid||!hint)return;
@@ -198,10 +201,12 @@ function renderMCPManagement(){
   grid.querySelectorAll('[data-mcp-install]').forEach(button=>button.onclick=()=>installMarketMCP(button.dataset.mcpInstall,button));
   grid.querySelectorAll('[data-mcp-edit]').forEach(button=>button.onclick=()=>openCustomMCPModal(state.data.mcpServers.find(item=>item.id===button.dataset.mcpEdit)));
   grid.querySelectorAll('[data-mcp-remove]').forEach(button=>button.onclick=()=>removeInstalledMCP(button.dataset.mcpRemove,button));
+  if(typeof mountDistributionAction==='function')grid.querySelectorAll('[data-mcp-remove]').forEach(button=>{const item=state.data.mcpServers.find(value=>value.id===button.dataset.mcpRemove);mountDistributionAction(button.parentElement,'mcp-servers',item)});
   bindPager(grid);
 }
 async function removeInstalledMCP(id,button){
+  const observedRevision=state.data.mcpServers.find(item=>item.id===id)?.sourceRevision;
   if(!await afConfirm({title:'移除 MCP 确认',message:'移除后，引用这个 MCP 的角色将无法再调用它。确定移除？',confirmText:'确认移除',isDanger:true}))return;
   button.disabled=true;
-  try{await api(`/api/mcp-servers?id=${encodeURIComponent(id)}`,{method:'DELETE'});state.data.mcpServers=state.data.mcpServers.filter(item=>item.id!==id);renderMCPManagement();renderAgents();toast('MCP 已移除','ok')}catch(e){toast(e.message,'err');button.disabled=false}
+  try{await api(`/api/mcp-servers?id=${encodeURIComponent(id)}`,{method:'DELETE',headers:sourceEditHeaders(observedRevision)});state.data.mcpServers=state.data.mcpServers.filter(item=>item.id!==id);renderMCPManagement();renderAgents();toast('MCP 已移除','ok')}catch(e){toast(e.message,'err');button.disabled=false}
 }

@@ -26,6 +26,9 @@ func compileSelectedSkill(agentRel string, skill domain.SkillDefinition, files m
 		return selectedSkill{}, fmt.Errorf("skill id is required")
 	}
 	raw := []byte(skill.Content)
+	if text, ok := skill.Files["SKILL.md"]; ok {
+		raw = []byte(text)
+	}
 	if data, ok := files["SKILL.md"]; ok {
 		raw = data
 	}

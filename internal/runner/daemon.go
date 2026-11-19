@@ -531,6 +531,9 @@ func (d *Daemon) executeTask(ctx context.Context, task domain.RunnerTask) {
 	var artifacts map[string]string
 	managed := d.managedTaskState(task.ID, task.Attempt)
 	policyErr := domain.ValidateRunnerDelivery(task)
+	if policyErr == nil {
+		policyErr = domain.ValidateRunnerGovernedContext(task)
+	}
 	switch {
 	case domain.ExecutionDeadlineExpired(task.ExecutionDeadline, time.Now().UTC()):
 		result = execResult{status: domain.RunnerTaskFailed, errMsg: domain.ErrExecutionDeadlineExceeded.Error(), exitCode: 1}
@@ -758,6 +761,10 @@ func (d *Daemon) executeTerminal(ctx context.Context, task domain.RunnerTask) ex
 			return execResult{status: domain.RunnerTaskFailed, errMsg: err.Error()}
 		}
 	}
+	evidence, err := measureTaskContext(task, workspace, false)
+	if err != nil {
+		return execResult{status: domain.RunnerTaskFailed, errMsg: err.Error()}
+	}
 	command := runtime.CommandSpec{Argv: []string{"sh", "-lc", task.Command}, Provider: "script"}
 	var sandbox runtime.Sandbox
 	if task.Sandbox != nil {
@@ -796,7 +803,7 @@ func (d *Daemon) executeTerminal(ctx context.Context, task domain.RunnerTask) ex
 	} else {
 		result = d.executeProcess(ctx, task, command.Argv, runtime.CommandEnvironment(command))
 	}
-	result.outputs = collectTaskOutputs(workspace, task.Invocation)
+	result.outputs = attachContextEvidence(collectTaskOutputs(workspace, task.Invocation), evidence)
 	return result
 }
 
@@ -871,13 +878,17 @@ func (d *Daemon) executeInvocation(ctx context.Context, task domain.RunnerTask) 
 	if err != nil {
 		return execResult{status: domain.RunnerTaskFailed, errMsg: fmt.Sprintf("prepare invocation: %v", err)}, nil
 	}
+	evidence, err := measureTaskContext(task, workspace, !prepared.Builtin)
+	if err != nil {
+		return execResult{status: domain.RunnerTaskFailed, errMsg: err.Error()}, nil
+	}
 	if prepared.Builtin {
 		// Builtin executors (mock) need no CLI process.
 		if err := d.client.StartTask(ctx, task.ID, task.Attempt); err != nil {
 			return execResult{status: domain.RunnerTaskFailed, errMsg: fmt.Sprintf("start: %v", err)}, nil
 		}
 		_ = d.client.SendEvents(ctx, task.ID, task.Attempt, []domain.RunnerTaskEvent{{Seq: 1, Type: "system", Data: "builtin executor completed in-process", Ts: time.Now().UTC()}})
-		return execResult{status: domain.RunnerTaskSuccess, exitCode: 0, result: prepared.BuiltinResult, outputs: collectTaskOutputs(workspace, inv)}, collectRunnerInvocationArtifacts(workspace, inv)
+		return execResult{status: domain.RunnerTaskSuccess, exitCode: 0, result: prepared.BuiltinResult, outputs: attachContextEvidence(collectTaskOutputs(workspace, inv), evidence)}, collectRunnerInvocationArtifacts(workspace, inv)
 	}
 	argv := prepared.Command.Argv
 	if sandbox == nil || !strings.EqualFold(task.Sandbox.Profile.Driver, "docker") {
@@ -948,7 +959,7 @@ func (d *Daemon) executeInvocation(ctx context.Context, task domain.RunnerTask) 
 	} else {
 		result = d.executeProcess(ctx, task, argv, commandEnv)
 	}
-	result.outputs = collectTaskOutputs(workspace, inv)
+	result.outputs = attachContextEvidence(collectTaskOutputs(workspace, inv), evidence)
 	if result.status != domain.RunnerTaskSuccess {
 		return result, nil
 	}
@@ -1420,7 +1431,7 @@ func (d *Daemon) defaultWorkspace(taskID string) string {
 }
 
 // runnerVersion is reported at registration; it matches the module build.
-var runnerVersion = domain.RunnerVersionNodePlacement
+var runnerVersion = domain.RunnerVersionMemoryRecallReceipt
 
 // Version returns the runner build version reported at registration.
 func Version() string { return runnerVersion }

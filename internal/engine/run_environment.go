@@ -175,6 +175,9 @@ func (e *Engine) acquireRunEnvironment(ctx context.Context, run domain.Run, prof
 	if err := e.validateDeliveryRepositories(current); err != nil {
 		return nil, false, err
 	}
+	if err := e.ValidateRunIntelligence(current); err != nil {
+		return nil, false, err
+	}
 	if err := e.adoptForeignWorkspace(current); err != nil {
 		return nil, false, err
 	}
@@ -243,7 +246,13 @@ func (e *Engine) resolveRunCredentials(run domain.Run) runtime.RunCredentials {
 		credentials.GitToken = ""
 		return credentials
 	}
-	scriptAssets, _, _ := runtime.PrepareMCPServers(e.resolveScriptMCPAssets(run.ExecutionContext.ProjectID, userID), runtime.MCPTarget{GitToken: credentials.GitToken})
+	assets, err := e.RunScriptAssets(run)
+	if err != nil {
+		// Credentials never reintroduce live MCP authority for invalid contexts.
+		// Execution/preparation entrypoints return the validation error.
+		return credentials
+	}
+	scriptAssets, _, _ := runtime.PrepareMCPServers(assets, runtime.MCPTarget{GitToken: credentials.GitToken})
 	credentials.MCPServers = scriptAssets.MCPServers
 	return credentials
 }

@@ -11,6 +11,7 @@ import (
 
 	"agentflow/internal/apperr"
 	"agentflow/internal/engine"
+	"agentflow/internal/repo"
 
 	"github.com/gin-gonic/gin"
 )
@@ -29,6 +30,12 @@ func (e HTTPError) Error() string { return e.Message }
 //   - 否则渲染统一 JSON 错误形态，状态码取 HTTPError 自带值，
 //     apperr.Error 按 Kind 映射，ErrExecutionDisabled → 403，其余 → 400。
 func respond(c *gin.Context, err error) {
+	if errors.Is(err, repo.ErrSourcePrecondition) && c.GetHeader("If-None-Match") == "*" {
+		err = repo.ErrSourceConflict
+	}
+	if err != nil && sourceEditError(c, err) {
+		return
+	}
 	if err == nil {
 		c.JSON(http.StatusOK, map[string]bool{"ok": true})
 		return

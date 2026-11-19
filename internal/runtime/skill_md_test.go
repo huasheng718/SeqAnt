@@ -86,3 +86,20 @@ func TestCompileSelectedSkillAlignsNameToCatalogID(t *testing.T) {
 		t.Fatalf("paths = %q %q", item.root, item.path)
 	}
 }
+
+func TestCompileSelectedSkillUsesExplicitTextEntrypoint(t *testing.T) {
+	raw := []byte("---\nname: portable\ndescription: checked\n---\n\nOriginal entrypoint bytes.\n")
+	skill := domain.SkillDefinition{ID: "portable", Name: "Portable", Content: "fallback must not win", Files: map[string]string{"SKILL.md": string(raw)}}
+	selected, err := compileSelectedSkill(".agentflow", skill, nil)
+	if err != nil || string(selected.body) != string(raw) {
+		t.Fatalf("text entrypoint changed or fallback selected: %v %q", err, selected.body)
+	}
+	// Existing deterministic compatibility normalization changes effective bytes,
+	// while the source object remains unmodified for immutable release hashing.
+	original := "# Source without header\n"
+	skill.Files["SKILL.md"] = original
+	selected, err = compileSelectedSkill(".agentflow", skill, nil)
+	if err != nil || string(selected.body) == original || skill.Files["SKILL.md"] != original || !strings.Contains(string(selected.body), "name: portable") {
+		t.Fatal("source/effective normalization contract changed")
+	}
+}

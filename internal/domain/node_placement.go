@@ -144,6 +144,10 @@ var placementSemver = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|
 // metadata, rather than the legacy permissive numeric-prefix version parser.
 // A prerelease of the minimum release has not yet reached the feature gate.
 func RunnerVersionSupportsNodePlacement(version string) bool {
+	return runnerVersionSupports(version, []string{"0", "11", "0"})
+}
+
+func runnerVersionSupports(version string, minimumParts []string) bool {
 	matches := placementSemver.FindStringSubmatch(version)
 	if matches == nil {
 		return false
@@ -155,7 +159,7 @@ func RunnerVersionSupportsNodePlacement(version string) bool {
 			}
 		}
 	}
-	for i, minimum := range []string{"0", "11", "0"} {
+	for i, minimum := range minimumParts {
 		part := matches[i+1]
 		if len(part) != len(minimum) {
 			return len(part) > len(minimum)

@@ -340,16 +340,18 @@ func TestKnowledgeMCPFilesSpacesAndAssistantTasks(t *testing.T) {
 	if err := s.PutMCPServer(mcp); err != nil {
 		t.Fatal(err)
 	}
+	mcp, _ = s.MCPServer(mcp.ID)
 	if err := s.PutMCPFiles("", []SkillFileInput{{Path: "x", Content: []byte("x")}}); err == nil {
 		t.Fatal("empty MCP accepted")
 	}
-	if err := s.PutMCPFiles(mcp.ID, nil); err == nil {
+	if err := s.PutMCPFiles(mcp.ID, nil, mcp.SourceRevision); err == nil {
 		t.Fatal("empty files accepted")
 	}
 	files := []SkillFileInput{{Path: "main.go", Content: []byte("package main"), Mode: 0o755}, {Path: "README.md", Content: []byte("readme")}}
-	if err := s.PutMCPFiles(mcp.ID, files); err != nil {
+	if err := s.PutMCPFiles(mcp.ID, files, mcp.SourceRevision); err != nil {
 		t.Fatal(err)
 	}
+	mcp, _ = s.MCPServer(mcp.ID)
 	if refs := s.MCPFileRefs(mcp.ID); len(refs) != 2 || refs[0].Path != "README.md" {
 		t.Fatalf("refs = %+v", refs)
 	}
@@ -362,7 +364,7 @@ func TestKnowledgeMCPFilesSpacesAndAssistantTasks(t *testing.T) {
 	if err := s.DeleteMCPFile("", "x"); err == nil {
 		t.Fatal("empty delete accepted")
 	}
-	if err := s.DeleteMCPFile(mcp.ID, "main.go"); err != nil {
+	if err := s.DeleteMCPFile(mcp.ID, "main.go", mcp.SourceRevision); err != nil {
 		t.Fatal(err)
 	}
 

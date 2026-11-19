@@ -80,6 +80,8 @@ func removeDockerSandbox(ctx context.Context, container, image string) {
 
 const dockerTeardownTimeout = 60 * time.Second
 
+const dockerImageUserTemplate = `{{with index .Config "User"}}{{.}}{{end}}`
+
 const (
 	dockerHardenedEnv     = "AGENTFLOW_SANDBOX_HARDENED"
 	dockerMemoryLimitEnv  = "AGENTFLOW_SANDBOX_MEMORY_LIMIT"
@@ -735,7 +737,7 @@ func (s *dockerSandbox) ensureStarted(ctx context.Context) error {
 	// A root image without DAC capabilities cannot access another UID's bind.
 	// Run default/root images as that user; retain explicit non-root image users.
 	if os.Geteuid() != 0 {
-		configured, err := exec.CommandContext(ctx, "docker", "image", "inspect", "--format", "{{.Config.User}}", image).CombinedOutput()
+		configured, err := exec.CommandContext(ctx, "docker", "image", "inspect", "--format", dockerImageUserTemplate, image).CombinedOutput()
 		if err != nil {
 			return fmt.Errorf("inspect sandbox image user: %w: %s", err, strings.TrimSpace(string(configured)))
 		}

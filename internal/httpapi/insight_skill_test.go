@@ -31,6 +31,7 @@ func TestUsageSkillZipPortable(t *testing.T) {
 	if err := s.PutSkill(domain.SkillDefinition{ID: "report-workflow-usage", Name: "外部工作流用量上报", ProjectID: "platform"}); err != nil {
 		t.Fatal(err)
 	}
+	skill, _ := s.Skill("report-workflow-usage")
 	root := filepath.Join("..", "..", "skills", "report-workflow-usage")
 	var archive bytes.Buffer
 	writer := zip.NewWriter(&archive)
@@ -70,7 +71,7 @@ func TestUsageSkillZipPortable(t *testing.T) {
 		if _, err := part.Write(archive.Bytes()); err != nil {
 			t.Fatal(err)
 		}
-	})
+	}, map[string]string{"If-Match": `"` + skill.SourceRevision + `"`})
 	if rec.Code != 200 {
 		t.Fatalf("ZIP import: %d %s", rec.Code, rec.Body.String())
 	}

@@ -509,6 +509,9 @@ func runnerTaskHasNodeAuthority(task domain.RunnerTask) bool {
 }
 
 func prepareRunnerTask(v domain.RunnerTask) (domain.RunnerTask, error) {
+	if err := domain.ValidateRunnerGovernedContext(v); err != nil {
+		return v, err
+	}
 	if v.ExecutionDeadline != nil && v.ExecutionDeadline.IsZero() {
 		return v, fmt.Errorf("executionDeadline must be a nonzero absolute timestamp")
 	}
@@ -851,7 +854,7 @@ func (r *RunnersRepo) claimRunnerTaskOnce(runnerID, sessionHash string, provider
 	// Peek without a task lock: placed work must acquire its Run before tasks.
 	query := r.DB.Where("status = ? AND (runner_id = '' OR runner_id = ?) AND provider IN ?", domain.RunnerTaskQueued, runnerID, allowed)
 	if !authenticated {
-		for _, path := range []string{"$.executionPlacement", "$.execution", "$.maintenanceKey", "$.invocation.contributionInputs"} {
+		for _, path := range []string{"$.executionPlacement", "$.execution", "$.maintenanceKey", "$.invocation.contributionInputs", "$.invocation.governedContext"} {
 			query = query.Where(r.sqlJSONText(path)+" IS NULL", path)
 		}
 	} else {
@@ -913,6 +916,33 @@ func (r *RunnersRepo) claimRunnerTaskOnce(runnerID, sessionHash string, provider
 		}
 		taskID := row.ID
 		queued := runnerTaskFromRow(row)
+		if queued.Invocation != nil && queued.Invocation.GovernedContext != nil {
+			if !authenticated {
+				return ErrRunnerTaskNotClaimable
+			}
+			if err := domain.ValidateRunnerGovernedContext(queued); err != nil {
+				return err
+			}
+			if r.catalog == nil || r.memory == nil {
+				return ErrIntelligenceUnavailable
+			}
+			if err := r.catalog.validateRunnerReleaseTx(tx, *queued.Invocation.GovernedContext); err != nil {
+				return err
+			}
+			if err := r.memory.validateRunnerMemoriesTx(tx, *queued.Invocation.GovernedContext, now); err != nil {
+				return err
+			}
+			var registration runnerRow
+			if err := r.locking(tx).Where("id = ?", runnerID).Take(&registration).Error; err != nil {
+				return err
+			}
+			if !domain.RunnerVersionSupportsGovernedContext(runnerFromRow(registration).RunnerVersion) {
+				return fmt.Errorf("governed task requires Runner %s or newer", domain.RunnerVersionGovernedContext)
+			}
+			if queued.Invocation.GovernedContext.MemoryRecallReceipt != nil && !domain.RunnerVersionSupportsMemoryRecallReceipt(runnerFromRow(registration).RunnerVersion) {
+				return fmt.Errorf("memory recall receipt requires Runner %s or newer", domain.RunnerVersionMemoryRecallReceipt)
+			}
+		}
 		if queued.ExecutionPlacement != nil {
 			if queued.ExecutionPlacement.RunnerID != runnerID || queued.RunnerID != runnerID {
 				return ErrRunnerTaskNotClaimable
@@ -1181,6 +1211,9 @@ func (r *RunnersRepo) completeRunnerTask(id, runnerID, sessionHash string, attem
 		}
 		task := runnerTaskFromRow(row)
 		if status == domain.RunnerTaskSuccess {
+			if err := domain.ValidateRunnerContextEvidence(task, outputs); err != nil {
+				return err
+			}
 			if err := acceptRunnerContributions(tx, &task, outputs, now); err != nil {
 				return err
 			}

@@ -39,6 +39,7 @@ type protocolAdapter struct {
 	once          sync.Once
 	tools         map[string]*toolUseBuf
 	currentToolID string
+	codexThreadID string
 	translate     func(string) []string
 }
 
@@ -341,6 +342,17 @@ func (a *protocolAdapter) handleCodexJSON(raw map[string]any) {
 	if session == "" {
 		session = stringValue(raw["threadId"])
 	}
+	// Codex normally identifies the thread only in thread.started. Keep that
+	// identity within this invocation's adapter for later usage/tool frames;
+	// never borrow a previous Node invocation's session. Explicit frame IDs
+	// still win so the budget ledger can detect an unexpected session change.
+	a.mu.Lock()
+	if session != "" {
+		a.codexThreadID = session
+	} else {
+		session = a.codexThreadID
+	}
+	a.mu.Unlock()
 	switch typ {
 	case "thread.started":
 		a.emit(domain.TelemetryEvent{Category: "lifecycle", Name: "agent.initialized", Phase: "start", Message: "codex thread initialized", SessionID: session})

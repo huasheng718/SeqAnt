@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"agentflow/internal/domain"
+	"agentflow/internal/gitwork"
 )
 
 type githubClient struct {
@@ -53,6 +54,19 @@ func (s *Service) githubClient(project string) (*githubClient, error) {
 		base = "https://api.github.com"
 	}
 	return &githubClient{base: base, path: path, token: token, http: &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}}, nil
+}
+
+// Publication callers can bind the already-authorized controller credential.
+// Looking up only the provider path is ambiguous when multiple local projects
+// register the same hosted repository. Legacy callers retain their resolver.
+func (s *Service) githubPublicationClient(ctx context.Context, project string) (*githubClient, error) {
+	g, err := s.githubClient(project)
+	if err == nil {
+		if token := gitwork.TokenFrom(ctx); token != "" {
+			g.token = token
+		}
+	}
+	return g, err
 }
 
 func (g *githubClient) request(method, suffix string, input, output any) error {

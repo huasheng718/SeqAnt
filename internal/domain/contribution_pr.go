@@ -6,4 +6,5 @@ type ContributionPRReceipt struct {
 	URL     string `json:"url"`
 	Number  int    `json:"number"`
 	HeadSHA string `json:"headSHA"`
+	Draft   bool   `json:"draft,omitempty"`
 }

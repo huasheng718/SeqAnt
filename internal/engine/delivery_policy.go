@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"agentflow/internal/domain"
 )
@@ -57,7 +58,30 @@ func (e *Engine) applyRunnerTaskPolicy(run domain.Run, task *domain.RunnerTask) 
 	if task.ID == "" {
 		return nil
 	}
-	return e.bindWorkspaceIsolation(run, task)
+	if task.Action == "" && (run.Intelligence != nil || run.ExecutionContext.TeamContext != nil) {
+		if err := e.ValidateRunIntelligence(run); err != nil {
+			return err
+		}
+		registered, ok := e.repo.Runner(task.RunnerID)
+		if !ok || !domain.RunnerVersionSupportsGovernedContext(registered.RunnerVersion) {
+			return fmt.Errorf("governed execution requires Runner %s or newer", domain.RunnerVersionGovernedContext)
+		}
+		if run.Intelligence.MemoryRecallReceipt != nil && !domain.RunnerVersionSupportsMemoryRecallReceipt(registered.RunnerVersion) {
+			return fmt.Errorf("memory recall receipt requires Runner %s or newer", domain.RunnerVersionMemoryRecallReceipt)
+		}
+		if task.Invocation == nil {
+			return fmt.Errorf("governed execution requires an invocation")
+		}
+		binding, err := domain.GovernedContextForRun(run)
+		if err != nil {
+			return err
+		}
+		task.Invocation.GovernedContext = binding
+	}
+	if err := e.bindWorkspaceIsolation(run, task); err != nil {
+		return err
+	}
+	return domain.ValidateRunnerGovernedContext(*task)
 }
 
 func (e *Engine) deliveryAssets(run domain.Run, assets domain.AgentAssetBundle) domain.AgentAssetBundle {

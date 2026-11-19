@@ -111,7 +111,10 @@ func materializeInvocationForDriver(workspace, invocationID string, ex domain.Ex
 		}
 	}
 	lines := []string{"# " + a.Name, "", "## Rules"}
-	sort.Slice(assets.Rules, func(i, j int) bool { return assets.Rules[i].Priority > assets.Rules[j].Priority })
+	// Rules belong to the immutable Runner assignment. Rendering priority
+	// must not reorder its shared slice or invalidate the P0 context digest.
+	assets.Rules = append([]domain.RuleDefinition(nil), assets.Rules...)
+	sort.SliceStable(assets.Rules, func(i, j int) bool { return assets.Rules[i].Priority > assets.Rules[j].Priority })
 	for _, v := range assets.Rules {
 		ruleID := safeID(v.ID)
 		if ruleID == "" {

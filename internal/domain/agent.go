@@ -63,12 +63,14 @@ const BaselineAlignAgentID = "baseline-align-resolver"
 const PlatformMCPServerID = "agentflow-platform"
 
 type AgentDefinition struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Version     int    `json:"version"`
-	ProjectID   string `json:"projectId,omitempty"`
-	Shared      bool   `json:"shared,omitempty"`
-	Description string `json:"description"`
+	DistributionState
+	SourceRevision string `json:"sourceRevision,omitempty"`
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	Version        int    `json:"version"`
+	ProjectID      string `json:"projectId,omitempty"`
+	Shared         bool   `json:"shared,omitempty"`
+	Description    string `json:"description"`
 	// Prompt is the role's single free-form brief: identity, task, order and
 	// limits. The engine wraps it with the role name plus deliverable, gate and
 	// retry sections derived from the artifact contract, verification gates and

@@ -480,7 +480,8 @@ func (h *skillhubHandlers) install(c *gin.Context) {
 		respond(c, err)
 		return
 	}
-	if err := h.repo.PutSkillSnapshot(skill, files, true); err != nil {
+	saved, err := h.repo.SaveSkillSnapshot(skill, files, true)
+	if err != nil {
 		if errors.Is(err, repo.ErrSkillExists) {
 			c.JSON(http.StatusConflict, map[string]string{"error": fmt.Sprintf("技能标识「%s」已被占用，请换一个", id)})
 			return
@@ -488,7 +489,6 @@ func (h *skillhubHandlers) install(c *gin.Context) {
 		respond(c, err)
 		return
 	}
-	saved, _ := h.repo.Skill(id)
 	c.JSON(http.StatusCreated, saved)
 }
 
@@ -530,6 +530,10 @@ func (h *skillhubHandlers) update(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, map[string]string{"error": "该技能不是从 SkillHub 安装的，无法更新"})
 		return
 	}
+	expected, allowed := sourceEditPrecondition(c, true)
+	if !allowed {
+		return
+	}
 	src := *skill.Source
 	if version == "" {
 		detail, err := h.client.detail(c.Request.Context(), src.Slug, src.Namespace, h.userKey(c))
@@ -559,6 +563,7 @@ func (h *skillhubHandlers) update(c *gin.Context) {
 		c.JSON(http.StatusConflict, map[string]string{"error": "技能已被删除或修改，请刷新后重试"})
 		return
 	}
+	current.SourceRevision = expected
 	next := *current.Source
 	next.Version = version
 	next.UpdatedAt = time.Now().UTC()
@@ -566,10 +571,10 @@ func (h *skillhubHandlers) update(c *gin.Context) {
 		next.Homepage = skillhubHomepage(next.Namespace, next.Slug)
 	}
 	current.Source = &next
-	if err := h.repo.PutSkillSnapshot(current, files, false); err != nil {
+	saved, err := h.repo.SaveSkillSnapshot(current, files, false)
+	if err != nil {
 		respond(c, err)
 		return
 	}
-	saved, _ := h.repo.Skill(skillID)
 	c.JSON(http.StatusOK, saved)
 }

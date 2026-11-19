@@ -29,7 +29,8 @@ func TestPutAgentKeepsExistingProjectID(t *testing.T) {
 	if err := s.PutAgent(domain.AgentDefinition{ID: "gslb-fix", Name: "Fix", ProjectID: "gslb", Prompt: "keep"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.PutAgent(domain.AgentDefinition{ID: "gslb-fix", Name: "Fix v2", Prompt: "keep"}); err != nil {
+	observed, _ := s.Agent("gslb-fix")
+	if err := s.PutAgent(domain.AgentDefinition{ID: "gslb-fix", Name: "Fix v2", Prompt: "keep", SourceRevision: observed.SourceRevision}); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := s.Agent("gslb-fix")
@@ -53,6 +54,7 @@ func TestPutAgentValidatesAndDefaultsHooks(t *testing.T) {
 		t.Fatalf("stored hooks = %+v", stored.Hooks)
 	}
 	agent.Hooks[0].Event = "Unsupported"
+	agent.SourceRevision = stored.SourceRevision
 	if err := s.PutAgent(agent); err == nil {
 		t.Fatal("unsupported common hook event should be rejected")
 	}
@@ -155,7 +157,11 @@ func TestRejectedWriteDoesNotChangeReads(t *testing.T) {
 	}
 	defer s.Close()
 	original := domain.MCPServerDefinition{ID: "github", Name: "GitHub MCP", Transport: "stdio", Command: "github-mcp-server", PathEntries: []string{"tools/bin"}}
-	if err := s.PutMCPServer(original); err != nil {
+	observed, _ := s.MCPServer(original.ID)
+	original.SourceRevision = observed.SourceRevision
+	original.ProjectID = observed.ProjectID
+	original, err = s.SaveMCPServer(original)
+	if err != nil {
 		t.Fatal(err)
 	}
 	broken := original

@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -126,7 +127,15 @@ func TestAdoptedTemplateRolesAreDeletableOnceTheCopyIsGone(t *testing.T) {
 	if agent, ok := s.Agent(repo.GenericAgentMR); !ok || agent.ProjectID != "alpha" {
 		t.Fatalf("expected alpha to own the plain template role id, got %+v ok=%v", agent, ok)
 	}
-	if code := doStatus(h, http.MethodDelete, "/api/agents/"+repo.GenericAgentMR); code != http.StatusConflict {
+	observedRole, _ := s.Agent(repo.GenericAgentMR)
+	deleteRole := func() int {
+		req := httptest.NewRequest(http.MethodDelete, "/api/agents/"+repo.GenericAgentMR, nil)
+		req.Header.Set("If-Match", "\""+observedRole.SourceRevision+"\"")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if code := deleteRole(); code != http.StatusConflict {
 		t.Fatalf("role still used by the adopted copy: delete status = %d, want 409", code)
 	}
 	if code := doStatus(h, http.MethodDelete, "/api/workflows/alpha-backend-delivery"); code != http.StatusNoContent && code != http.StatusOK {
@@ -134,7 +143,7 @@ func TestAdoptedTemplateRolesAreDeletableOnceTheCopyIsGone(t *testing.T) {
 	}
 	// The generic template itself runs its built-in role, never alpha's copy,
 	// so it must not pin the project role forever.
-	if code := doStatus(h, http.MethodDelete, "/api/agents/"+repo.GenericAgentMR); code != http.StatusNoContent {
+	if code := deleteRole(); code != http.StatusNoContent {
 		t.Fatalf("delete orphaned adopted role status = %d, want 204", code)
 	}
 	if _, ok := s.GenericAgentByID(repo.GenericAgentMR); !ok {
@@ -148,6 +157,8 @@ func TestGenericTemplateCloneCreatesProjectRolesAndRemapsNodes(t *testing.T) {
 		ID: "mcp-61-project-alpha", Name: "Gongfeng MCP", Scope: "project", ProjectID: "alpha",
 		MarketID: "61", Transport: "http", URL: "https://mcp-gateway.example.com/gongfeng", Headers: map[string]string{"Authorization": "Bearer tapd-token"},
 	}
+	observedGongfeng, _ := s.MCPServer(gongfeng.ID)
+	gongfeng.SourceRevision = observedGongfeng.SourceRevision
 	if err := s.PutMCPServer(gongfeng); err != nil {
 		t.Fatal(err)
 	}
@@ -544,10 +555,9 @@ func TestGenericTemplateReadoptKeepsLocalMCPBinding(t *testing.T) {
 	}
 }
 
-// A failed workflow persist keeps the cloned assets on purpose: a concurrent
-// adoption may already reference them, so deleting would break a healthy SOP.
-// They are pre-created assets — the retry reuses them idempotently.
-func TestGenericTemplateAdoptFailureKeepsAssetsForRetry(t *testing.T) {
+// The complete adoption is now transactional: denied or failed copies leave no
+// new definitions active, while pre-existing independent definitions survive.
+func TestGenericTemplateAdoptFailureRollsBackAssetsForRetry(t *testing.T) {
 	h, s := newGenericTemplateServer(t)
 	// A colliding row with a higher revision makes PutWorkflow fail with a
 	// revision conflict after the assets were already cloned.
@@ -559,14 +569,14 @@ func TestGenericTemplateAdoptFailureKeepsAssetsForRetry(t *testing.T) {
 	requestJSON[map[string]string](t, h, http.MethodPost,
 		"/api/workflows/"+repo.GenericBackendDeliveryWorkflowID+"/clone",
 		map[string]any{"id": "conflicting-id", "name": "x", "projectId": "alpha"}, http.StatusBadRequest)
-	if _, ok := s.Agent(repo.GenericAgentMR); !ok {
-		t.Fatal("MR role must survive a failed adoption")
+	if _, ok := s.Agent(repo.GenericAgentMR); ok {
+		t.Fatal("failed adoption left an MR role active")
 	}
-	if _, ok := s.Rule(repo.GenericRuleCore); !ok {
-		t.Fatal("core rule must survive a failed adoption")
+	if _, ok := s.Rule(repo.GenericRuleCore); ok {
+		t.Fatal("failed adoption left a core rule active")
 	}
-	if _, ok := s.Skill(repo.GenericSkillTechDesign); !ok {
-		t.Fatal("tech-design skill must survive a failed adoption")
+	if _, ok := s.Skill(repo.GenericSkillTechDesign); ok {
+		t.Fatal("failed adoption left a skill active")
 	}
 	assetsAfterFailure := len(s.Agents()) + len(s.Rules()) + len(s.Skills())
 	// After the collision is gone, the retry succeeds and must reuse the
@@ -577,8 +587,8 @@ func TestGenericTemplateAdoptFailureKeepsAssetsForRetry(t *testing.T) {
 	copied := requestJSON[domain.WorkflowDefinition](t, h, http.MethodPost,
 		"/api/workflows/"+repo.GenericBackendDeliveryWorkflowID+"/clone",
 		map[string]any{"id": "alpha-backend-delivery", "name": "x", "projectId": "alpha"}, http.StatusCreated)
-	if got := len(s.Agents()) + len(s.Rules()) + len(s.Skills()); got != assetsAfterFailure {
-		t.Fatalf("retry created duplicate assets: %d -> %d", assetsAfterFailure, got)
+	if got := len(s.Agents()) + len(s.Rules()) + len(s.Skills()); got <= assetsAfterFailure {
+		t.Fatalf("successful retry failed to create complete assets: %d -> %d", assetsAfterFailure, got)
 	}
 	if _, ok := s.Rule(repo.GenericRuleCore); !ok {
 		t.Fatal("retry must reuse the pre-created core rule id")
@@ -675,8 +685,13 @@ func TestGenericTemplateAgentsAreNotTheCurrentProjectCatalog(t *testing.T) {
 	}
 	admin, _ := s.UserByLoginName("example-admin")
 	review.Prompt = "platform-only review brief"
-	saved := requestJSONAuthed[domain.AgentDefinition](t, h, admin, http.MethodPut,
-		"/api/workflows/"+repo.GenericBackendDeliveryWorkflowID+"/agents", *review, http.StatusOK)
+	savedRaw := sourceJSON(t, sourceEditRequest(t, h, admin, http.MethodPut,
+		"/api/workflows/"+repo.GenericBackendDeliveryWorkflowID+"/agents", *review, map[string]string{"If-Match": "\"" + review.SourceRevision + "\""}), http.StatusOK)
+	var saved domain.AgentDefinition
+	savedBytes, _ := json.Marshal(savedRaw)
+	if err := json.Unmarshal(savedBytes, &saved); err != nil {
+		t.Fatal(err)
+	}
 	if saved.Prompt != "platform-only review brief" || saved.ProjectID != "" {
 		t.Fatalf("admin role save = %+v", saved)
 	}
@@ -688,8 +703,8 @@ func TestGenericTemplateAgentsAreNotTheCurrentProjectCatalog(t *testing.T) {
 		t.Fatal(err)
 	}
 	alice, _ := s.UserByLoginName("alice")
-	requestJSONAuthed[map[string]string](t, h, alice, http.MethodPut,
-		"/api/workflows/"+repo.GenericBackendDeliveryWorkflowID+"/agents", *review, http.StatusConflict)
+	sourceJSON(t, sourceEditRequest(t, h, alice, http.MethodPut,
+		"/api/workflows/"+repo.GenericBackendDeliveryWorkflowID+"/agents", *review, map[string]string{"If-Match": "\"" + saved.SourceRevision + "\""}), http.StatusConflict)
 }
 
 func TestPlatformAdminsAPIIsConfigurable(t *testing.T) {

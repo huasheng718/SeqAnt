@@ -12,6 +12,8 @@ import (
 )
 
 type dispatchRequest struct {
+	ExecutionBudget                                   *domain.ExecutionBudgetPolicy
+	TeamContext                                       *domain.TeamContextSelection
 	RunnerWorkspaceLayout                             string
 	WorkspaceBaseSHAs                                 map[string]string
 	NodePlacements                                    map[string]domain.NodePlacementRequest
@@ -193,7 +195,7 @@ func dispatchIssue(d *deps, req dispatchRequest) (domain.Task, error) {
 		return domain.Task{}, err
 	}
 	tapdID := issue.RequirementTAPDID()
-	run, err := d.engine.StartWithRepositoriesContext(workflowID, input, repositories, domain.TelemetryContext{ProjectID: issue.ProjectID, IssueID: issue.ID, TAPDID: tapdID, ResponsibleUserID: runUserID, IssueNumber: issue.Number, TaskID: taskID, ScheduleJobID: strings.TrimSpace(req.ScheduleJobID), RunnerWorkspaceLayout: req.RunnerWorkspaceLayout, WorkspaceBaseSHAs: req.WorkspaceBaseSHAs, NodePlacements: req.NodePlacements})
+	run, err := d.engine.StartWithRepositoriesContext(workflowID, input, repositories, domain.TelemetryContext{ProjectID: issue.ProjectID, IssueID: issue.ID, TAPDID: tapdID, ResponsibleUserID: runUserID, IssueNumber: issue.Number, TaskID: taskID, ScheduleJobID: strings.TrimSpace(req.ScheduleJobID), RunnerWorkspaceLayout: req.RunnerWorkspaceLayout, WorkspaceBaseSHAs: req.WorkspaceBaseSHAs, NodePlacements: req.NodePlacements, ExecutionBudget: req.ExecutionBudget, TeamContext: req.TeamContext})
 	if err != nil {
 		task.Status = "failed"
 		_ = d.repo.PutTask(task)

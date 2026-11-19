@@ -665,9 +665,10 @@ func TestDaemonStreamsAndNormalizesSparseProviderOutput(t *testing.T) {
 	}
 
 	done := make(chan execResult, 1)
-	line := `{"type":"turn.completed","thread_id":"thread-remote","usage":{"input_tokens":12,"output_tokens":5}}`
+	started := `{"type":"thread.started","thread_id":"thread-remote"}`
+	line := `{"type":"turn.completed","usage":{"input_tokens":12,"output_tokens":5}}`
 	go func() {
-		done <- daemon.executeProcess(context.Background(), claimed, []string{"/bin/sh", "-c", "printf '%s\\n' '" + line + "'; printf 'provider warning\\n' >&2; sleep 2"})
+		done <- daemon.executeProcess(context.Background(), claimed, []string{"/bin/sh", "-c", "printf '%s\\n' '" + started + "' '" + line + "'; printf 'provider warning\\n' >&2; sleep 2"})
 	}()
 
 	// Sparse output must be visible while the process is still running; it
@@ -697,6 +698,9 @@ func TestDaemonStreamsAndNormalizesSparseProviderOutput(t *testing.T) {
 		}
 		var observation domain.TelemetryEvent
 		if json.Unmarshal([]byte(event.Data), &observation) == nil && observation.Category == "usage" && observation.Usage != nil && observation.Usage.InputTokens == 12 {
+			if observation.SessionID != "thread-remote" || observation.Context.SessionID != "thread-remote" {
+				t.Fatalf("durable sparse usage lost its invocation thread: %+v", observation)
+			}
 			foundUsage = true
 		}
 		if observation.Name == "process.stderr" && observation.Message == "provider warning" {

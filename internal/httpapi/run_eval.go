@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"agentflow/internal/domain"
+	"agentflow/internal/repo"
 	"agentflow/internal/runeval"
 
 	"github.com/gin-gonic/gin"
@@ -228,8 +229,9 @@ func (h *runsHandlers) applyRunEval(c *gin.Context) {
 		return
 	}
 	var req struct {
-		EvalID            string   `json:"evalId"`
-		RecommendationIDs []string `json:"recommendationIds"`
+		EvalID                 string            `json:"evalId"`
+		RecommendationIDs      []string          `json:"recommendationIds"`
+		ExpectedAgentRevisions map[string]string `json:"expectedAgentRevisions"`
 	}
 	if !decode(c, &req) {
 		return
@@ -255,6 +257,30 @@ func (h *runsHandlers) applyRunEval(c *gin.Context) {
 		return
 	}
 	projectID := run.ExecutionContext.ProjectID
+	pending, agentChanges := 0, 0
+	for _, item := range rec.Result.Recommendations {
+		if wanted[item.ID] && item.Status != domain.RunEvalRecApplied && item.Applyable() {
+			pending++
+			if strings.HasPrefix(domain.NormalizeRunEvalAction(item.Target, item.Action), "agent.") {
+				agentChanges++
+			}
+		}
+	}
+	// Native source edits currently commit one reviewed target per request.
+	// Reject mixed/multiple writes before any side effect rather than partially apply.
+	if agentChanges > 0 && pending > 1 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "包含角色修改时请逐条评审并应用建议", "code": "source_batch_unsupported"})
+		return
+	}
+	for _, item := range rec.Result.Recommendations {
+		if !wanted[item.ID] || item.Status == domain.RunEvalRecApplied || !strings.HasPrefix(domain.NormalizeRunEvalAction(item.Target, item.Action), "agent.") {
+			continue
+		}
+		if err := h.checkEvalAgentBase(run, projectID, item, req.ExpectedAgentRevisions); err != nil {
+			respond(c, err)
+			return
+		}
+	}
 	changed := false
 	for i, item := range rec.Result.Recommendations {
 		if !wanted[item.ID] {
@@ -268,8 +294,11 @@ func (h *runsHandlers) applyRunEval(c *gin.Context) {
 			changed = true
 			continue
 		}
-		applied, err := h.applyOneRecommendation(run, projectID, item)
+		applied, err := h.applyOneRecommendation(run, projectID, item, req.ExpectedAgentRevisions)
 		if err != nil {
+			if sourceEditError(c, err) {
+				return
+			}
 			rec.Result.Recommendations[i].ApplyError = err.Error()
 			changed = true
 			continue
@@ -290,7 +319,7 @@ func (h *runsHandlers) applyRunEval(c *gin.Context) {
 	c.JSON(http.StatusOK, rec)
 }
 
-func (h *runsHandlers) applyOneRecommendation(run domain.Run, projectID string, rec domain.RunEvalRecommendation) (domain.RunEvalRecommendation, error) {
+func (h *runsHandlers) applyOneRecommendation(run domain.Run, projectID string, rec domain.RunEvalRecommendation, expected ...map[string]string) (domain.RunEvalRecommendation, error) {
 	action := domain.NormalizeRunEvalAction(rec.Target, rec.Action)
 	switch {
 	case strings.HasPrefix(action, "workflow."):
@@ -307,10 +336,20 @@ func (h *runsHandlers) applyOneRecommendation(run domain.Run, projectID string, 
 		rec.AppliedTargetID = wf.ID
 		return rec, nil
 	case strings.HasPrefix(action, "agent."):
+		if len(expected) > 0 {
+			if err := h.checkEvalAgentBase(run, projectID, rec, expected[0]); err != nil {
+				return rec, err
+			}
+		}
 		agentID := firstNonEmpty(rec.TargetID, agentIDFromRun(run, rec.NodeID))
-		agent, err := h.ensureProjectAgent(run, projectID, agentID)
+		agent, err := h.ensureProjectAgent(run, projectID, agentID, expected...)
 		if err != nil {
 			return rec, err
+		}
+		if len(expected) > 0 {
+			if base := expected[0][agent.ID]; base != "" {
+				agent.SourceRevision = base
+			}
 		}
 		if err := runeval.ApplyRecommendation(rec, nil, &agent); err != nil {
 			return rec, err
@@ -360,7 +399,7 @@ func (h *runsHandlers) ensureProjectWorkflow(run domain.Run, projectID, workflow
 	return stored, nil
 }
 
-func (h *runsHandlers) ensureProjectAgent(run domain.Run, projectID, agentID string) (domain.AgentDefinition, error) {
+func (h *runsHandlers) ensureProjectAgent(run domain.Run, projectID, agentID string, expected ...map[string]string) (domain.AgentDefinition, error) {
 	agent, ok := h.repo.Agent(agentID)
 	if !ok {
 		return domain.AgentDefinition{}, fmt.Errorf("角色 %q 不存在", agentID)
@@ -372,15 +411,25 @@ func (h *runsHandlers) ensureProjectAgent(run domain.Run, projectID, agentID str
 	if existing, exists := h.repo.Agent(cloneID); exists {
 		return existing, nil
 	}
-	agent.ID = cloneID
-	agent.Name = strings.TrimSpace(agent.Name) + "（评测副本）"
-	agent.ProjectID = projectID
-	agent.Shared = false
-	agent.Version = 1
-	agent.UpdatedAt = time.Time{}
-	if err := h.repo.PutAgent(agent); err != nil {
-		return domain.AgentDefinition{}, err
+	if len(expected) > 0 {
+		var err error
+		agent, err = h.repo.CloneAgentForEvaluation(agent.ID, cloneID, projectID, expected[0][agent.ID])
+		if err != nil {
+			return domain.AgentDefinition{}, err
+		}
+	} else {
+		agent.ID = cloneID
+		agent.Name += "（评测副本）"
+		agent.ProjectID = projectID
+		agent.Shared = false
+		agent.Version = 1
+		agent.UpdatedAt = time.Time{}
+		agent.SourceRevision = ""
+		if err := h.repo.PutAgent(agent); err != nil {
+			return domain.AgentDefinition{}, err
+		}
 	}
+
 	if wf, err := h.ensureProjectWorkflow(run, projectID, run.WorkflowID); err == nil {
 		changed := false
 		for i, node := range wf.Nodes {
@@ -535,4 +584,33 @@ func (j *runEvalJob) unsubscribe(ch chan runEvalJobEvent) {
 	defer j.mu.Unlock()
 	delete(j.subs, ch)
 	close(ch)
+}
+
+// Preconditions are the targets actually inspected by the human reviewing a
+// recommendation; they cannot be substituted with a just-fetched latest base.
+func (h *runsHandlers) checkEvalAgentBase(run domain.Run, projectID string, rec domain.RunEvalRecommendation, bases map[string]string) error {
+	id := firstNonEmpty(rec.TargetID, agentIDFromRun(run, rec.NodeID))
+	agent, ok := h.repo.Agent(id)
+	if !ok {
+		return repo.ErrSourceConflict
+	}
+	check := func(value domain.AgentDefinition) error {
+		expected := bases[value.ID]
+		if expected == "" {
+			return repo.ErrSourcePrecondition
+		}
+		if expected != value.SourceRevision {
+			return repo.ErrSourceConflict
+		}
+		return nil
+	}
+	if err := check(agent); err != nil {
+		return err
+	}
+	if agent.Shared || (agent.ProjectID != "" && agent.ProjectID != projectID) {
+		if target, ok := h.repo.Agent(runeval.CloneID(agent.ID, firstNonEmpty(projectID, "copy"))); ok {
+			return check(target)
+		}
+	}
+	return nil
 }

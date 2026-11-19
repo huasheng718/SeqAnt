@@ -1634,6 +1634,7 @@ const mockEl = () => ({
   dataset: {},
   innerHTML: '',
   appendChild: () => {},
+  insertAdjacentHTML: () => {},
   addEventListener: () => {},
   querySelector: () => mockEl(),
   querySelectorAll: () => []
@@ -1813,6 +1814,7 @@ const mockEl = () => ({
   dataset: {},
   classList: { add: () => {}, remove: () => {}, toggle: () => {}, contains: () => false },
   appendChild: () => {},
+  insertAdjacentHTML: () => {},
   addEventListener: () => {},
   setAttribute: () => {},
   style: {},

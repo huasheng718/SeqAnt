@@ -3,6 +3,7 @@ package repo
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -48,19 +49,33 @@ func (r *CatalogRepo) MCPFileContents(mcpID string) map[string][]byte {
 }
 
 // PutMCPFiles stores one complete uploaded stdio MCP source tree.
-func (r *CatalogRepo) PutMCPFiles(mcpID string, files []SkillFileInput) error {
-	if mcpID == "" {
-		return errors.New("MCP id is required")
+func (r *CatalogRepo) PutMCPFiles(mcpID string, files []SkillFileInput, expected ...string) error {
+	_, err := r.SaveMCPFiles(mcpID, files, firstSourceRevision(expected))
+	return err
+}
+func (r *CatalogRepo) SaveMCPFiles(mcpID string, files []SkillFileInput, expected string) (domain.MCPServerDefinition, error) {
+	var saved domain.MCPServerDefinition
+	if mcpID == "" || len(files) == 0 {
+		return saved, errors.New("MCP id and files are required")
 	}
-	if len(files) == 0 {
-		return errors.New("no MCP files to store")
-	}
-	now := time.Now().UTC()
-	return r.DB.Transaction(func(tx *gorm.DB) error {
-		if _, ok := payloadOne[domain.MCPServerDefinition](tx, "mcp_servers", mcpID); !ok {
-			return fmt.Errorf("MCP %s not found", mcpID)
+	err := r.editSource("mcp_servers", mcpID, expected, func(catalog *CatalogRepo, raw []byte, token string, exists bool) error {
+		if !exists {
+			return ErrSourceConflict
 		}
-		if err := tx.Where("mcp_id = ?", mcpID).Delete(&mcpFileRow{}).Error; err != nil {
+		var server domain.MCPServerDefinition
+		if err := json.Unmarshal(raw, &server); err != nil {
+			return err
+		}
+		if server.MarketID != "" {
+			return errors.New("market MCP files are read-only")
+		}
+		now := time.Now().UTC()
+		server.SourceRevision = token
+		server.UpdatedAt = now
+		if err := writeSource(catalog.DB, "mcp_servers", map[string]any{"id": server.ID, "name": server.Name, "payload": mustJSON(server), "updated_at": timePtr(now)}, true); err != nil {
+			return err
+		}
+		if err := catalog.DB.Where("mcp_id = ?", mcpID).Delete(&mcpFileRow{}).Error; err != nil {
 			return err
 		}
 		for _, file := range files {
@@ -68,32 +83,54 @@ func (r *CatalogRepo) PutMCPFiles(mcpID string, files []SkillFileInput) error {
 				return err
 			}
 			if int64(len(file.Content)) > domain.MCPFileMaxBytes {
-				return fmt.Errorf("MCP 文件 %s 超过 1MB 限制", file.Path)
+				return fmt.Errorf("MCP file exceeds maximum size")
 			}
 			sum := sha256.Sum256(file.Content)
-			if err := upsert(tx, "mcp_files", map[string]any{
-				"mcp_id": mcpID, "path": file.Path, "content": file.Content,
-				"size": int64(len(file.Content)), "sha256": hex.EncodeToString(sum[:]),
-				"unix_mode": domain.NormalizeSkillFileMode(file.Mode), "updated_at": &now,
-			}); err != nil {
+			if err := upsert(catalog.DB, "mcp_files", map[string]any{"mcp_id": mcpID, "path": file.Path, "content": file.Content, "size": int64(len(file.Content)), "sha256": hex.EncodeToString(sum[:]), "unix_mode": domain.NormalizeSkillFileMode(file.Mode), "updated_at": &now}); err != nil {
 				return err
 			}
 		}
-		return refreshMCPFileRefs(tx, mcpID, now)
-	})
-}
-
-func (r *CatalogRepo) DeleteMCPFile(mcpID, filePath string) error {
-	if mcpID == "" || filePath == "" {
-		return errors.New("MCP id and path are required")
-	}
-	now := time.Now().UTC()
-	return r.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("mcp_id = ? AND path = ?", mcpID, filePath).Delete(&mcpFileRow{}).Error; err != nil {
+		if err := refreshMCPFileRefs(catalog.DB, mcpID, now); err != nil {
 			return err
 		}
-		return refreshMCPFileRefs(tx, mcpID, now)
+		saved, _ = catalog.MCPServer(mcpID)
+		return nil
 	})
+	return saved, err
+}
+func (r *CatalogRepo) DeleteMCPFile(mcpID, path string, expected ...string) error {
+	_, err := r.RemoveMCPFile(mcpID, path, firstSourceRevision(expected))
+	return err
+}
+func (r *CatalogRepo) RemoveMCPFile(mcpID, path, expected string) (domain.MCPServerDefinition, error) {
+	var saved domain.MCPServerDefinition
+	err := r.editSource("mcp_servers", mcpID, expected, func(catalog *CatalogRepo, raw []byte, token string, exists bool) error {
+		if !exists {
+			return ErrSourceConflict
+		}
+		var server domain.MCPServerDefinition
+		if err := json.Unmarshal(raw, &server); err != nil {
+			return err
+		}
+		if server.MarketID != "" {
+			return errors.New("market MCP files are read-only")
+		}
+		now := time.Now().UTC()
+		server.SourceRevision = token
+		server.UpdatedAt = now
+		if err := writeSource(catalog.DB, "mcp_servers", map[string]any{"id": server.ID, "name": server.Name, "payload": mustJSON(server), "updated_at": timePtr(now)}, true); err != nil {
+			return err
+		}
+		if err := catalog.DB.Where("mcp_id = ? AND path = ?", mcpID, path).Delete(&mcpFileRow{}).Error; err != nil {
+			return err
+		}
+		if err := refreshMCPFileRefs(catalog.DB, mcpID, now); err != nil {
+			return err
+		}
+		saved, _ = catalog.MCPServer(mcpID)
+		return nil
+	})
+	return saved, err
 }
 
 func refreshMCPFileRefs(tx *gorm.DB, mcpID string, now time.Time) error {

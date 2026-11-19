@@ -47,4 +47,23 @@ func TestManualRunAttemptWorkspaceUsesExplicitRepositoryPins(t *testing.T) {
 	if run.ExecutionContext.RunnerWorkspaceLayout != domain.RunnerWorkspaceLayoutAttempt || run.ExecutionContext.WorkspaceBaseSHAs["allowed-repo"] != strings.Repeat("a", 40) {
 		t.Fatalf("manual API did not freeze requested isolation: %+v", run.ExecutionContext)
 	}
+	if err := s.PutProject(domain.Project{ID: "another-project", Key: "ANOTHER", Name: "Another", OwnerID: 1}); err != nil {
+		t.Fatal(err)
+	}
+	for _, repository := range []domain.Repository{
+		{ID: "selected-repo", ProjectID: "workspace-project", Name: "Selected", CloneURL: "https://example.test/selected.git", DefaultBranch: "main"},
+		{ID: "foreign-repo", ProjectID: "another-project", CloneURL: "https://example.test/foreign.git"},
+	} {
+		if err := s.PutRepository(repository); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, ids := range [][]string{{"foreign-repo"}, {"missing"}, {"selected-repo", "selected-repo"}, {" "}} {
+		requestJSON[map[string]any](t, h, http.MethodPost, "/api/runs", map[string]any{"workflowId": "workspace-manual", "projectId": "workspace-project", "repositoryIds": ids}, http.StatusBadRequest)
+	}
+	requestJSON[map[string]any](t, h, http.MethodPost, "/api/runs", map[string]any{"workflowId": "workspace-manual", "projectId": "workspace-project", "repositoryIds": []string{"selected-repo"}, "runnerWorkspaceLayout": "attempt", "workspaceBaseSHAs": map[string]string{"allowed-repo": strings.Repeat("a", 40)}}, http.StatusBadRequest)
+	selected := requestJSON[domain.Run](t, h, http.MethodPost, "/api/runs", map[string]any{"workflowId": "workspace-manual", "projectId": "workspace-project", "repositoryIds": []string{"selected-repo"}, "runnerWorkspaceLayout": "attempt", "workspaceBaseSHAs": map[string]string{"selected-repo": strings.Repeat("b", 40)}}, http.StatusCreated)
+	if len(selected.Repositories) != 1 || selected.Repositories[0].RepositoryID != "selected-repo" || len(selected.ExecutionContext.WorkspaceBaseSHAs) != 1 {
+		t.Fatalf("explicit selection did not replace generic default: %+v", selected)
+	}
 }

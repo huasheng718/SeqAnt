@@ -621,15 +621,17 @@ func TestSkillhubUpdateReplacesFilesAndKeepsMetadata(t *testing.T) {
 	}
 	installed, _ := s.Skill("my-review")
 	installed.Name, installed.Description, installed.Shared = "团队评审", "自定义描述", true
-	if err := s.PutSkill(installed); err != nil {
+	installed, err := s.SaveSkillMetadata(installed)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.PutAgent(domain.AgentDefinition{ID: "reviewer", Name: "评审员", ProjectID: "platform", Skills: []string{"my-review"}, ExecutorID: "codebuddy"}); err != nil {
+	reviewer, _ := s.Agent("reviewer")
+	if err := s.PutAgent(domain.AgentDefinition{ID: "reviewer", Name: "评审员", ProjectID: "platform", Skills: []string{"my-review"}, ExecutorID: "codebuddy", SourceRevision: reviewer.SourceRevision}); err != nil {
 		t.Fatal(err)
 	}
 
 	f.publish("team", "review", "1.1.0", map[string]string{"SKILL.md": "# v1.1", "new.md": "fresh"})
-	rec := skillhubRequest(t, h, http.MethodPost, "/api/skillhub/update", map[string]any{"skillId": "my-review"})
+	rec := requestWithHeaders(t, h, http.MethodPost, "/api/skillhub/update", map[string]any{"skillId": "my-review"}, map[string]string{"If-Match": `"` + installed.SourceRevision + `"`})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("update %d: %s", rec.Code, rec.Body.String())
 	}
@@ -652,11 +654,13 @@ func TestSkillhubUpdateReplacesFilesAndKeepsMetadata(t *testing.T) {
 	}
 
 	// Explicit older version, then a failing update keeps the current state.
-	if rec := skillhubRequest(t, h, http.MethodPost, "/api/skillhub/update", map[string]any{"skillId": "my-review", "version": "1.0.0"}); rec.Code != http.StatusOK || decodeSkillResponse(t, rec).Source.Version != "1.0.0" {
+	rec = requestWithHeaders(t, h, http.MethodPost, "/api/skillhub/update", map[string]any{"skillId": "my-review", "version": "1.0.0"}, map[string]string{"If-Match": `"` + updated.SourceRevision + `"`})
+	if rec.Code != http.StatusOK || decodeSkillResponse(t, rec).Source.Version != "1.0.0" {
 		t.Fatalf("update to explicit version %d: %s", rec.Code, rec.Body.String())
 	}
+	updated = decodeSkillResponse(t, rec)
 	f.publish("team", "review", "2.0.0", map[string]string{"SKILL.md": "# v2", "big.txt": strings.Repeat("y", int(domain.SkillFileMaxBytes)+1)})
-	if rec := skillhubRequest(t, h, http.MethodPost, "/api/skillhub/update", map[string]any{"skillId": "my-review"}); rec.Code != http.StatusUnprocessableEntity {
+	if rec := requestWithHeaders(t, h, http.MethodPost, "/api/skillhub/update", map[string]any{"skillId": "my-review"}, map[string]string{"If-Match": `"` + updated.SourceRevision + `"`}); rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("oversized update %d: %s", rec.Code, rec.Body.String())
 	}
 	after, _ := s.Skill("my-review")
@@ -670,7 +674,8 @@ func TestSkillhubUpdateReplacesFilesAndKeepsMetadata(t *testing.T) {
 	if err := s.PutSkill(domain.SkillDefinition{ID: "hand-made", Name: "Hand", ProjectID: "platform"}); err != nil {
 		t.Fatal(err)
 	}
-	if rec := skillhubRequest(t, h, http.MethodPost, "/api/skillhub/update", map[string]any{"skillId": "hand-made"}); rec.Code != http.StatusBadRequest {
+	handMade, _ := s.Skill("hand-made")
+	if rec := requestWithHeaders(t, h, http.MethodPost, "/api/skillhub/update", map[string]any{"skillId": "hand-made"}, map[string]string{"If-Match": `"` + handMade.SourceRevision + `"`}); rec.Code != http.StatusBadRequest {
 		t.Fatalf("updating a hand-made skill answered %d", rec.Code)
 	}
 	if rec := skillhubRequest(t, h, http.MethodPost, "/api/skillhub/update", map[string]any{"skillId": "nope"}); rec.Code != http.StatusNotFound {
@@ -684,14 +689,15 @@ func TestSkillhubSourcedSkillIsReadOnlyAndSourceTamperProof(t *testing.T) {
 	if rec := installSkillhub(t, h, map[string]any{"slug": "pdf-tools", "namespace": "team", "projectId": "platform"}); rec.Code != http.StatusCreated {
 		t.Fatalf("install %d", rec.Code)
 	}
+	installed, _ := s.Skill("pdf-tools")
 
 	rec := requestMultipart(t, h, http.MethodPost, "/api/skills/pdf-tools/files", func(w *multipart.Writer) {
 		addFilePartWithPath(w, "SKILL.md", []byte("# hacked"))
-	})
+	}, map[string]string{"If-Match": `"` + installed.SourceRevision + `"`})
 	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "只读") {
 		t.Fatalf("upload to sourced skill %d: %s", rec.Code, rec.Body.String())
 	}
-	rec = skillhubRequest(t, h, http.MethodDelete, "/api/skills/pdf-tools/files/SKILL.md", nil)
+	rec = requestWithHeaders(t, h, http.MethodDelete, "/api/skills/pdf-tools/files/SKILL.md", nil, map[string]string{"If-Match": `"` + installed.SourceRevision + `"`})
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("delete on sourced skill %d: %s", rec.Code, rec.Body.String())
 	}
@@ -700,18 +706,18 @@ func TestSkillhubSourcedSkillIsReadOnlyAndSourceTamperProof(t *testing.T) {
 	}
 
 	// Name/description edits keep the source; a forged or dropped source is ignored.
-	rec = skillhubRequest(t, h, http.MethodPut, "/api/skills", map[string]any{
+	rec = requestWithHeaders(t, h, http.MethodPut, "/api/skills", map[string]any{
 		"id": "pdf-tools", "name": "改名", "description": "新描述", "projectId": "platform",
 		"source": map[string]any{"provider": "skillhub", "slug": "evil", "version": "9.9.9"},
-	})
+	}, map[string]string{"If-Match": `"` + installed.SourceRevision + `"`})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("put %d: %s", rec.Code, rec.Body.String())
 	}
-	saved, _ := s.Skill("pdf-tools")
+	saved := decodeSkillResponse(t, rec)
 	if saved.Name != "改名" || saved.Source == nil || saved.Source.Slug != "pdf-tools" || saved.Source.Version != "1.3.0" {
 		t.Fatalf("source tampered: %+v", saved.Source)
 	}
-	rec = skillhubRequest(t, h, http.MethodPut, "/api/skills", map[string]any{"id": "pdf-tools", "name": "改名", "projectId": "platform", "shared": true})
+	rec = requestWithHeaders(t, h, http.MethodPut, "/api/skills", map[string]any{"id": "pdf-tools", "name": "改名", "projectId": "platform", "shared": true}, map[string]string{"If-Match": `"` + saved.SourceRevision + `"`})
 	if saved, _ := s.Skill("pdf-tools"); rec.Code != http.StatusOK || saved.Source == nil || !saved.Shared {
 		t.Fatalf("source dropped by a metadata save: %d %+v", rec.Code, saved)
 	}
@@ -721,10 +727,11 @@ func TestSkillhubSourcedSkillIsReadOnlyAndSourceTamperProof(t *testing.T) {
 	if forged, _ := s.Skill("forged"); rec.Code != http.StatusOK || forged.Source != nil {
 		t.Fatalf("new skills must not carry a client source: %+v", forged.Source)
 	}
+	forged := decodeSkillResponse(t, rec)
 	// Hand-made skills keep the regular upload path.
 	rec = requestMultipart(t, h, http.MethodPost, "/api/skills/forged/files", func(w *multipart.Writer) {
 		addFilePartWithPath(w, "SKILL.md", []byte("# mine"))
-	})
+	}, map[string]string{"If-Match": `"` + forged.SourceRevision + `"`})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("hand-made upload %d: %s", rec.Code, rec.Body.String())
 	}

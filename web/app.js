@@ -94,7 +94,7 @@ async function api(path, options={}) {
     const res = await fetch(path, request);
     const body = await res.json().catch(()=>({}));
     if (!res.ok) {
-      const err=new Error(body.error || `HTTP ${res.status}`);err.code=body.code||'';
+      const err=new Error(body.error || `HTTP ${res.status}`);err.code=body.code||'';err.status=res.status;
       if(body.code==='repository_required'&&body.error)toastActions.set(body.error,{label:lfT('绑定仓库','Add repository'),run:()=>typeof openRepositoryModal==='function'&&openRepositoryModal()});
       throw err;
     }
@@ -105,6 +105,37 @@ async function api(path, options={}) {
       if(bar&&apiInflight===0){bar.classList.remove('active');bar.setAttribute('aria-hidden','true')}
     }
   }
+}
+function sourceEditHeaders(value,creating=false,multipart=false){
+  const headers=multipart?{}:{'Content-Type':'application/json'};
+  if(creating){headers['If-None-Match']='*';return headers}
+  const revision=typeof value==='string'?value:value?.sourceRevision;
+  if(!revision)throw new Error('当前编辑缺少基线，请刷新并比较后重新提交');
+  headers['If-Match']=`"${revision}"`;return headers;
+}
+function showSourceEditConflict(error,container,kind,id,onReviewed){
+  if(!['source_edit_conflict','source_precondition_required'].includes(error?.code)||!container||!id)return false;
+  container.querySelector('[data-source-edit-conflict]')?.remove();
+  const banner=document.createElement('div');banner.dataset.sourceEditConflict='';banner.className='prop-hint';banner.setAttribute('role','alert');
+  const message=document.createElement('p');message.textContent=error.message;banner.append(message);
+  const compare=document.createElement('button');compare.type='button';compare.className='button small';compare.textContent='比较最新内容';banner.append(compare);
+  const output=document.createElement('pre');output.style.whiteSpace='pre-wrap';output.style.maxHeight='20rem';output.style.overflow='auto';banner.append(output);
+  const adopt=document.createElement('button');adopt.type='button';adopt.className='button small';adopt.textContent='已比较，保留草稿并采用此基线';adopt.hidden=true;banner.append(adopt);
+  let latest;
+  const display=value=>JSON.stringify(value,(key,item)=>/^(sourceRevision|updatedAt|createdAt)$/.test(key)?undefined:/^(headers|environment|password|token|apiKey)$/i.test(key)?'[敏感配置未展示]':item,2);
+  compare.onclick=async()=>{
+    compare.disabled=true;
+    try{
+      const endpoint=kind.startsWith('generic-agents:')?`/api/workflows/${encodeURIComponent(kind.slice(15))}/agents`:kind==='agents'?`/api/agents/${encodeURIComponent(id)}`:`/api/${kind}`;
+      const value=await api(endpoint);
+      latest=Array.isArray(value)?value.find(item=>item.id===id):value;
+      if(!latest?.sourceRevision)throw new Error('该定义已删除或不可读取，当前草稿继续保留');
+      const draft={};container.querySelectorAll('input[name],textarea[name],select[name]').forEach(el=>{if(el.type==='file'||el.type==='password')return;if(el.type==='checkbox'||el.type==='radio'){if(el.checked)(draft[el.name]??=[]).push(el.value)}else draft[el.name]=el.value});
+      output.textContent=`服务器最新内容\n${display(latest)}\n\n当前未保存草稿\n${display(draft)}`;adopt.hidden=false;
+    }catch(err){output.textContent=err.message}finally{compare.disabled=false}
+  };
+  adopt.onclick=()=>{if(!latest)return;onReviewed(latest);message.textContent='已采用刚才比较的基线，草稿仍未保存。请检查后再次点击保存。';adopt.hidden=true};
+  container.prepend(banner);return true;
 }
 const toastActions=new Map();
 function toast(message, type='info', duration=2600){

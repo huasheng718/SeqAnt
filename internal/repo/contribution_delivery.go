@@ -72,6 +72,24 @@ func (r *DeliveryRepo) ContributionIntegration(id string) (domain.ContributionIn
 	return value, true
 }
 
+// ContributionIntegrationsForRun returns only the controller snapshots owned by
+// this Run. Decode errors fail closed instead of hiding a corrupt integration.
+func (r *DeliveryRepo) ContributionIntegrationsForRun(runID string) ([]domain.ContributionIntegration, error) {
+	var rows []contributionIntegrationRow
+	if err := r.DB.Where("run_id = ?", runID).Order("created_at ASC, id ASC").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	values := make([]domain.ContributionIntegration, 0, len(rows))
+	for _, row := range rows {
+		var value domain.ContributionIntegration
+		if err := json.Unmarshal([]byte(row.Payload), &value); err != nil || value.ID != row.ID || value.RunID != runID {
+			return nil, errors.New("invalid stored controller integration")
+		}
+		values = append(values, value)
+	}
+	return values, nil
+}
+
 // DeliveryContributionBlobReferences returns bundle digests retained by the
 // immutable controller integration records. Publication rows refer to their
 // integration ID, so retaining the integration reference also protects the

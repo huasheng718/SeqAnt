@@ -297,6 +297,8 @@ type runRow struct {
 	Repository         []byte     `gorm:"column:repository;type:json"`
 	Snapshot           []byte     `gorm:"column:snapshot;type:json"`
 	ExecutionContext   []byte     `gorm:"column:execution_context;type:json"`
+	ExecutionBudget    []byte     `gorm:"column:execution_budget;type:json"`
+	Intelligence       []byte     `gorm:"column:intelligence;type:json"`
 	UsageJSON          []byte     `gorm:"column:usage_json;type:json"`
 	ToolCalls          int        `gorm:"column:tool_calls"`
 	TelemetrySequence  int64      `gorm:"column:telemetry_sequence"`
@@ -719,13 +721,13 @@ func allModels() []any {
 		issueRow{}, issueCommentRow{}, taskRow{},
 		runAdmissionLockRow{}, runAdmissionMembershipRow{}, runWorkspaceCleanupParticipantRow{}, runRow{}, runNodeRow{}, runEventRow{}, runTelemetryRow{}, runLogRow{}, runArtifactRow{}, runEvalRow{},
 		runPreviewRow{}, previewSessionRow{}, previewBlobRow{}, WorkspaceCheckpoint{}, workspaceCheckpointChunk{},
-		mrDeliveryStateRow{}, contributionIntegrationRow{}, contributionPublicationRow{}, definitionRevisionRow{},
+		mrDeliveryStateRow{}, contributionIntegrationRow{}, contributionPublicationRow{}, teamGitProposalRow{}, definitionRevisionRow{},
 		runnerRow{}, runnerTaskRow{}, runnerTaskEventRow{}, runnerContributionBlobRow{}, userRunnerPrefRow{},
 		assistantSessionRow{}, assistantTaskRow{}, assistantGenerationRow{}, assistantSessionReadRow{},
 		chatRoomRow{}, chatMessageRow{},
 		requirementSpaceRow{}, spaceMemberRow{}, spaceArtifactRow{}, spaceArtifactRevisionRow{}, spaceThreadRow{},
 		engineInstanceRow{},
-		knowledgeSettingsRow{}, knowledgeSubmissionRow{},
+		knowledgeExtractionRow{}, knowledgeSettingsRow{}, knowledgeSubmissionRow{}, teamReleaseRow{}, governedMemoryRow{}, memoryProviderMirrorRow{}, memoryRecallReceiptRow{}, skillCandidateRow{},
 		pageFeedbackRow{}, pageFeedbackImageRow{},
 	}
 }

@@ -49,7 +49,7 @@ func shouldCommitNodeOutcome(r domain.Run, nr *domain.NodeRun, generation, attem
 
 func (e *Engine) nodeFailedAt(runID string, node domain.WorkflowNode, attempt, generation int, err error, allowReject bool) {
 	shouldReject := false
-	configurationFailure := errors.Is(err, ErrWorkspaceControlConfiguration)
+	configurationFailure := errors.Is(err, ErrWorkspaceControlConfiguration) || errors.Is(err, domain.ErrExecutionBudgetStopped) || errors.Is(err, domain.ErrExecutionBudgetUnsupported)
 	e.updateRun(runID, func(r *domain.Run) {
 		nr := r.Nodes[node.ID]
 		if !shouldCommitNodeOutcome(*r, nr, generation, attempt, false) {
@@ -90,7 +90,7 @@ func (e *Engine) nodeFailedAt(runID string, node domain.WorkflowNode, attempt, g
 }
 
 func shouldRetryFailedAttempt(node domain.WorkflowNode, attempt int, err error) bool {
-	if errors.Is(err, ErrWorkspaceControlConfiguration) || errors.Is(err, domain.ErrExecutionDeadlineExceeded) {
+	if errors.Is(err, ErrWorkspaceControlConfiguration) || errors.Is(err, domain.ErrExecutionDeadlineExceeded) || errors.Is(err, domain.ErrExecutionBudgetStopped) || errors.Is(err, domain.ErrExecutionBudgetUnsupported) {
 		return false
 	}
 	if err != nil && (isMaxTurnsErr(err) || strings.Contains(err.Error(), "verification ") || runtime.IsCwdMountFailure(err)) {

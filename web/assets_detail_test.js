@@ -29,7 +29,10 @@ const ctx = {
   renderMarkdown: md => `<p>${md}</p>`,
   lines: v => String(v || '').split('\n').map(x => x.trim()).filter(Boolean),
   toast: msg => calls.push(['toast', msg]),
-  api: async (url, opts) => { calls.push(['api', url, opts]); return {}; },
+  api: async (url, opts) => {
+    calls.push(['api', url, opts]);
+    return opts?.method === 'PUT' ? { ...JSON.parse(opts.body), sourceRevision: 'saved-revision' } : {};
+  },
   afConfirm: async () => true,
   activeViewName: () => ctx.state.assetType,
   $: () => null,
@@ -40,6 +43,7 @@ const ctx = {
 };
 vm.createContext(ctx);
 vm.runInContext(assetsSrc, ctx);
+vm.runInContext(slice(appSrc, 'function sourceEditHeaders(', 'const toastActions='), ctx);
 vm.runInContext(slice(appSrc, 'function routePart(', 'function runRouteId('), ctx);
 vm.runInContext(slice(appSrc, 'function assetRouteId(', 'async function applyAgentRoute('), ctx);
 
@@ -152,13 +156,13 @@ assert.strictEqual(ctx.assetViewHash('skills', '__new__'), '#/skills/new');
 assert.strictEqual(ctx.assetViewHash('skills'), '#/skills');
 
 // ---------- Form fields and save payloads per type ----------
-function fakeForm(values) {
+function fakeForm(values, sourceRevision) {
   const elements = {};
   for (const [name, value] of Object.entries(values)) elements[name] = typeof value === 'boolean' ? { checked: value, value: '' } : { value };
-  return { elements, querySelectorAll: () => [], querySelector: () => null };
+  return { elements, dataset: { sourceRevision }, querySelectorAll: () => [], querySelector: () => null };
 }
 function renderedFieldNames(type, asset) {
-  const form = { innerHTML: '', elements: { driver: { value: asset.driver || 'local', form: null } }, querySelectorAll: () => [], querySelector: () => null };
+  const form = { innerHTML: '', dataset: {}, elements: { driver: { value: asset.driver || 'local', form: null } }, querySelectorAll: () => [], querySelector: () => null };
   const saved$ = ctx.$;
   ctx.$ = sel => (sel === '#assetForm' ? form : null);
   ctx.state.selectedAsset = asset.id;
@@ -170,33 +174,38 @@ async function save(type, existing, values) {
   reset(type, { [type]: [existing] });
   ctx.state.selectedAsset = existing.id;
   calls.length = 0;
-  await ctx.saveAsset({ preventDefault() {}, currentTarget: fakeForm(values) });
+  const form = fakeForm(values, existing.sourceRevision);
+  await ctx.saveAsset({ preventDefault() {}, currentTarget: form });
   const put = calls.find(c => c[0] === 'api');
   assert.ok(put, `${type} save issued no request: ${JSON.stringify(calls)}`);
   assert.strictEqual(put[1], `/api/${type}`);
+  if (ctx.isProjectSharedAsset(type)) {
+    assert.strictEqual(put[2].headers['If-Match'], `"${existing.sourceRevision}"`, 'save uses the observed source baseline');
+    assert.strictEqual(form.dataset.sourceRevision, 'saved-revision', 'successful save updates the form baseline');
+  }
   return JSON.parse(put[2].body);
 }
 
 (async () => {
   const base = { name: 'N', description: 'D' };
   const cases = [
-    ['rules', { id: 'r', projectId: 'p1', shared: true, priority: 100, content: 'x' },
+    ['rules', { id: 'r', sourceRevision: 'rule-base', projectId: 'p1', shared: true, priority: 100, content: 'x' },
       { id: 'r', ...base, priority: '120', content: '# hi', global: false },
       { id: 'r', name: 'N', description: 'D', projectId: 'p1', shared: true, priority: 120, content: '# hi', global: false, workflowIds: [] },
       ['content', 'description', 'global', 'id', 'name', 'priority']],
-    ['skills', { id: 's', projectId: 'p1', fileRefs: [{ path: 'SKILL.md', size: 3 }], content: 'c', files: {} },
+    ['skills', { id: 's', sourceRevision: 'skill-base', projectId: 'p1', fileRefs: [{ path: 'SKILL.md', size: 3 }], content: 'c', files: {} },
       { id: 's', ...base },
       { id: 's', name: 'N', description: 'D', projectId: 'p1', shared: false },
       ['description', 'id', 'name']],
-    ['dockerfiles', { id: 'd', projectId: 'p1' },
+    ['dockerfiles', { id: 'd', sourceRevision: 'dockerfiles-base', projectId: 'p1' },
       { id: 'd', ...base, content: 'FROM x', files: '{"a":"b"}' },
       { id: 'd', name: 'N', description: 'D', projectId: 'p1', shared: false, content: 'FROM x', files: { a: 'b' } },
       ['content', 'description', 'files', 'id', 'name']],
-    ['environments', { id: 'e', projectId: 'p1' },
+    ['environments', { id: 'e', sourceRevision: 'environments-base', projectId: 'p1' },
       { id: 'e', ...base, variables: '{"V":"1"}', pathEntries: 'bin\n sbin ', installScript: 'echo' },
       { id: 'e', name: 'N', description: 'D', projectId: 'p1', shared: false, variables: { V: '1' }, pathEntries: ['bin', 'sbin'], installScript: 'echo' },
       ['description', 'id', 'installScript', 'name', 'pathEntries', 'variables']],
-    ['sandboxes', { id: 'x', projectId: 'p1', driver: 'docker' },
+    ['sandboxes', { id: 'x', sourceRevision: 'sandboxes-base', projectId: 'p1', driver: 'docker' },
       { id: 'x', ...base, driver: 'docker', environment: '{}', dockerfileId: 'df', readOnlyRootFS: true, environmentId: 'env' },
       { id: 'x', name: 'N', description: 'D', projectId: 'p1', shared: false, driver: 'docker', environment: {}, dockerfileId: 'df', readOnlyRootFS: true },
       ['description', 'dockerfileId', 'driver', 'environment', 'environmentId', 'id', 'name', 'readOnlyRootFS']],

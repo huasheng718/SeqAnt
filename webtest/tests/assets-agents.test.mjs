@@ -6,7 +6,7 @@ test('asset catalog filters, opens, marks dirty, shares, saves, and deletes asse
   const app = await loadApp();
   t.after(app.close);
   app.evaluate(`afConfirm=async()=>true`);
-  app.evaluate(`state.assetType='rules';state.ruleScope='project';state.assetQuery='style';switchView('rules');renderAssets()`);
+  app.evaluate(`state.data.rules[0].sourceRevision='rule-base';state.assetType='rules';state.ruleScope='project';state.assetQuery='style';switchView('rules');renderAssets()`);
   assert.match(app.document.querySelector('#assetList').textContent, /Code style/);
   app.evaluate(`state.assetQuery='missing';renderAssets()`);
   assert.match(app.document.querySelector('#assetList').textContent, /没有匹配/);
@@ -17,9 +17,11 @@ test('asset catalog filters, opens, marks dirty, shares, saves, and deletes asse
   name.dispatchEvent(new app.window.Event('input', { bubbles: true }));
   app.evaluate(`markAssetDirty()`);
   assert.equal(app.evaluate(`state.assetDirty`), true);
-  app.router.put('/api/rules', (call) => ({ status: 200, body: call.body }));
+  let ruleSave=0;
+  app.router.put('/api/rules', (call) => ({ status: 200, body: {...call.body,sourceRevision:`rule-save-${++ruleSave}`} }));
   await app.evaluate(`toggleAssetShare('rule-1')`);
   assert.equal(app.evaluate(`state.data.rules[0].shared`), true);
+  assert.equal(app.router.calls.filter(c=>c.path==='/api/rules'&&c.method==='PUT').at(-1).options.headers['If-Match'],'"rule-base"');
   await app.evaluate(`toggleAssetShare('rule-1')`);
   assert.equal(app.evaluate(`state.data.rules[0].shared`), false);
 
@@ -30,10 +32,12 @@ test('asset catalog filters, opens, marks dirty, shares, saves, and deletes asse
   const save = app.router.calls.filter((c) => c.path === '/api/rules' && c.method === 'PUT').at(-1);
   assert.equal(save.body.name, 'Strict style');
   assert.equal(save.body.priority, 250);
+  assert.equal(save.options.headers['If-Match'],'"rule-save-2"');
 
   app.router.delete('/api/rules?id=rule-1', { ok: true });
   await app.evaluate(`deleteAsset('rule-1')`);
   assert.equal(app.evaluate(`state.data.rules.some(x=>x.id==='rule-1')`), false);
+  assert.equal(app.router.calls.find(c=>c.path==='/api/rules'&&c.search==='?id=rule-1'&&c.method==='DELETE').options.headers['If-Match'],'"rule-save-3"');
 });
 
 test('asset forms save environment and sandbox-specific JSON fields', async (t) => {
@@ -79,17 +83,19 @@ test('agent catalog search, presets, validation, persistence, clone, and delete 
   app.evaluate(`setAgentCreateStep(3)`);
   assert.match(app.document.querySelector('#agentCreateReview').textContent, /研发工程师|开发实现/);
 
-  app.router.put('/api/agents', (call) => ({ status: 200, body: call.body }));
+  app.router.put('/api/agents', (call) => ({ status: 200, body: {...call.body,sourceRevision:'agent-created'} }));
   await app.evaluate(`persistAgent($('#agentForm'))`);
   const created = app.router.calls.find((c) => c.path === '/api/agents' && c.method === 'PUT');
   assert.equal(created.body.name, '研发工程师');
   assert.equal(created.body.executorId, 'codebuddy');
+  assert.equal(created.options.headers['If-None-Match'],'*');
   assert.ok(app.evaluate(`state.data.agents.some(a=>a.name==='研发工程师')`));
 
-  app.router.post('/api/agents/agent-1/clone', { id: 'agent-copy', projectId: 'project-1', name: 'Developer copy' });
+  app.router.post('/api/agents/agent-1/clone', { id: 'agent-copy', projectId: 'project-1', name: 'Developer copy',sourceRevision:'copy-base' });
   await app.evaluate(`cloneAgent('agent-1')`);
   assert.ok(app.evaluate(`state.data.agents.some(a=>a.id==='agent-copy')`));
   app.router.delete('/api/agents/agent-copy', { ok: true });
   await app.evaluate(`deleteAgent('agent-copy')`);
   assert.equal(app.evaluate(`state.data.agents.some(a=>a.id==='agent-copy')`), false);
+  assert.equal(app.router.calls.find(c=>c.path==='/api/agents/agent-copy'&&c.method==='DELETE').options.headers['If-Match'],'"copy-base"');
 });

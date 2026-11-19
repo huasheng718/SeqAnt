@@ -28,11 +28,11 @@ test('multi-file skill upload reads files concurrently and replaces metadata', a
   const app = await loadApp();
   t.after(app.close);
   app.evaluate(`
-    state.data.skills=[{id:'skill-upload',projectId:'project-1',name:'Upload Skill',fileRefs:[]}];
+    state.data.skills=[{id:'skill-upload',projectId:'project-1',name:'Upload Skill',sourceRevision:'upload-base',fileRefs:[]}];
     state.assetType='skills';state.selectedAsset='skill-upload';renderAssets();
   `);
   const uploaded = {
-    id: 'skill-upload', projectId: 'project-1', name: 'Upload Skill',
+    id: 'skill-upload', projectId: 'project-1', name: 'Upload Skill',sourceRevision:'upload-accepted',
     fileRefs: [{ path: 'SKILL.md', size: 12 }, { path: 'scripts/test.js', size: 16 }],
   };
   app.router.post('/api/skills/skill-upload/files', uploaded);
@@ -43,7 +43,9 @@ test('multi-file skill upload reads files concurrently and replaces metadata', a
   const input = { files, value: 'selected' };
   await app.evaluate(`uploadSkillFiles`).call(null, input);
   await settle(5);
-  assert.ok(app.router.calls.some((call) => call.path === '/api/skills/skill-upload/files'));
+  const upload=app.router.calls.find((call) => call.path === '/api/skills/skill-upload/files');
+  assert.ok(upload);assert.equal(upload.options.headers['If-Match'],'"upload-base"');
+  assert.equal(app.evaluate('state.data.skills[0].sourceRevision'),'upload-accepted');
   assert.match(app.evaluate(`state.data.skills[0].fileRefs.map(x=>x.path).join(',')`), /SKILL\.md/);
 });
 

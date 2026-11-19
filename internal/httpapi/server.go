@@ -92,7 +92,11 @@ type Server struct {
 	botInteractions *botInteractionHandlers
 	botIdentities   *botIdentityHandlers
 	know            *knowledgeHandlers // knowledge.go / knowledge_proxy.go
-	feedback        *feedbackHandlers  // page_feedback.go
+	intelligence    *intelligenceHandlers
+	extractions     *extractionHandlers
+	skillCandidates *skillCandidateHandlers
+	teamDelivery    *teamDeliveryHandlers
+	feedback        *feedbackHandlers // page_feedback.go
 }
 
 func New(s *repo.Store, e *engine.Engine, syncSvc *tracker.Service, basicUser, basicPass string) *gin.Engine {
@@ -169,7 +173,11 @@ func newWithNotifications(s *repo.Store, e *engine.Engine, syncSvc *tracker.Serv
 		syncAPI:         &syncHandlers{deps: d},
 		know:            &knowledgeHandlers{deps: d, svc: knowledge.NewService(d.repo, randomID), activity: &knowledgeActivityLog{}},
 		feedback:        &feedbackHandlers{deps: d},
+		intelligence:    &intelligenceHandlers{deps: d},
 	}
+	api.extractions = &extractionHandlers{deps: d, authorizeProject: api.intelligence.authorizeProject}
+	api.skillCandidates = &skillCandidateHandlers{deps: d, authorizeProject: api.intelligence.authorizeProject}
+	api.teamDelivery = &teamDeliveryHandlers{deps: d, authorizeProject: api.intelligence.authorizeProject}
 	e.WorkspaceActive = func(run domain.Run) bool { return api.runs.terminals.HasRunScope(run.ID) }
 	api.catalog.notifications = api.notifications
 	api.schedule.notifications = api.notifications
@@ -177,6 +185,7 @@ func newWithNotifications(s *repo.Store, e *engine.Engine, syncSvc *tracker.Serv
 		e.MergeIntoBranch = syncSvc.EnsureAndMergeBranchMR
 		e.FindBranchMR = syncSvc.FindBranchMR
 		e.CreateContributionPR = syncSvc.EnsureOpenBranchPRAtSHA
+		e.DiscoverContributionPR = syncSvc.FindOpenBranchPRAtSHA
 		e.PublishContributionObjects = syncSvc.PublishContributionObjects
 	}
 	// Wake long-polling CLI runners the moment the engine queues a task.
@@ -217,7 +226,7 @@ func newWithNotifications(s *repo.Store, e *engine.Engine, syncSvc *tracker.Serv
 	if basicUser != "" && basicPass != "" {
 		g.Use(basicAuth(basicUser, basicPass))
 	}
-	g.Use(d.runWriteGuard(), d.assetWriteGuard())
+	g.Use(api.intelligence.governedRunReadGuard(), d.runWriteGuard(), d.assetWriteGuard())
 
 	g.GET("/api/notification-bots", api.notifications.bots)
 	g.POST("/api/notification-bots", api.notifications.bots)
@@ -497,6 +506,40 @@ func newWithNotifications(s *repo.Store, e *engine.Engine, syncSvc *tracker.Serv
 	// --- runs ---
 	g.GET("/api/runs", api.runs.runs)
 	g.POST("/api/runs", api.runs.runs)
+	g.POST("/api/projects/:id/knowledge-extractions", api.extractions.create)
+	g.GET("/api/projects/:id/knowledge-extractions/:extractionId", api.extractions.detail)
+	g.GET("/api/projects/:id/skill-candidates", api.skillCandidates.candidates)
+	g.POST("/api/projects/:id/skill-candidates", api.skillCandidates.candidates)
+	g.GET("/api/projects/:id/skill-candidates/:candidateId", api.skillCandidates.candidate)
+	g.POST("/api/projects/:id/skill-candidates/:candidateId/decision", api.skillCandidates.decide)
+	g.GET("/api/projects/:id/team-git-proposals", api.teamDelivery.list)
+	g.POST("/api/projects/:id/team-git-proposals", api.teamDelivery.prepare)
+	g.GET("/api/projects/:id/team-git-proposals/:proposalId", api.teamDelivery.detail)
+	g.POST("/api/projects/:id/team-git-proposals/:proposalId/decision", api.teamDelivery.decision)
+	g.POST("/api/projects/:id/team-git-proposals/:proposalId/publish", api.teamDelivery.publish)
+	g.POST("/api/projects/:id/team-git-proposals/:proposalId/reconcile", api.teamDelivery.reconcile)
+	g.POST("/api/projects/:id/team-git-proposals/:proposalId/cancel", api.teamDelivery.cancel)
+	g.GET("/api/projects/:id/default-upgrades", api.intelligence.defaultUpgrades)
+	g.GET("/api/projects/:id/team-releases", api.intelligence.teamReleases)
+	g.POST("/api/projects/:id/team-releases", api.intelligence.teamReleases)
+	g.GET("/api/projects/:id/team-releases/:releaseId", api.intelligence.teamRelease)
+	g.POST("/api/projects/:id/team-releases/:releaseId/revoke", api.intelligence.revokeTeamRelease)
+	g.POST("/api/projects/:id/team-releases/:releaseId/restore", api.intelligence.restoreTeamRelease)
+	g.POST("/api/projects/:id/team-imports/preview", api.intelligence.previewTeamImport)
+	g.POST("/api/projects/:id/team-imports/publish", api.intelligence.publishTeamImport)
+	g.POST("/api/projects/:id/team-releases/:releaseId/git-export-preview", api.intelligence.previewTeamExport)
+	g.POST("/api/projects/:id/team-releases/:releaseId/git-update-preview", api.intelligence.previewTeamUpdate)
+	g.GET("/api/projects/:id/memories", api.intelligence.memories)
+	g.POST("/api/projects/:id/memories", api.intelligence.memories)
+	g.POST("/api/projects/:id/memories/:memoryId/decision", api.intelligence.decideMemory)
+	g.POST("/api/projects/:id/memory-recall", api.intelligence.recallMemory)
+	g.POST("/api/projects/:id/memory-provider/sync", api.intelligence.syncMemoryProvider)
+	g.PUT("/api/agents/:id/distribution", api.catalog.distribution)
+	g.PUT("/api/rules/:id/distribution", api.catalog.distribution)
+	g.PUT("/api/skills/:id/distribution", api.catalog.distribution)
+	g.PUT("/api/mcp-servers/:id/distribution", api.mcp.distribution)
+	g.POST("/api/projects/:id/context/resolve", api.intelligence.resolveContext)
+	g.GET("/api/runs/:id/contributions", api.runs.listContributions)
 	g.POST("/api/runs/:id/contributions/integrate", api.runs.integrateContributions)
 	g.GET("/api/runs/:id/contributions/:integrationId/content", api.runs.integrationContent)
 	g.POST("/api/runs/:id/contributions/:integrationId/gates", api.runs.recordContributionGate)
@@ -739,11 +782,15 @@ func (s *Server) bootstrap(c *gin.Context) {
 		respond(c, err)
 		return
 	}
-	var currentUserID int64
-	if current, ok := s.requestUser(c.Request, true); ok {
-		currentUserID = current.ID
-	}
-	mcpServers = domain.PublicMCPServers(withMarketIcons(visibleMCPServersForUser(mcpServers, currentUserID)))
+	allowed := s.catalogReadPredicate(c)
+	agents = filterCatalogRead(agents, allowed, agentReadScope)
+	rules = filterCatalogRead(rules, allowed, ruleReadScope)
+	skills = filterCatalogRead(skills, allowed, skillReadScope)
+	workflows = filterCatalogRead(workflows, allowed, workflowReadScope)
+	dockerfiles = filterCatalogRead(dockerfiles, allowed, dockerfileReadScope)
+	environments = filterCatalogRead(environments, allowed, environmentReadScope)
+	sandboxes = filterCatalogRead(sandboxes, allowed, sandboxReadScope)
+	mcpServers = domain.PublicMCPServers(withMarketIcons(s.readableMCPServers(c, mcpServers)))
 	sharedModels := s.repo.SharedCodeBuddyModels()
 	sponsoredModel := ""
 	if len(sharedModels) > 0 {
