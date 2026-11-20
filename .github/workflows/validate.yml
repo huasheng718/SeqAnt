@@ -14,7 +14,8 @@ defaults:
 
 jobs:
   validate:
-    runs-on: ubuntu-latest
+    # Python 3.8 is not available on the rolling Ubuntu 26.04 image.
+    runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
       matrix:

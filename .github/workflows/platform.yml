@@ -74,6 +74,8 @@ jobs:
       AGENTFLOW_E2E_DOCKER: '1'
       LOOPFORGE_UNCONFIGURED_USER: e2e-no-key
       LOOPFORGE_UNCONFIGURED_PASSWORD_FILE: ${{ github.workspace }}/.local/no-key-password
+      # This disposable fixture exercises ordinary self-signup explicitly.
+      AGENTFLOW_ALLOW_SIGNUP: 'true'
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: actions/setup-go@v6
