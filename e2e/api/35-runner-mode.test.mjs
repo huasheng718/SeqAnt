@@ -49,7 +49,8 @@ before(async () => {
     return found?.status === 'online' ? found : null;
   }, { timeoutMs: 60_000 }).catch(err => { throw new Error(`${err.message}\n${log.slice(-2000)}`); });
   runnerId = runner.id;
-  assert.ok(runner.runnerVersion >= '0.3.0', `runner ${runner.runnerVersion} predates reported outputs`);
+  const [major, minor] = runner.runnerVersion.split('.').map(Number);
+  assert.ok(major > 0 || (major === 0 && minor >= 3), `runner ${runner.runnerVersion} predates reported outputs`);
   await put('/api/runners/default', { runnerId });
 });
 

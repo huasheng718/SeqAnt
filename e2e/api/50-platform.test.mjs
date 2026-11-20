@@ -104,7 +104,14 @@ test('schedule job: a manual trigger dispatches todo requirements of the project
     return items.length ? items : null;
   }, { timeoutMs: 120_000 });
   trackRun(runs[0].id);
-  await waitRun(runs[0].id, r => r.status === 'succeeded', { label: 'scheduled run succeeded' });
+  const run = await waitRun(runs[0].id, r => ['succeeded', 'failed'].includes(r.status), { label: 'scheduled execution settled' });
+  assert.equal(run.nodes.s.status, 'succeeded');
+  if (run.executionContext?.deliveryPolicy === 'controlled_pr') {
+    assert.equal(run.status, 'failed', 'legacy automatic integration must remain disabled');
+    assert.notEqual((await get(`/api/issues/${issue.id}`)).status, 'done', 'execution must not complete the business requirement');
+  } else {
+    assert.equal(run.status, 'succeeded');
+  }
   const after = list(await get('/api/schedule-jobs')).find(j => j.id === id);
   assert.ok(['success', 'waiting', 'running'].includes(after.lastStatus), `job status ${after.lastStatus}: ${after.lastError || ''}`);
 });

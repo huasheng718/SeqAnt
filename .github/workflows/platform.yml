@@ -41,22 +41,49 @@ jobs:
         run: go test -p=2 ./... -count=1 -timeout=600s -skip "$REAL_BROWSER_TESTS" -covermode=set -coverpkg=agentflow/internal/... -coverprofile="${{ runner.temp }}/go.cover"
       - name: Real-browser Go tests
         run: go test -p=1 ./internal/httpapi ./internal/runner ./internal/runtime -count=1 -timeout=300s -run "$REAL_BROWSER_TESTS" -v -covermode=set -coverpkg=agentflow/internal/... -coverprofile="${{ runner.temp }}/go-browser.cover"
+      - name: Script isolation privilege acceptance in a separate test process
+        run: |
+          go test -c ./internal/scriptview -covermode=set -coverpkg=agentflow/internal/... -o "${{ runner.temp }}/scriptview.test"
+          sudo "${{ runner.temp }}/scriptview.test" -test.v -test.timeout=60s \
+            -test.run='^(TestApplyMaskValidationAndFilesystemBranches|TestRemoveMasksRejectsWritableSources|TestZDropPrivilegesForDisposableTestProcess)$' \
+            -test.coverprofile="${{ runner.temp }}/go-scriptview.cover"
+      - name: Install pinned CLIs for local protocol acceptance
+        run: npm install --global @openai/codex@0.162.1 @anthropic-ai/claude-code@2.1.300
+      - name: Check real CLI credentials, MCP, stream parsing and native-tool restrictions
+        env:
+          AGENTFLOW_TEST_NATIVE_PROVIDERS: '1'
+        run: go test -p=2 ./internal/httpapi ./internal/runtime -run 'TestAssistantNativeProviderGateway|TestNativeProviderCustomGateway' -count=1 -v -covermode=set -coverpkg=agentflow/internal/... -coverprofile="${{ runner.temp }}/go-native.cover"
+      - name: MySQL cross-store durability and concurrency acceptance
+        run: |
+          set -euo pipefail
+          container="superagent-p0-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          envfile=$(mktemp)
+          trap 'docker rm -fv "$container" >/dev/null 2>&1 || true; rm -f "$envfile"' EXIT
+          python3 -c 'import os,secrets,sys; os.chmod(sys.argv[1],0o600); open(sys.argv[1],"w").write("MYSQL_ROOT_PASSWORD="+secrets.token_hex(24)+"\n")' "$envfile"
+          docker run -d --name "$container" --tmpfs /var/lib/mysql:rw,size=1g \
+            -p 127.0.0.1:33316:3306 --env-file "$envfile" mysql:8.4
+          ready=0
+          for attempt in $(seq 1 90); do
+            if docker exec "$container" sh -lc 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot -h127.0.0.1 --protocol=tcp -e "SELECT 1"' >/dev/null 2>&1; then ready=1; break; fi
+            sleep 1
+          done
+          test "$ready" = 1
+          for suite in budget releases candidates distribution release-distribution source-guard extractions; do
+            GOFLAGS="-covermode=set -coverpkg=agentflow/internal/... -coverprofile=${RUNNER_TEMP}/go-mysql-${suite}.cover" \
+              python3 scripts/test-execution-budget-mysql.py --container "$container" --suite "$suite"
+          done
       - name: Coverage gate regression tests
         run: python3 scripts/test-coverage-go.py -v
       - name: Go statement coverage gate
         run: |
           min=$(tr -d '[:space:]' < scripts/coverage-go.min)
           test -n "$min"
-          bash scripts/coverage-go.sh --profile "${{ runner.temp }}/go.cover" --profile "${{ runner.temp }}/go-browser.cover" --min "$min"
+          profiles=(--profile "$RUNNER_TEMP/go.cover" --profile "$RUNNER_TEMP/go-browser.cover" --profile "$RUNNER_TEMP/go-scriptview.cover" --profile "$RUNNER_TEMP/go-native.cover")
+          for profile in "$RUNNER_TEMP"/go-mysql-*.cover; do profiles+=(--profile "$profile"); done
+          bash scripts/coverage-go.sh "${profiles[@]}" --min "$min"
       - name: Browser-free UI tests for the platform console
         run: npm ci --no-audit --no-fund && npm run coverage
         working-directory: webtest
-      - name: Install pinned CLIs for local protocol acceptance
-        run: npm install --global @openai/codex@0.162.1 @anthropic-ai/claude-code@2.1.300
-      - name: Check real CLI credentials, MCP, stream parsing and native-tool restrictions
-        env:
-          AGENTFLOW_TEST_NATIVE_PROVIDERS: '1'
-        run: go test -p=2 ./internal/httpapi ./internal/runtime -run 'TestAssistantNativeProviderGateway|TestNativeProviderCustomGateway' -count=1 -v
       - run: go vet ./...
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
       - run: python3 scripts/collect-go-notices.py

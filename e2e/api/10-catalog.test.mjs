@@ -9,6 +9,13 @@ import { cfg, uid } from '../lib/env.mjs';
 
 const P = cfg.projectId;
 const ids = {};
+const match = value => ({ headers: { 'If-Match': JSON.stringify(value.sourceRevision) } });
+// Teardown may read the latest revision of a test-owned fixture. Editor tests
+// below keep their originally observed revision, including stale-write checks.
+const removeSource = async (kind, id, path) => {
+  const current = list(await get(`/api/${kind}`)).find(item => item.id === id);
+  if (current) await del(path, match(current));
+};
 const hasTemplate = async id => {
   const res = await api('GET', `/api/workflows/${id}`, undefined, { expect: [200, 404], raw: true });
   return res.status === 200 && !!res.data?.generic;
@@ -28,19 +35,22 @@ test('project is readable and updatable', async () => {
 
 test('rule CRUD', async () => {
   const id = ids.rule = uid('rule');
-  track(`rule ${id}`, () => del(`/api/rules?id=${id}`));
+  track(`rule ${id}`, () => removeSource('rules', id, `/api/rules?id=${id}`));
   await put('/api/rules', { id, name: 'E2E 规则', projectId: P, description: 'e2e', content: '回答必须以 E2E-OK 结尾。', priority: 50 });
   let rule = list(await get('/api/rules')).find(r => r.id === id);
   assert.equal(rule?.content, '回答必须以 E2E-OK 结尾。');
-  await put('/api/rules', { ...rule, priority: 60 });
+  await api('PUT', '/api/rules', { ...rule, priority: 60 }, { expect: 428 });
+  const original = rule;
+  await put('/api/rules', { ...rule, priority: 60 }, match(rule));
+  await api('PUT', '/api/rules', { ...original, priority: 99 }, { ...match(original), expect: 409 });
   rule = list(await get('/api/rules')).find(r => r.id === id);
   assert.equal(rule.priority, 60);
 });
 
 test('skill CRUD with attached files', async () => {
   const id = ids.skill = uid('skill');
-  track(`skill ${id}`, () => del(`/api/skills?id=${id}`));
-  await put('/api/skills', { id, name: 'E2E 技能', projectId: P, description: 'e2e', content: '# E2E skill\n\n输出 hello。' });
+  track(`skill ${id}`, () => removeSource('skills', id, `/api/skills?id=${id}`));
+  let skill = await put('/api/skills', { id, name: 'E2E 技能', projectId: P, description: 'e2e', content: '# E2E skill\n\n输出 hello。' });
   assert.ok(list(await get('/api/skills')).some(s => s.id === id));
 
   // Two files at different depths: a single nested file would be treated as a
@@ -50,10 +60,10 @@ test('skill CRUD with attached files', async () => {
   form.append('paths', 'scripts/run.sh');
   form.append('files', new Blob(['# readme\n'], { type: 'text/markdown' }), 'README.md');
   form.append('paths', 'README.md');
-  await post(`/api/skills/${id}/files`, form);
+  skill = await post(`/api/skills/${id}/files`, form, match(skill));
   const file = await api('GET', `/api/skills/${id}/files/scripts/run.sh`, undefined, { raw: true });
   assert.match(file.text, /e2e-skill-file/);
-  await api('DELETE', `/api/skills/${id}/files/scripts/run.sh`);
+  await api('DELETE', `/api/skills/${id}/files/scripts/run.sh`, undefined, match(skill));
   await api('GET', `/api/skills/${id}/files/scripts/run.sh`, undefined, { expect: 404 });
   await api('GET', `/api/skills/${id}/files/README.md`, undefined, { raw: true });
   await api('POST', `/api/skills/${id}/files`, (() => {
@@ -61,7 +71,7 @@ test('skill CRUD with attached files', async () => {
     bad.append('files', new Blob(['x']), 'x');
     bad.append('paths', '../escape.sh');
     return bad;
-  })(), { expect: 400 });
+  })(), { ...match(list(await get('/api/skills')).find(item => item.id === id)), expect: 400 });
 });
 
 test('custom MCP server CRUD with attached files', async () => {
@@ -72,21 +82,21 @@ test('custom MCP server CRUD with attached files', async () => {
   // The server namespaces custom ids per scope (mcp-custom-<id>-project-<p>).
   const id = ids.mcp = created.id;
   assert.ok(id, `custom install returned no id: ${JSON.stringify(created)}`);
-  track(`mcp ${id}`, () => del(`/api/mcp-servers?id=${id}`));
+  track(`mcp ${id}`, () => removeSource('mcp-servers', id, `/api/mcp-servers?id=${id}`));
   let server = list(await get('/api/mcp-servers')).find(s => s.id === id);
   assert.equal(server?.projectId, P);
   assert.equal(server.scope, 'project');
-  await put('/api/mcp-servers', { ...server, timeoutSec: 45 });
+  await put('/api/mcp-servers', { ...server, timeoutSec: 45 }, match(server));
   server = list(await get('/api/mcp-servers')).find(s => s.id === id);
   assert.equal(server.timeoutSec, 45);
 
   const form = new FormData();
   form.append('files', new Blob(['console.log("e2e")\n'], { type: 'text/javascript' }), 'server.js');
   form.append('paths', 'server.js');
-  await post(`/api/mcp-servers/${id}/files`, form);
+  server = await post(`/api/mcp-servers/${id}/files`, form, match(server));
   const file = await api('GET', `/api/mcp-servers/${id}/files/server.js`, undefined, { raw: true });
   assert.match(file.text, /e2e/);
-  await api('DELETE', `/api/mcp-servers/${id}/files/server.js`);
+  await api('DELETE', `/api/mcp-servers/${id}/files/server.js`, undefined, match(server));
 });
 
 test('MCP market lists installable servers', async () => {
@@ -121,11 +131,11 @@ test('Dockerfile, environment and sandbox CRUD with reference protection', async
 
 test('agent CRUD, revisions, restore and clone', async () => {
   const id = ids.agent = uid('agent');
-  track(`agent ${id}`, () => del(`/api/agents/${id}`));
+  track(`agent ${id}`, () => removeSource('agents', id, `/api/agents/${id}`));
   const base = { id, name: 'E2E 角色', projectId: P, description: 'e2e', executorId: cfg.executor, prompt: 'v1', rules: [ids.rule].filter(Boolean), skills: [ids.skill].filter(Boolean) };
   const v1 = await put('/api/agents', base);
   assert.equal(v1.prompt, 'v1');
-  await put('/api/agents', { ...v1, prompt: 'v2' });
+  const v2 = await put('/api/agents', { ...v1, prompt: 'v2' }, match(v1));
   assert.equal((await get(`/api/agents/${id}`)).prompt, 'v2');
 
   await api('PUT', '/api/agents', { ...base, id: uid('agent-bad'), executorId: 'not-a-cli' }, { expect: 400 });
@@ -137,11 +147,11 @@ test('agent CRUD, revisions, restore and clone', async () => {
   const snapshot = await get(`/api/agents/${id}/revisions/${rev}`);
   assert.equal(snapshot.entityId, id);
   assert.ok(snapshot.payload, 'revision snapshot has no payload');
-  await post(`/api/agents/${id}/revisions/${rev}/restore`, {});
+  await post(`/api/agents/${id}/revisions/${rev}/restore`, {}, match(v2));
   await api('GET', `/api/agents/${id}/revisions/does-not-exist`, undefined, { expect: 404 });
 
   const cloneId = uid('agent-clone');
-  track(`agent ${cloneId}`, () => del(`/api/agents/${cloneId}`));
+  track(`agent ${cloneId}`, () => removeSource('agents', cloneId, `/api/agents/${cloneId}`));
   const clone = await post(`/api/agents/${id}/clone`, { id: cloneId, name: 'E2E 角色副本', projectId: P });
   assert.equal(clone.id ?? cloneId, cloneId);
   assert.equal((await get(`/api/agents/${cloneId}`)).projectId, P);
@@ -149,7 +159,8 @@ test('agent CRUD, revisions, restore and clone', async () => {
 
 test('referenced rule cannot be deleted while an agent uses it', async () => {
   if (!ids.rule || !ids.agent) return;
-  await api('DELETE', `/api/rules?id=${ids.rule}`, undefined, { expect: 409 });
+  const rule = list(await get('/api/rules')).find(item => item.id === ids.rule);
+  await api('DELETE', `/api/rules?id=${ids.rule}`, undefined, { ...match(rule), expect: 409 });
 });
 
 test('SOP CRUD, validation, publish, revisions, restore and clone', async () => {
@@ -221,7 +232,7 @@ test('generic templates are read-only and can be adopted into a project', async 
   // template keeps running its own built-in roles.
   await api('DELETE', `/api/workflows/${cloneId}`, undefined, { expect: [200, 204] });
   for (const roleId of roleIds) {
-    await api('DELETE', `/api/agents/${roleId}`, undefined, { expect: [204, 404] });
+    await removeSource('agents', roleId, `/api/agents/${roleId}`);
   }
   assert.ok(list(await get(`/api/workflows/${template.id}/agents`)).length > 0, 'template lost its roles');
 });

@@ -19,6 +19,7 @@
 #   AGENTFLOW_E2E_LOCAL_MYSQL_CONTAINER MySQL container name (default
 #                                    agentflow-e2e-local-mysql); set it when
 #                                    several checkouts run the suite at once
+#   AGENTFLOW_E2E_LOCAL_MYSQL_IMAGE MySQL image (default mysql:8.0)
 #   AGENTFLOW_E2E_MODEL_SANDBOX      sandbox for model scenarios (default local:
 #                                    the seeded Docker image has no CodeBuddy CLI)
 #   AGENTFLOW_E2E_KEEP=1             keep the platform, database and files; the
@@ -32,6 +33,7 @@ ROOT=$(cd .. && pwd)
 PORT=${AGENTFLOW_E2E_LOCAL_PORT:-18090}
 MYSQL_PORT=${AGENTFLOW_E2E_LOCAL_MYSQL_PORT:-33316}
 MYSQL_CONTAINER=${AGENTFLOW_E2E_LOCAL_MYSQL_CONTAINER:-agentflow-e2e-local-mysql}
+MYSQL_IMAGE=${AGENTFLOW_E2E_LOCAL_MYSQL_IMAGE:-mysql:8.0}
 WORK=$(mktemp -d /tmp/agentflow-e2e-local.XXXXXX)
 BASE=http://127.0.0.1:$PORT
 DSN="root:root@tcp(127.0.0.1:$MYSQL_PORT)/agentflow?parseTime=true&charset=utf8mb4"
@@ -64,10 +66,20 @@ echo "== build $ROOT"
 
 echo "== mysql on 127.0.0.1:$MYSQL_PORT"
 docker rm -f "$MYSQL_CONTAINER" >/dev/null 2>&1
-docker run -d --name "$MYSQL_CONTAINER" -p "127.0.0.1:$MYSQL_PORT:3306" \
-  -e MYSQL_ROOT_PASSWORD=root -e MYSQL_DATABASE=agentflow mysql:8.0 >/dev/null || exit 1
+# Test data is disposable; keep it out of Docker's persistent volume store.
+docker run -d --name "$MYSQL_CONTAINER" --tmpfs /var/lib/mysql:rw,size=1g -p "127.0.0.1:$MYSQL_PORT:3306" \
+  -e MYSQL_ROOT_PASSWORD=root -e MYSQL_DATABASE=agentflow "$MYSQL_IMAGE" >/dev/null || exit 1
 # The image first runs a socket-only bootstrap server; wait for the real one on TCP.
-until docker exec "$MYSQL_CONTAINER" mysql -uroot -proot -h127.0.0.1 --protocol=tcp -e 'SELECT 1' agentflow >/dev/null 2>&1; do sleep 1; done
+mysql_ready=0
+for _ in $(seq 90); do
+  if docker exec "$MYSQL_CONTAINER" mysql -uroot -proot -h127.0.0.1 --protocol=tcp -e 'SELECT 1' agentflow >/dev/null 2>&1; then mysql_ready=1; break; fi
+  [ "$(docker inspect -f '{{.State.Running}}' "$MYSQL_CONTAINER")" = true ] || break
+  sleep 1
+done
+if [ "$mysql_ready" != 1 ]; then
+  docker logs --tail 40 "$MYSQL_CONTAINER" >&2
+  exit 1
+fi
 
 echo "== platform on $BASE"
 HOST_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
