@@ -1,5 +1,7 @@
 # Deployment
 
+This guide applies to **SuperAgent Foundation**, based on LoopForge. See [current implementation status](superagent/implementation-status.md) for supported behavior and outstanding acceptance. Deploy this repository, not an upstream image that lacks these extensions.
+
 ## Delivery policy in this source build
 
 `AGENTFLOW_DELIVERY_POLICY` defaults to `controlled_pr`. Configure the API and every Engine/Worker consistently. Unknown values stop startup. New Runs freeze the configured policy, and controlled parents remain controlled in child SOPs. Missing policies in persisted Runs/tasks are controlled, including when the deployment later selects `legacy`.
@@ -30,30 +32,54 @@ Use `AGENTFLOW_MYSQL_DSN` for your own MySQL deployment. A fresh account command
 ## Container installation
 
 ```bash
-./start.sh             # install or start in the background (same as bash scripts/install.sh)
+git clone https://github.com/huasheng718/superagent-foundation.git
+cd superagent-foundation
+./start.sh             # build this checkout and start in the background
 ./start.sh logs        # follow platform logs
-./start.sh stop        # stop; ./start.sh down removes containers but keeps data volumes
+./start.sh stop        # stop; down removes containers but keeps data volumes
 ./start.sh restart     # restart the platform container
-./start.sh pull        # refresh images and recreate changed containers
-./start.sh dev         # build this checkout instead (compose.dev.yaml)
-./start.sh release     # switch a source build back to the published image
+./start.sh pull        # rebuild source, or refresh the selected prebuilt image
+./start.sh dev         # explicitly switch back to this source build
+./start.sh release     # require an explicit LOOPFORGE_IMAGE; save image mode
+./start.sh check       # read-only production configuration checks
+./start.sh production  # check production configuration before build/start
 ```
 
-The installer checks Docker, Compose, Python 3 and curl. It offers to install missing Python/curl packages using apt, dnf or yum on Linux (Homebrew on macOS), Docker using its official installer, and the missing Linux x86_64/arm64 Compose plugin using the pinned official release with SHA-256 verification. A plugin is installed for the active Docker user, or system-wide when Docker requires sudo. macOS Compose comes from Docker Desktop. Set `LOOPFORGE_YES=1` to accept installation prompts; internet access and package-manager/administrator permissions are still required. The installer generates `.env` with unique secrets, pulls and starts the containers, installs the observability columns and applies `migrations/seed/*.sql`. It is safe to re-run. Set `AGENTFLOW_HTTP_PORT` or `LOOPFORGE_MYSQL_PORT` in the environment before the first run (or edit `.env` later) when the default ports are taken.
+The installer checks Docker, Compose, Python 3 and curl. It offers to install missing Python/curl packages using apt, dnf or yum on Linux (Homebrew on macOS), Docker using its official installer, and the missing Linux x86_64/arm64 Compose plugin using the pinned official release with SHA-256 verification. A plugin is installed for the active Docker user, or system-wide when Docker requires sudo. macOS Compose comes from Docker Desktop. Set `LOOPFORGE_YES=1` to accept installation prompts; internet access and package-manager/administrator permissions are still required. The installer generates `.env` with unique secrets, builds this source (or pulls the explicitly selected image) and starts the containers, installs the observability columns and applies `migrations/seed/*.sql`. It is safe to re-run. Set `AGENTFLOW_HTTP_PORT` or `LOOPFORGE_MYSQL_PORT` in the environment before the first run (or edit `.env` later) when the default ports are taken.
 
 Run it as the installation owner, including an ordinary Linux user. If that user cannot access Docker directly, the installer validates sudo and uses `sudo -n docker` consistently for Compose, schema installation and seeds. Before each operation it checks whether sudo credentials expired during a long build, prompting again in a terminal or failing with instructions in unattended mode. It does not require adding the user to the Docker group or logging out. For unattended installations run `sudo -v` first; `LOOPFORGE_YES=1` accepts installation prompts but does not bypass operating-system permissions. Without sudo or Docker access it fails immediately with instructions. Rootless Docker uses its active context's Unix socket; remote Docker contexts need a separately configured deployment because sandbox workspaces are local bind mounts.
 
-`compose.yaml` is the published-image stack and never builds: `./start.sh`, `scripts/install.sh` and a plain `docker compose --profile platform up` all pull the GHCR release pinned there (currently `ghcr.io/tencent/loopforge:0.3.6`). The pin matches the checkout's migrations and seeds, so check out a release tag when you install. Set `LOOPFORGE_IMAGE` (for example to an `@sha256:` digest) only to override it; a value saved in `.env` takes precedence over later pin changes.
+`./start.sh` and `bash scripts/install.sh` build this checkout as `superagent-platform:local` using `compose.yaml:compose.dev.yaml`. Platform and default sandboxes use the same image. The installer saves the Compose selection in `.env`, so plain Compose commands subsequently use the same stack. A new configuration also defaults to source mode. There is no automatic upstream LoopForge image fallback. An older `.env` without a saved Compose selection defaults to source mode even if it contains an old upstream image.
 
-`./start.sh dev` (or `LOOPFORGE_BUILD_FROM_SOURCE=1 bash scripts/install.sh`) builds this checkout as `loopforge-platform:local` from `compose.dev.yaml`. It saves `COMPOSE_FILE=compose.yaml:compose.dev.yaml` in `.env`, so later runs and plain `docker compose` commands keep using the source build until `./start.sh release`. Source builds reuse npm, Go module and Go compiler caches.
+For a **tested image built from this repository**, explicitly select it:
 
-Pushing a `vX.Y.Z` tag on `main` runs the `release` workflow once the `platform` workflow has passed on that commit. The tagged `compose.yaml` must already pin `loopforge:X.Y.Z`. It publishes `ghcr.io/<owner>/loopforge` as `X.Y.Z`, `X.Y`, `latest` and `sha-<commit>`, smoke-tests the pushed digest with `./start.sh`, and creates the GitHub Release. Forks publish under their own owner; set the GHCR package visibility/access for your team before distributing the image. Images are pulled only when missing by default; use an immutable tag/digest, or set `LOOPFORGE_PULL_POLICY=always` when updating a mutable tag. Existing `.env` values take precedence; change the saved image or URL there when updating an installation. Compose waits for the API's health check with a bounded timeout before installing schema extensions and seeds.
+```bash
+LOOPFORGE_IMAGE=registry.example.com/team/superagent@sha256:<verified-digest> ./start.sh release
+```
+
+Replace the example with the actual image and digest; no image publication is claimed by these instructions. The installer saves the selected image and `COMPOSE_FILE=compose.yaml`. A later plain `./start.sh` keeps that selection. An explicit environment image overrides a previously saved one. `./start.sh dev` switches to building this checkout again. Release without an image fails before changing a source installation's selection. Tags are allowed for local testing; production preflight requires a digest. The base `compose.yaml` alone does not build: use the installer or explicitly layer `compose.dev.yaml` for source builds.
+
+Pushing a `vX.Y.Z` tag on `main` runs the `release` workflow after successful `platform` CI on that exact commit. It publishes `ghcr.io/<owner>/<repository>` with version/commit tags, smoke-tests its digest using explicit image mode, and puts that digest in the release installation command. Set package visibility/access before distributing it. This workflow does not establish live production acceptance. Source updates rebuild the checkout; image updates require explicitly selecting the new digest. Back up data and review/apply required existing-installation SQL before starting the new version. Installer schema extensions/seeds are explicit installation steps; server startup does not apply data migrations.
 
 Open the platform and create the first account in the browser; it receives platform administration. Until that account exists the login page only offers this setup step.
 
 During initial setup, restrict the cloud security group or firewall to the operator's IP. Do not expose the first-account setup page to arbitrary Internet clients before the administrator account has been created.
 
-The platform listens on `LOOPFORGE_BIND`, `0.0.0.0` by default, without prompting for an access URL. The installer prints the public, LAN and local addresses; on Tencent Cloud, Alibaba Cloud, AWS, GCP and Azure it reads the public IP from the provider's link-local metadata service, and elsewhere behind NAT you open the public IP yourself. `LOOPFORGE_PUBLIC_URL` is optional and only changes the printed address. Allow the HTTP port in the cloud security group/firewall, or use an HTTPS reverse proxy. Existing `.env` files are preserved; older installations without a bind setting now also listen on `0.0.0.0`. Local-only installations can set `LOOPFORGE_BIND=127.0.0.1`. Proxy WebSocket and streaming requests. Set `AGENTFLOW_SECURE_COOKIES=true` when HTTPS terminates at the proxy. Keep `AGENTFLOW_SESSION_SECRET` stable across API instances and restarts.
+New installations bind to `127.0.0.1:8090` and disable self-registration after first-administrator setup. Existing bind/signup settings are preserved; installations lacking these settings use the safe Compose defaults. To reach a new server initially, use an SSH tunnel, then create the first administrator. Do not expose bootstrap to arbitrary clients.
+
+For production, terminate HTTPS at a reverse proxy on the same host, proxy WebSocket/streaming requests to `127.0.0.1:8090`, keep MySQL on loopback, and set these values in the existing `.env` without rotating its secrets:
+
+```dotenv
+LOOPFORGE_BIND=127.0.0.1
+LOOPFORGE_PUBLIC_URL=https://agent.example.com
+AGENTFLOW_ALLOW_SIGNUP=false
+AGENTFLOW_SECURE_COOKIES=true
+AGENTFLOW_DELIVERY_POLICY=controlled_pr
+```
+
+Run `./start.sh check` for configuration checks only, or `./start.sh production` to block build/start on an unsafe effective Compose configuration. The checks require authentication, closed registration, secure cookies, controlled delivery, loopback ports, non-placeholder secrets, owner-only `.env`, matching platform/sandbox images and a digest for prebuilt images. They never print the parsed secrets. They do not verify a running proxy/certificate, image provenance, GitHub permission scopes, independent hosts or hostile workload containment; use the [deployment acceptance checklist](operations/controlled-delivery.md). `./start.sh` remains the local HTTP development path. A LAN-only trusted-team experiment can explicitly set `LOOPFORGE_BIND=0.0.0.0`; that setting deliberately fails the production check.
+
+`LOOPFORGE_PUBLIC_URL` records the operator-facing origin; it does not configure TLS or network routing. Configure `AGENTFLOW_PLATFORM_MCP_URL` separately for reachability from workers. Keep `AGENTFLOW_SESSION_SECRET` stable across API instances and restarts.
 
 ### Docker sandboxes
 
@@ -80,7 +106,7 @@ A clone that is stopped this way is not retried, since a retry would wait on the
 
 ## Accounts
 
-The first account created in the browser becomes the platform administrator. After that, anyone who can reach the login page may sign up as a regular user while `AGENTFLOW_ALLOW_SIGNUP` is `true` (the default). Registered users can create requirements and run SOPs on your workers, so set `AGENTFLOW_ALLOW_SIGNUP=false` for any installation reachable from untrusted networks and create accounts explicitly instead.
+The first account created in the browser becomes the platform administrator. After that, anyone who can reach the login page may sign up as a regular user when `AGENTFLOW_ALLOW_SIGNUP=true` is explicitly enabled. The installer and Compose default to `false`; the bare server binary retains its upstream default if this environment variable is omitted. Registered users can create requirements and run SOPs on your workers, so set `AGENTFLOW_ALLOW_SIGNUP=false` for any installation reachable from untrusted networks and create accounts explicitly instead.
 
 Platform administrators create accounts under **Platform administration → Member accounts** (平台管理 → 成员账号): enter a login name and an initial password, optionally grant administration, and hand the password to the teammate. The same page lists every account and resets the password of a password account; accounts that sign in through GitHub or a gateway cannot be given a password there. New accounts join the welcome project, like self sign-ups.
 

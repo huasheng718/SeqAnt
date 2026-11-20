@@ -1,8 +1,8 @@
-# Implementation status — 2026-11-18
+# Implementation status — 2026-11-20
 
 The product continues to use the existing LoopForge Engine, Runner protocol and domain-owned MySQL store. These changes extend the P0 baseline; they do not add another scheduler or automatically complete a business requirement.
 
-The latest current-tree verification is recorded separately in the active Trellis task. Domain/Repo/Engine, serial HTTP, Runner, serial Runtime and 213 Node24 UI tests passed with the explicit local Chrome path. Three real browser tests also pass individually. Parallel full-package runs exposed shared-host Chrome startup contention; those runs remain recorded as failed and are not relabeled as passing. This is a test-environment concurrency boundary, not evidence of a production browser failure.
+Feature verification is recorded by source cohort below and in the active local Trellis task. The earlier Domain/Repo/Engine, serial HTTP, Runner, serial Runtime and 213 Node24 UI cohort passed with the explicit local Chrome path. Three real browser tests passed individually for that cohort. Parallel full-package runs exposed shared-host Chrome startup contention; those runs remain recorded as failed and are not relabeled as passing. This is a test-environment concurrency boundary, not evidence of a production browser failure.
 
 | Goal | Implemented behavior | Acceptance boundary |
 | --- | --- | --- |
@@ -23,6 +23,17 @@ Formal content and governed experience remain separate lifecycles. Revoking a ve
 The controlled path creates a draft PR and never merges or enables auto-merge. Repository hosting rules independently require human review. Protect each actual contribution target, not only this platform source repository. A broad operator `gh` session does not establish least privilege. See [deployment acceptance](../operations/controlled-delivery.md).
 
 The durable PR-create marker is consumed before the external request. If the process dies after marking but before sending, discovery can remain empty; manual reconciliation is required. An empty lookup does not authorize another automatic creation. Existing in-flight external effects cannot be atomically undone by controller cancellation.
+
+## Repository and deployment maintenance — 2026-11-20
+
+This is the current status entry point. The [development baseline](development-baseline.md) defines the target; P0 verdicts and upstream release reviews are historical evidence, not current production certification.
+
+- The active development worktree was verified byte-for-byte against published source commit `553d281`, including previously untracked files. Its branch/index were aligned to that commit, with a recovery branch preserving the old HEAD; no product files or sibling worktrees were removed. Remote tracking reflects the recorded publication, not a fresh remote availability check.
+- Installation now builds this repository by default. Explicit prebuilt-image selection is persisted, and the platform/default sandbox image remains identical. Release CI and first-run CI use the new entry points; an upstream LoopForge release is never selected as a fallback.
+- New container configurations use loopback binding and closed registration. `./start.sh check` validates effective production configuration; `./start.sh production` performs the same checks before build/start. See [deployment](../deployment.md) and [controlled delivery acceptance](../operations/controlled-delivery.md).
+- These maintenance changes do not certify a remote server, least-privilege publisher, provider-backed strict reservation, hostile containment or production memory retention. Existing local feature evidence below retains its original scope.
+
+Maintenance verification on 2026-11-20: all 39 installer tests and 6 deployment tests passed, including real Compose parsing for source/image modes and fail-closed checks. The HTTP first-administrator/disabled-registration regression passed. Shell syntax, workflow YAML parsing, public-content checks and `git diff --check` passed. No new image build, container deployment, hosted CI run or external acceptance was performed in this maintenance cohort.
 
 ## Reproducible verification
 

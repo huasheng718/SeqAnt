@@ -1,4 +1,4 @@
-ARG LOOPFORGE_TEST_BASE=loopforge-platform:local
+ARG LOOPFORGE_TEST_BASE=superagent-platform:local
 FROM ${LOOPFORGE_TEST_BASE}
 RUN apt-get update && apt-get install -y --no-install-recommends sudo \
  && rm -rf /var/lib/apt/lists/* \

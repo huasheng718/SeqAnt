@@ -57,10 +57,6 @@ jobs:
             exit 1
           fi
           version="${TAG#v}"
-          if [[ "$(grep -cF "/loopforge:${version}}" compose.yaml)" != 2 ]]; then
-            echo "compose.yaml must pin loopforge:${version} (platform image and AGENTFLOW_ISOLATED_IMAGE) before tagging ${TAG}" >&2
-            exit 1
-          fi
           image="ghcr.io/${GITHUB_REPOSITORY,,}"
           prerelease=false
           [[ "${version}" == *-* ]] && prerelease=true
@@ -111,7 +107,7 @@ jobs:
         env:
           LOOPFORGE_IMAGE: ${{ steps.release.outputs.image }}@${{ steps.push.outputs.digest }}
         run: |
-          ./start.sh -d
+          ./start.sh release
           curl -fsS http://127.0.0.1:8090/api/health
 
       - if: failure()
@@ -124,6 +120,7 @@ jobs:
           TAG: ${{ steps.release.outputs.tag }}
           VERSION: ${{ steps.release.outputs.version }}
           IMAGE: ${{ steps.release.outputs.image }}
+          DIGEST: ${{ steps.push.outputs.digest }}
           PRERELEASE: ${{ steps.release.outputs.prerelease }}
         run: |
           notes="$(cat <<EOF
@@ -132,17 +129,17 @@ jobs:
           \`\`\`bash
           git clone --branch ${TAG} https://github.com/${GITHUB_REPOSITORY}.git
           cd ${GITHUB_REPOSITORY#*/}
-          ./start.sh
+          LOOPFORGE_IMAGE=${IMAGE}@${DIGEST} ./start.sh release
           \`\`\`
 
-          Platform image: \`${IMAGE}:${VERSION}\` (pinned in \`compose.yaml\`). Existing installations: check out \`${TAG}\`, run \`./start.sh\`, and apply the new files under \`migrations/\` listed in [CHANGELOG.md](https://github.com/${GITHUB_REPOSITORY}/blob/${TAG}/CHANGELOG.md).
+          Platform image: \`${IMAGE}:${VERSION}\`; the command above pins the tested digest in \`.env\`. Without an explicit image, \`./start.sh\` builds this checkout. Existing installations: back up data, review/apply required SQL under \`migrations/\`, check out \`${TAG}\`, and explicitly select the new digest. Before server deployment follow [deployment acceptance](https://github.com/${GITHUB_REPOSITORY}/blob/${TAG}/docs/operations/controlled-delivery.md) and run \`./start.sh production\` with HTTPS configured.
           EOF
           )"
           if gh release view "${TAG}" >/dev/null 2>&1; then
             echo "Release ${TAG} already exists; image republished"
             exit 0
           fi
-          release_args=(--title "LoopForge v${VERSION}" --notes "${notes}" --generate-notes --verify-tag)
+          release_args=(--title "SuperAgent Foundation v${VERSION}" --notes "${notes}" --generate-notes --verify-tag)
           if [[ "${PRERELEASE}" == "true" ]]; then
             release_args+=(--prerelease)
           else

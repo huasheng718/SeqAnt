@@ -1,3 +1,9 @@
+# SuperAgent Foundation
+
+本仓库基于 [LoopForge](https://github.com/Tencent/LoopForge)，增加受控草稿 PR 交付、有界修复、不可变团队配置和治理型 Memory Hub，保留原有 Engine／Runner 架构与 MIT 许可。默认受控路径由人评审、合并，执行成功不代表业务需求完成。
+
+当前事实以[实现状态](docs/superagent/implementation-status.md)为准；另见[开发基线](docs/superagent/development-baseline.md)、[部署指南](docs/deployment.md)和[生产验收](docs/operations/controlled-delivery.md)。提供方硬预算、独立主机及最小权限发布身份仍待验收。下方 LoopForge 示意图保留为上游设计参考。
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme/hero-zh-dark.svg">
@@ -6,7 +12,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Tencent/LoopForge/actions/workflows/platform.yml"><img src="https://img.shields.io/github/actions/workflow/status/Tencent/LoopForge/platform.yml?branch=main&label=CI&style=flat-square" alt="CI"></a>
+  <a href="https://github.com/huasheng718/superagent-foundation/actions/workflows/platform.yml"><img src="https://img.shields.io/github/actions/workflow/status/huasheng718/superagent-foundation/platform.yml?branch=codex/superagent-foundation&label=CI&style=flat-square" alt="CI"></a>
   <a href="https://www.npmjs.com/package/loopforge-cli"><img src="https://img.shields.io/npm/v/loopforge-cli?label=loopforge-cli&color=7b61ff&style=flat-square" alt="npm loopforge-cli"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-7b61ff?style=flat-square" alt="MIT License"></a>
   <img src="https://img.shields.io/badge/自主部署-Docker-526ce8?style=flat-square&logo=docker&logoColor=white" alt="Docker 自主部署">
@@ -42,7 +48,7 @@ https://github.com/user-attachments/assets/10b8ae2e-d7e7-4b78-8876-c45818d4a08f
 | 适合 | 探索、快速修复、与 Agent 反复迭代 | 阶段固定、需要签字确认的可重复交付 |
 | 如何运行 | Main Bot 按需打开[对话工作区](docs/conversation-workspaces.md)（带项目仓库的 Docker 沙箱），并把项目角色作为子 Agent 调用 | 引擎按顺序执行 Agent、脚本、人工关口和子 SOP 节点，每次运行有独立沙箱 |
 | 你如何把控 | 回复中途排队或「引导」消息；在对话里暂停、恢复或接管正在运行的 SOP | 在人工关口审批；打回到指定环节返工；从任意节点重试或重跑 |
-| 交付物 | PR/MR，或直推合入共享分支（`mode=direct`） | 文档、代码或 PR，以及每个节点的产物和日志 |
+| 交付物 | 工作区产物；受控代码交付经固定 SHA 关口创建草稿 PR | 文档、代码或 PR，以及每个节点的产物和日志 |
 
 两种方式都挂在同一套**需求**上：无论改动来自对话还是 SOP，都能追溯到原始需求，并计入交付与成本统计。
 
@@ -70,14 +76,14 @@ https://github.com/user-attachments/assets/10b8ae2e-d7e7-4b78-8876-c45818d4a08f
 先准备 **Git** 并克隆仓库。安装脚本会检查 Docker、Compose、Python 3 和 curl，并在获得确认后补装缺少的组件：Linux 的 Python/curl 支持 apt、dnf、yum，Compose 插件支持 x86_64/arm64 并校验官方发行文件的 SHA-256；macOS 需要可运行的 Python 3 和 Docker Desktop，可通过 Homebrew 补装缺少的组件。支持普通用户运行，需要时通过 Docker 组或 sudo 操作 Docker。设置 `LOOPFORGE_YES=1` 可接受安装提示；安装和拉取镜像需要可用的外网连接。
 
 ```bash
-git clone https://github.com/Tencent/LoopForge.git
-cd LoopForge
+git clone https://github.com/huasheng718/superagent-foundation.git
+cd superagent-foundation
 ./start.sh
 ```
 
-`./start.sh` 直接拉取 `compose.yaml` 中 pin 的 GHCR 发布镜像，不在本地构建（`bash scripts/install.sh` 效果相同）。安装流程会创建 MySQL 和平台服务，生成配置与会话密钥，并导入内置沙箱、通用 SOP 和体验项目；无需在宿主机安装 Go 或 Node.js。模型 API Key 和 GitHub 授权在启动后由用户配置。用 `./start.sh logs`、`stop`、`restart`、`pull` 管理服务；需要从源码构建时用 `./start.sh dev`。
+`./start.sh` 默认通过 Docker 构建**当前项目源码**，启动 MySQL 与平台，生成本地密钥并导入体验目录；`bash scripts/install.sh` 效果相同，宿主机无需 Go 或 Node.js。不会自动使用上游镜像。用 `logs`、`stop`、`restart`、`pull` 管理服务；`pull` 会重建当前源码，或更新已明确选定的发布镜像。使用本项目已验证镜像时，设置 `LOOPFORGE_IMAGE` 后运行 `./start.sh release`；生产环境要求固定镜像摘要，详见[部署指南](docs/deployment.md)。
 
-打开安装脚本输出的地址创建账号，第一个账号自动成为管理员。服务默认监听 `0.0.0.0:8090`；在云主机上，安装脚本会从云厂商的元数据服务读取公网 IP 并直接打印出来，放通安全组端口即可访问，或配置 HTTPS 反向代理；管理员账号创建前，建议只允许你的 IP 访问。首页的「快速接入」会带你配置模型凭据、绑定仓库并选好默认 SOP。
+新安装默认监听 `127.0.0.1:8090`，首次创建管理员后关闭自助注册。服务器首次配置可通过 SSH 隧道访问，然后配置 HTTPS 反向代理并使用 `./start.sh production`。已有 `.env` 的设置保留，部署前用 `./start.sh check` 核对。
 
 ### 免 API Key 体验
 
@@ -104,7 +110,7 @@ cd LoopForge
 - **GitHub 可选。** 所有内置通用 SOP 都可以不绑定仓库运行：产品方案交付文档，前后端新项目在任务工作区交付源码；缺陷修复仍需提供待修代码和复现材料。需要修改已有代码或提交 PR 时再绑定仓库。
 - **交付到仓库。** 在个人设置中点击「连接 GitHub」，用设备码授权后选择自己的仓库（已内置 LoopForge 授权应用，无需申请 PAT，仍可手动填写 PAT），再配置执行器凭据（或绑定本机执行机器），之后既可以运行一条项目 SOP，也可以直接让 Main Bot 修改代码并提交 PR/MR。
 - **沙箱。** 默认 Compose 安装中，SOP 运行和对话工作区都使用 Docker 沙箱容器，由平台通过宿主机 Docker socket 启动；默认沙箱复用已安装的运行镜像，安装后无需再构建；自定义 Dockerfile 仍单独构建。Docker socket 赋予平台控制宿主机 Docker 的权限，因此只适用于可信团队，不构成不可信多租户隔离边界；详见[部署边界](docs/deployment.md#accounts)。重复执行安装脚本会保留已有数据。
-- **账号与访问。** 新安装默认监听所有网卡（已有安装保留原配置），面向可信团队：已登录用户可以读取实例内各项目的数据，团队成员可在登录页自助注册（在 `.env` 中设置 `AGENTFLOW_ALLOW_SIGNUP=false` 可关闭）。对团队以外开放前，请先阅读[账号与访问边界](docs/deployment.md#accounts)。
+- **账号与访问。** 新安装仅绑定本机，首次管理员创建后关闭自助注册，由管理员添加成员。已有配置保留，部署前运行 `./start.sh check` 并阅读[账号与访问边界](docs/deployment.md#accounts)。本实例仍面向可信团队。
 - **远程访问、HTTPS、独立 Worker。** 见[部署指南](docs/deployment.md)。
 - **参与 LoopForge 本身的开发？** 用 `bash scripts/dev.sh` 原生运行（需要 Go 1.26.11+）。
 
@@ -153,7 +159,7 @@ cd LoopForge
 | **对话工作区** | 按需创建带项目仓库的 Docker 沙箱，把项目角色作为原生子 Agent 调用，并能直接控制正在运行的 SOP 工作区：暂停、恢复或接管。 |
 | **流程设计器** | 在画布上编排 Agent、脚本、人工关口、子 SOP 和预览构建节点；支持失败打回、配置检查、版本历史与发布。内置后端、前端、缺陷修复和产品方案 SOP。 |
 | **角色** | 可复用的角色定义：提示词、执行器、模型、规则、Skills、MCP 工具、产物与门禁，SOP 节点和对话子 Agent 共用。 |
-| **需求到交付** | 无论通过 SOP 还是直接在对话中交付，需求都全程跟踪；支持 PR/MR 状态跟踪、合入检测和共享分支直推。 |
+| **需求到交付** | 无论通过 SOP 还是直接在对话中交付，需求都全程跟踪；支持 PR/MR 状态跟踪和合入检测；受控路径通过独立关口后创建草稿 PR，由人评审、合并。 |
 | **运行与审批** | 实时节点状态、工具轨迹、Worker 日志、节点产物快照和工作区预览；所有等你处理的关口集中在 **待我确认**。 |
 | **AI 定时任务** | 周期性 Agent 任务，具备完整的工作区、SOP 与 MCP 权限；共享任务市场提供带版本和参数的任务模板；新需求可自动派发 SOP。 |
 | **统计与成本** | 研发效能指标、业务领域报表（可导出静态 HTML/SVG），以及按公开标准价核算的 SOP 与对话 Token 成本。 |
@@ -209,7 +215,7 @@ npx -y loopforge-cli@latest install claude
 LoopForge 不替代它们，而是编排它们。每个 Agent 步骤和每轮对话都运行这些 CLI 之一；LoopForge 补上外面的部分：谁来做、在哪个沙箱里、按什么顺序、经过哪些检查、由谁签字。
 
 **可以直接暴露到公网吗？**
-新安装默认监听所有网卡，面向可信团队。开放前请阅读[账号与访问边界](docs/deployment.md#accounts)并配置 HTTPS。安全漏洞请按[安全政策](SECURITY.zh-CN.md)私密报告。
+新容器安装默认仅监听本机，首次创建管理员后关闭自助注册，面向可信团队。开放前请阅读[账号与访问边界](docs/deployment.md#accounts)并配置 HTTPS。安全漏洞请按[安全政策](SECURITY.zh-CN.md)私密报告。
 
 ## 文档
 

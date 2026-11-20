@@ -1,3 +1,9 @@
+# SuperAgent Foundation
+
+This repository extends [LoopForge](https://github.com/Tencent/LoopForge) with controlled draft-PR delivery, bounded repair, immutable team configuration and governed memory. The existing Engine/Runner architecture and upstream MIT notices are retained. The current defaults require human review/merge; execution success does not complete a business requirement.
+
+Start with [implementation status](docs/superagent/implementation-status.md), [development baseline](docs/superagent/development-baseline.md), [deployment](docs/deployment.md) and [production acceptance](docs/operations/controlled-delivery.md). Strict provider-backed token/cost reservations and independent-host/least-privilege deployment acceptance remain open. The LoopForge illustrations below are retained upstream design references.
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme/hero-en-dark.svg">
@@ -6,7 +12,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Tencent/LoopForge/actions/workflows/platform.yml"><img src="https://img.shields.io/github/actions/workflow/status/Tencent/LoopForge/platform.yml?branch=main&label=CI&style=flat-square" alt="CI"></a>
+  <a href="https://github.com/huasheng718/superagent-foundation/actions/workflows/platform.yml"><img src="https://img.shields.io/github/actions/workflow/status/huasheng718/superagent-foundation/platform.yml?branch=codex/superagent-foundation&label=CI&style=flat-square" alt="CI"></a>
   <a href="https://www.npmjs.com/package/loopforge-cli"><img src="https://img.shields.io/npm/v/loopforge-cli?label=loopforge-cli&color=7b61ff&style=flat-square" alt="npm loopforge-cli"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-7b61ff?style=flat-square" alt="MIT License"></a>
   <img src="https://img.shields.io/badge/self--hosted-Docker-526ce8?style=flat-square&logo=docker&logoColor=white" alt="Self-hosted with Docker">
@@ -42,7 +48,7 @@ CodeBuddy, Codex and Claude Code do the work. LoopForge adds the roles, sandboxe
 | Best for | Exploring, quick fixes, iterating with the agent | Repeatable delivery with fixed stages and sign-off |
 | How it runs | Main Bot opens a [conversation workspace](docs/conversation-workspaces.md) (a Docker sandbox with your repos) on demand and calls project roles as subagents | The engine runs Agent, Script, Human-gate and sub-SOP nodes in order, in their own sandbox |
 | You stay in control by | Queuing or steering messages mid-reply, and pausing, resuming or taking over a running SOP from chat | Approving at human gates, sending work back to a chosen step, retrying or rerunning from any node |
-| Delivers | A PR/MR, or a direct merge into a shared branch (`mode=direct`) | Documents, code or a PR, plus per-node artifacts and logs |
+| Delivers | Workspace artifacts; controlled code delivery uses fixed-SHA gates and a draft PR | Documents, code or a PR, plus per-node artifacts and logs |
 
 Both paths track the same **requirements**, so every change, whether made in chat or by an SOP, links back to what was asked for and counts toward delivery and cost reports.
 
@@ -70,14 +76,14 @@ Ask a coding agent to "fix this bug" and the result depends on that run. It migh
 Install **Git** and clone the repository first. The installer checks Docker, Compose, Python 3 and curl and offers to install missing components. Python/curl installation supports apt, dnf and yum on Linux; the Compose plugin supports x86_64/arm64 and verifies the official release SHA-256. macOS needs a working Python 3 and Docker Desktop; Homebrew can install missing components. Ordinary Linux users are supported through Docker group access or sudo. Set `LOOPFORGE_YES=1` to accept installation prompts. Package and image downloads require internet access.
 
 ```bash
-git clone https://github.com/Tencent/LoopForge.git
-cd LoopForge
+git clone https://github.com/huasheng718/superagent-foundation.git
+cd superagent-foundation
 ./start.sh
 ```
 
-`./start.sh` pulls the GHCR release image pinned in `compose.yaml` without building locally (`bash scripts/install.sh` does the same). It creates the MySQL and platform services, generates configuration and session secrets, and installs the built-in sandboxes, starter SOPs and welcome project. Host Go and Node.js installations are not required. Configure model API keys and GitHub authorization after startup. Use `./start.sh logs`, `stop`, `restart` or `pull` to manage it, and `./start.sh dev` to build the checkout from source.
+`./start.sh` builds **this checkout** using Docker, starts MySQL and the platform, creates local secrets and imports the starter catalog (`bash scripts/install.sh` does the same). Host Go/Node installations are not required. It never falls back to an upstream image. Use `logs`, `stop`, `restart` or `pull` to manage the installation; `pull` rebuilds the current source or refreshes an explicitly selected image. To use a tested image from this project, set `LOOPFORGE_IMAGE` and run `./start.sh release`; production requires a verified digest. See [deployment](docs/deployment.md).
 
-Open the address printed by the installer and create your account; the first one becomes the administrator. The service listens on `0.0.0.0:8090` by default. On a cloud host, the installer reads the public IP from the provider's metadata service and prints it; allow the port in your security group, or put an HTTPS reverse proxy in front. Restrict access to your own IP until the administrator account exists. The home page's quick-access guide walks you through adding a model key, connecting a repository and choosing an SOP.
+Open `http://127.0.0.1:8090` and create the first administrator account. New installs bind to loopback and disable subsequent self-registration. Use an SSH tunnel for initial server setup, then configure an HTTPS reverse proxy and run `./start.sh production`. Existing `.env` values are preserved; check them using `./start.sh check` before exposing a server.
 
 ### Try it without an API key
 
@@ -104,7 +110,7 @@ New accounts join the **LoopForge demo project**, which includes an SOP made onl
 - **GitHub is optional.** All built-in generic SOPs run without a repository: product SOPs deliver documents, and new frontend/backend projects deliver source files in the task workspace. Bug fixes still need source code and reproduction details. Connect a repository when you work on existing code or want PRs.
 - **Delivering to a repository.** Choose **Connect GitHub** in personal settings, approve the device code on GitHub and pick your repository (the LoopForge OAuth App is built in; no PAT required, manual PAT entry still works). Set executor credentials (or bind a local execution machine), then either run a project SOP or ask Main Bot to change the code and submit a PR/MR.
 - **Sandboxes.** In the default Compose installation, SOP runs and conversation workspaces both use Docker sandbox containers started through the host Docker socket. Default sandboxes reuse the installed runtime image, so nothing extra is built after installation; custom Dockerfiles still build their own images. Docker socket access grants control of the host daemon, so this setup is for trusted teams, not untrusted multi-tenant isolation. See [deployment boundaries](docs/deployment.md#accounts). Re-running the installer keeps your data.
-- **Accounts and access.** New installations listen on all interfaces (existing bind settings are kept) and are designed for a trusted team: signed-in users can read project data across the instance, and teammates can sign up from the login page (`AGENTFLOW_ALLOW_SIGNUP=false` in `.env` turns that off). Read the [account and access model](docs/deployment.md#accounts) before exposing it beyond your team.
+- **Accounts and access.** New container installs bind to loopback and disable self-registration after the first administrator. Administrators create teammate accounts. Existing settings are preserved; use `./start.sh check` and read the [access boundaries](docs/deployment.md#accounts) before deployment. The instance remains a trusted-team service.
 - **Remote access, HTTPS, separate workers.** See [Deployment](docs/deployment.md).
 - **Hacking on LoopForge itself?** `bash scripts/dev.sh` runs it natively (Go 1.26.11+).
 
@@ -153,7 +159,7 @@ Each node declares its artifacts and dependencies, and the engine starts each st
 | **Conversation workspaces** | On-demand Docker sandboxes with the project's repositories checked out, project roles as native subagents, and direct control of a running SOP workspace: pause, resume or take over. |
 | **SOP designer** | Visual canvas with Agent, Script, Human gate, Sub-SOP and Preview nodes, rework-on-failure edges, validation, version history and publishing. Built-in backend, frontend, bug-fix and product SOPs. |
 | **Roles** | Reusable definitions: prompt, executor, model, rules, Skills, MCP tools, artifacts and gates, shared across SOP nodes and chat subagents. |
-| **Requirement → delivery** | Requirements tracked end to end, whether shipped by an SOP or straight from chat, with PR/MR status tracking, merge detection and direct-branch merges. |
+| **Requirement → delivery** | Requirements tracked end to end, whether shipped by an SOP or straight from chat, with PR/MR status tracking and merge detection. Controlled delivery opens a draft PR after independent gates; humans review and merge. |
 | **Runs & approvals** | Live node status, tool traces, worker logs, per-node artifact snapshots and workspace previews. A single **Needs review** inbox for every gate waiting on you. |
 | **AI scheduled tasks** | Recurring agent tasks with full workspace, SOP and MCP access; a shared market of versioned, parameterized task templates; automatic SOP dispatch for new requirements. |
 | **Insights & cost** | Engineering metrics, business-domain reports with static HTML/SVG export, and token/cost accounting for SOPs and conversations at public list prices. |
@@ -211,7 +217,7 @@ Those are general-purpose AI and automation workflow builders. LoopForge is buil
 LoopForge doesn't replace them; it orchestrates them. Each agent step and each chat turn runs one of those CLIs. LoopForge adds what surrounds it: who does what, in which sandbox, in which order, with which checks, and who signs off.
 
 **Is it safe to expose on the internet?**
-New installations listen on all interfaces and target a trusted team. Read the [account and access model](docs/deployment.md#accounts) and set up HTTPS before opening it up. Report vulnerabilities privately via the [security policy](SECURITY.md).
+New container installations bind to loopback and disable self-registration after initial administrator setup. The service targets a trusted team. Read the [account and access model](docs/deployment.md#accounts) and set up HTTPS before opening it up. Report vulnerabilities privately via the [security policy](SECURITY.md).
 
 ## Documentation
 

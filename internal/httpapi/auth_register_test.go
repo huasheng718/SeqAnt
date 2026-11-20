@@ -14,6 +14,7 @@ import (
 
 func TestRegisterFirstAccountBecomesAdminAndSignupToggle(t *testing.T) {
 	t.Setenv("AGENTFLOW_AUTH_REQUIRED", "true")
+	t.Setenv("AGENTFLOW_ALLOW_SIGNUP", "false")
 	t.Setenv("AGENTFLOW_SCHEDULER_ENABLED", "false")
 	s, err := repo.OpenTest()
 	if err != nil {
@@ -59,9 +60,13 @@ func TestRegisterFirstAccountBecomesAdminAndSignupToggle(t *testing.T) {
 	if !s.IsPlatformAdmin("owner") {
 		t.Fatal("first account must administer the platform")
 	}
-	if needs, signup := setup(); needs || !signup {
+	if needs, signup := setup(); needs || signup {
 		t.Fatalf("after setup: needs=%v signup=%v", needs, signup)
 	}
+	if w := register("visitor"); w.Code != 403 {
+		t.Fatalf("signup disabled after bootstrap: %d", w.Code)
+	}
+	t.Setenv("AGENTFLOW_ALLOW_SIGNUP", "true")
 	if w := register("owner"); w.Code != 409 {
 		t.Fatalf("duplicate login: %d", w.Code)
 	}

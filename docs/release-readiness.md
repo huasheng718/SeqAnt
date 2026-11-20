@@ -1,6 +1,6 @@
-# Release review
+# Historical upstream release review
 
-This document records the historical 2026-10-16 review. See the [verification record](validation.md#fresh-installations-and-resumed-acceptance--2026-10-16) and [acceptance matrix](testing/acceptance-matrix.md) for the original scope, corrected failures and untested external-service boundaries. Historical counts and results below do not certify later commits; check CI on the exact public revision before merging or publishing.
+For the current SuperAgent Foundation scope, use [implementation status](superagent/implementation-status.md) and [deployment acceptance](operations/controlled-delivery.md). This document records the historical 2026-10-16 LoopForge review. See the [verification record](validation.md#fresh-installations-and-resumed-acceptance--2026-10-16) and [acceptance matrix](testing/acceptance-matrix.md) for the original scope, corrected failures and untested external-service boundaries. Historical counts and results below do not certify later commits; check CI on the exact public revision before merging or publishing.
 
 ## Conclusion
 

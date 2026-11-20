@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# One-command container installation from the published GHCR image pinned in
-# compose.yaml (LOOPFORGE_BUILD_FROM_SOURCE=1 builds this checkout instead).
+# One-command installation of this checkout. An explicitly selected prebuilt
+# image uses compose.yaml; otherwise compose.dev.yaml builds this source.
 # Installs Docker when it is missing (Linux, or macOS with Homebrew) and needs
 # Python 3 and curl (apt/dnf/yum, or Homebrew). Re-running is safe: secrets,
 # data and catalog edits are kept.
@@ -115,12 +115,47 @@ docker_access compose version >/dev/null 2>&1 || install_compose
 docker_access compose version >/dev/null 2>&1 || fail 'Docker Compose is still unavailable. Check the Docker CLI plugin configuration and rerun.'
 
 requested_public_url="${LOOPFORGE_PUBLIC_URL:-}"
+requested_image="${LOOPFORGE_IMAGE:-}"
+requested_build="${LOOPFORGE_BUILD_FROM_SOURCE:-}"
+requested_production="${LOOPFORGE_PRODUCTION:-0}"
 [[ ! -e .env || -r .env ]] || fail 'The existing .env is not readable by this user. Use the installation owner or ask an administrator to correct its ownership.'
 bash scripts/configure.sh
 [[ -r .env ]] || fail 'The existing .env is not readable by this user. Use the installation owner or ask an administrator to correct its ownership.'
 set -a; source .env; set +a
-export LOOPFORGE_BIND="${LOOPFORGE_BIND:-0.0.0.0}"
+export LOOPFORGE_BIND="${LOOPFORGE_BIND:-127.0.0.1}"
+if [[ -n "$requested_image" ]]; then export LOOPFORGE_IMAGE="$requested_image"; fi
 if [[ -n "$requested_public_url" ]]; then export LOOPFORGE_PUBLIC_URL="$requested_public_url"; fi
+dev_compose=compose.yaml:compose.dev.yaml
+case "$requested_build" in
+  1) selected_compose="$dev_compose" ;;
+  0) selected_compose=compose.yaml ;;
+  '')
+    if [[ -n "$requested_image" || "${COMPOSE_FILE:-}" == compose.yaml ]]; then
+      selected_compose=compose.yaml
+    else
+      selected_compose="$dev_compose"
+    fi ;;
+  *) fail 'LOOPFORGE_BUILD_FROM_SOURCE must be 0 or 1.' ;;
+esac
+if [[ "$selected_compose" == compose.yaml && -z "${LOOPFORGE_IMAGE:-}" ]]; then
+  fail 'Release mode requires LOOPFORGE_IMAGE for this project; no upstream image is selected automatically.'
+fi
+export COMPOSE_FILE="$selected_compose"
+# Persist the selection before Compose reads it, including through sudo.
+python3 - <<'PY'
+import os,pathlib,re,shlex
+p=pathlib.Path('.env')
+text=p.read_text()
+for key in ('COMPOSE_FILE','LOOPFORGE_IMAGE'):
+    line=key+'='+shlex.quote(os.environ.get(key,''))
+    pattern=r'(?m)^'+key+r'=.*$'
+    text=re.sub(pattern,lambda _:line,text) if re.search(pattern,text) else text.rstrip('\n')+'\n'+line+'\n'
+if text != p.read_text():
+    p.write_text(text)
+PY
+if [[ "$requested_production" == 1 ]]; then
+  docker_access compose --profile platform config --format json | python3 scripts/check-deployment.py --public-url "${LOOPFORGE_PUBLIC_URL:-}"
+fi
 python3 scripts/install-address.py --prepare "${AGENTFLOW_HTTP_PORT:-8090}"
 set -a; source .env; set +a
 if [[ -z "${LOOPFORGE_DOCKER_SOCKET:-}" ]]; then
@@ -148,26 +183,14 @@ if ! docker_access compose ps --status running --services 2>/dev/null | grep -qx
   fi
 fi
 
-dev_compose=compose.yaml:compose.dev.yaml
-if [[ "${LOOPFORGE_BUILD_FROM_SOURCE:-0}" == 1 && "${COMPOSE_FILE:-}" != "$dev_compose" ]]; then
-  # Persisted because sudo-run Compose only reads .env; later plain compose commands keep the source stack.
-  python3 - "$dev_compose" <<'PY'
-import pathlib,re,sys
-p=pathlib.Path('.env')
-text=re.sub(r'(?m)^COMPOSE_FILE=.*\n?','',p.read_text())
-p.write_text(text.rstrip('\n')+'\nCOMPOSE_FILE='+sys.argv[1]+'\n')
-PY
-  export COMPOSE_FILE="$dev_compose"
-fi
-
 if [[ "${COMPOSE_FILE:-}" != "$dev_compose" ]]; then
-  step "Pulling the published LoopForge image ${LOOPFORGE_IMAGE:-pinned in compose.yaml}"
+  step "Pulling the selected SuperAgent image ${LOOPFORGE_IMAGE}"
   docker_access compose --profile platform pull --policy "${LOOPFORGE_PULL_POLICY:-missing}" platform mysql
   docker_access compose --profile platform up -d --no-build --wait --wait-timeout 180
 else
-  step 'Building LoopForge from source (first install takes several minutes; frontend, Go and runtime stages build in parallel)'
+  step 'Building SuperAgent from this checkout (first install takes several minutes)'
   # Download MySQL while the platform image builds instead of afterwards.
-  docker_access compose pull --quiet --policy missing mysql >/dev/null 2>&1 &
+  docker_access compose pull --quiet --policy "${LOOPFORGE_PULL_POLICY:-missing}" mysql >/dev/null 2>&1 &
   mysql_pull=$!
   docker_access compose --profile platform build platform
   wait "$mysql_pull" || true

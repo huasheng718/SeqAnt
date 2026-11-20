@@ -32,11 +32,14 @@ class InstallerTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         (self.root / 'scripts').mkdir()
         (self.root / 'migrations/seed').mkdir(parents=True)
-        for name in ('install.sh', 'configure.sh', 'docker-access.sh', 'install-address.py', 'install-compose.py', 'install-observability-schema.sh'):
+        for name in ('install.sh', 'configure.sh', 'docker-access.sh', 'install-address.py', 'install-compose.py', 'install-observability-schema.sh', 'check-deployment.py'):
             shutil.copyfile(ROOT / 'scripts' / name, self.root / 'scripts' / name)
         shutil.copyfile(ROOT / 'start.sh', self.root / 'start.sh')
         (self.root / 'migrations/seed/001_test.sql').write_text('SELECT 1;\n')
         (self.root / 'mock').mkdir()
+        # These sudo/plugin cases simulate Linux even when the suite runs on macOS.
+        # The macOS prerequisite case replaces this stub explicitly.
+        self.executable('uname', '#!/usr/bin/env bash\nif [[ "$1" == -s ]]; then echo Linux; else echo x86_64; fi\n')
         self.executable('docker', '''#!/usr/bin/env bash
 printf '%s %s\\n' "${MOCK_PRIVILEGED:-0}" "$*" >> "$MOCK_LOG"
 if [[ "$1" == info ]]; then
@@ -109,11 +112,11 @@ exec "$@"
         self.assertIn('sudo -v', result.stderr)
         self.assertNotIn('up -d --no-build', (self.root / 'docker.log').read_text())
 
-    def test_default_install_pulls_pinned_release(self):
+    def test_default_install_builds_this_checkout(self):
         self.assert_success(self.install())
         log = (self.root / 'docker.log').read_text()
-        self.assertIn('pull --policy missing platform mysql', log)
-        self.assertNotIn('build platform', log)
+        self.assertNotIn('pull --policy missing platform mysql', log)
+        self.assertIn('build platform', log)
         self.assertIn("LOOPFORGE_IMAGE=''", (self.root / '.env').read_text())
 
     def test_source_build_persists_dev_compose_file(self):
@@ -129,12 +132,50 @@ exec "$@"
     def test_start_switches_source_build_back_to_release(self):
         self.assert_success(self.install(LOOPFORGE_BUILD_FROM_SOURCE='1'))
         (self.root / 'docker.log').unlink()
-        result = subprocess.run(['bash', 'start.sh', 'release'], cwd=self.root, env=self.environ, text=True, capture_output=True, stdin=subprocess.DEVNULL, timeout=15)
+        result = subprocess.run(['bash', 'start.sh', 'release'], cwd=self.root, env=dict(self.environ, LOOPFORGE_IMAGE='registry.example.test/superagent:tested'), text=True, capture_output=True, stdin=subprocess.DEVNULL, timeout=15)
         self.assert_success(result)
-        self.assertNotIn('COMPOSE_FILE=', (self.root / '.env').read_text())
+        self.assertIn('COMPOSE_FILE=compose.yaml\n', (self.root / '.env').read_text())
         log = (self.root / 'docker.log').read_text()
         self.assertIn('pull --policy missing platform mysql', log)
         self.assertNotIn('build platform', log)
+
+    def test_release_without_image_preserves_source_selection(self):
+        self.assert_success(self.install())
+        original = (self.root / '.env').read_text()
+        (self.root / 'docker.log').unlink()
+        result = self.install(LOOPFORGE_BUILD_FROM_SOURCE='0')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('requires LOOPFORGE_IMAGE', result.stderr)
+        self.assertEqual((self.root / '.env').read_text(), original)
+        self.assertNotIn('up -d', (self.root / 'docker.log').read_text())
+
+    def test_old_upstream_config_defaults_to_source(self):
+        self.assert_success(self.install())
+        config = self.root / '.env'
+        config.write_text(config.read_text().replace('COMPOSE_FILE=compose.yaml:compose.dev.yaml\n', '').replace("LOOPFORGE_IMAGE=''", 'LOOPFORGE_IMAGE=ghcr.io/tencent/loopforge:0.3.6'))
+        (self.root / 'docker.log').unlink()
+        self.assert_success(self.install())
+        log = (self.root / 'docker.log').read_text()
+        self.assertIn('build platform', log)
+        self.assertNotIn('pull --policy missing platform mysql', log)
+
+    def test_release_selection_and_environment_override_persist(self):
+        self.assert_success(self.install(LOOPFORGE_IMAGE='registry.example.test/superagent:first'))
+        self.assert_success(self.install(LOOPFORGE_IMAGE='registry.example.test/superagent:second'))
+        self.assertIn('LOOPFORGE_IMAGE=registry.example.test/superagent:second', (self.root / '.env').read_text())
+        (self.root / 'docker.log').unlink()
+        self.assert_success(self.install())
+        self.assertNotIn('build platform', (self.root / 'docker.log').read_text())
+        self.assert_success(self.install(LOOPFORGE_BUILD_FROM_SOURCE='1'))
+        self.assertIn('COMPOSE_FILE=compose.yaml:compose.dev.yaml', (self.root / '.env').read_text())
+
+    def test_production_rejects_invalid_config_before_build_or_start(self):
+        result = self.install(LOOPFORGE_PRODUCTION='1')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('FAIL:', result.stderr)
+        log = (self.root / 'docker.log').read_text()
+        self.assertNotIn('build platform', log)
+        self.assertNotIn('up -d', log)
 
     def test_start_refuses_local_build(self):
         result = subprocess.run(['bash', 'start.sh', 'build'], cwd=self.root, env=self.environ, text=True, capture_output=True, stdin=subprocess.DEVNULL, timeout=15)
@@ -274,13 +315,14 @@ if [[ "${!#}" == */docker-compose ]]; then touch "$MOCK_COMPOSE_INSTALLED"; fi
         self.assertTrue(Path(data, 'home').is_dir())
         self.assertFalse((self.root / 'should-not-exist').exists())
 
-    def test_install_without_public_url_binds_all_interfaces_without_prompting(self):
+    def test_install_without_public_url_defaults_to_loopback_and_no_signup(self):
         self.environ.pop('LOOPFORGE_BIND')
         result = self.install(LOOPFORGE_PUBLIC_URL='')
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertNotIn('Team URL', result.stdout)
         config = (self.root / '.env').read_text()
-        self.assertIn('LOOPFORGE_BIND=0.0.0.0', config)
+        self.assertIn('LOOPFORGE_BIND=127.0.0.1', config)
+        self.assertIn('AGENTFLOW_ALLOW_SIGNUP=false', config)
         self.assertIn("LOOPFORGE_PUBLIC_URL=''", config)
 
     def test_existing_empty_url_can_be_set_without_rotating_secrets(self):
