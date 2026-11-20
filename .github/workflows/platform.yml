@@ -44,9 +44,15 @@ jobs:
       - name: Script isolation privilege acceptance in a separate test process
         run: |
           go test -c ./internal/scriptview -covermode=set -coverpkg=agentflow/internal/... -o "${{ runner.temp }}/scriptview.test"
+          # After dropping capabilities UID 0 cannot traverse runner's private
+          # home or write runner-owned directories. Use a disposable /tmp output.
+          coverage=$(mktemp -d /tmp/scriptview-coverage.XXXXXX)
+          chmod 777 "$coverage"
+          trap 'rm -rf "$coverage"' EXIT
           sudo "${{ runner.temp }}/scriptview.test" -test.v -test.timeout=60s \
             -test.run='^(TestApplyMaskValidationAndFilesystemBranches|TestRemoveMasksRejectsWritableSources|TestZDropPrivilegesForDisposableTestProcess)$' \
-            -test.coverprofile="${{ runner.temp }}/go-scriptview.cover"
+            -test.coverprofile="$coverage/go.cover"
+          cp "$coverage/go.cover" "$RUNNER_TEMP/go-scriptview.cover"
       - name: Install pinned CLIs for local protocol acceptance
         run: npm install --global @openai/codex@0.162.1 @anthropic-ai/claude-code@2.1.300
       - name: Check real CLI credentials, MCP, stream parsing and native-tool restrictions

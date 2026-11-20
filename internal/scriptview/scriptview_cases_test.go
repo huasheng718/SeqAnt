@@ -53,7 +53,8 @@ func requireRoot(t *testing.T) {
 	}
 }
 
-func TestApplyMaskValidationAndFilesystemBranches(t *testing.T) {
+func prepareMaskWorkspace(t *testing.T) {
+	t.Helper()
 	requireRoot(t)
 	const workspace = "/workspace"
 	createdWorkspace := false
@@ -63,23 +64,28 @@ func TestApplyMaskValidationAndFilesystemBranches(t *testing.T) {
 		}
 		createdWorkspace = true
 	}
-	rootDir := filepath.Join(workspace, "cvs-scriptview")
-	_ = os.RemoveAll(rootDir)
 	if err := os.MkdirAll(filepath.Join(workspace, ".agentflow", "isolation", "empty-dir"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(workspace, ".agentflow", "isolation", "empty-file"), nil, 0o444); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(rootDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
 	t.Cleanup(func() {
-		_ = os.RemoveAll(rootDir)
 		if createdWorkspace {
 			_ = os.RemoveAll(workspace)
 		}
 	})
+}
+
+func TestApplyMaskValidationAndFilesystemBranches(t *testing.T) {
+	prepareMaskWorkspace(t)
+	const workspace = "/workspace"
+	rootDir := filepath.Join(workspace, "cvs-scriptview")
+	_ = os.RemoveAll(rootDir)
+	if err := os.MkdirAll(rootDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(rootDir) })
 	root, err := os.OpenRoot(workspace)
 	if err != nil {
 		t.Fatal(err)
@@ -125,7 +131,7 @@ func TestApplyMaskValidationAndFilesystemBranches(t *testing.T) {
 }
 
 func TestRemoveMasksRejectsWritableSources(t *testing.T) {
-	requireRoot(t)
+	prepareMaskWorkspace(t)
 	rootDir := "/workspace/cvs-scriptview-remove"
 	if err := os.MkdirAll(rootDir, 0o755); err != nil {
 		t.Fatal(err)
