@@ -61,6 +61,10 @@ test("third-party model keys are flagged before CodeBuddy rejects them", () => {
 
 test("credential errors from the platform link to the right setting", () => {
   const cases = [
+    ["运行责任人未配置 Gitee 访问令牌", "giteeToken", true],
+    ["git clone: Authentication failed for https://gitee.com/a/b.git", "giteeToken", false],
+    ["运行责任人的 GitLab 访问令牌已过期", "gitlabToken", true],
+    ["git clone https://gitlab.com/a/b.git: HTTP Basic: Access denied", "gitlabToken", false],
     ["请先在个人配置中配置自己的 CodeBuddy API Key", "codeBuddyApiKey", false],
     ["请先配置个人 CodeBuddy API Key", "codeBuddyApiKey", false],
     [

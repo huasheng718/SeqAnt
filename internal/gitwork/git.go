@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"agentflow/internal/procwatch"
@@ -21,7 +22,7 @@ func Run(ctx context.Context, workspace string, args ...string) (string, error) 
 	}
 	defer cleanup()
 	out, err := command(ctx, workspace, token, sshEnv, args).CombinedOutput()
-	text := Redact(strings.TrimSpace(string(out)), token)
+	text := Redact(strings.TrimSpace(string(out)), contextTokens(ctx)...)
 	if err != nil {
 		if text != "" {
 			return text, fmt.Errorf("%w: %s", err, text)
@@ -48,7 +49,7 @@ func Watch(ctx context.Context, workspace string, opts procwatch.Options, args .
 		return "", err
 	}
 	defer cleanup()
-	opts.Redact = func(line string) string { return Redact(line, token) }
+	opts.Redact = func(line string) string { return Redact(line, contextTokens(ctx)...) }
 	text, err := procwatch.Run(ctx, func(ctx context.Context) *exec.Cmd { return command(ctx, workspace, token, sshEnv, args) }, opts)
 	if err != nil && text != "" {
 		return text, fmt.Errorf("%w: %s", err, text)
@@ -58,12 +59,27 @@ func Watch(ctx context.Context, workspace string, opts procwatch.Options, args .
 
 func command(ctx context.Context, workspace, token string, sshEnv map[string]string, args []string) *exec.Cmd {
 	dir := CommandDir(workspace)
+	hostTokens := HostTokensFrom(ctx)
 	if len(sshEnv) > 0 {
 		token = ""
+		hostTokens = nil
 	}
-	cmd := exec.CommandContext(ctx, "git", append(AuthConfigArgs(token), args...)...)
+	hostEnv := SandboxEnv(token)
+	firstHostConfig, _ := strconv.Atoi(hostEnv["GIT_CONFIG_COUNT"])
+	BindHostCredentials(hostEnv, hostTokens)
+	authArgs := AuthConfigArgs(token)
+	configCount, _ := strconv.Atoi(hostEnv["GIT_CONFIG_COUNT"])
+	// Command-line -c wins over GIT_CONFIG_COUNT; append the host helpers
+	// after the legacy global helper so its reset cannot discard them.
+	for i := firstHostConfig; i < configCount; i++ {
+		authArgs = append(authArgs, "-c", hostEnv[fmt.Sprintf("GIT_CONFIG_KEY_%d", i)]+"="+hostEnv[fmt.Sprintf("GIT_CONFIG_VALUE_%d", i)])
+	}
+	cmd := exec.CommandContext(ctx, "git", append(authArgs, args...)...)
 	cmd.Dir = dir
 	cmd.Env = WithEnvValue(Env(token), "PWD", dir)
+	for key, value := range hostEnv {
+		cmd.Env = WithEnvValue(cmd.Env, key, value)
+	}
 	if len(sshEnv) > 0 {
 		// Do not let URL rewrites switch a managed SSH operation to another
 		// transport. SSH itself only connects to the requested pinned host.

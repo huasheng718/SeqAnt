@@ -39,10 +39,12 @@ func TestProviderCredentialAPIAuthorizationAndURLs(t *testing.T) {
 	}{
 		{"guest", "", "{\"codexApiKey\":\"secret\"}", 403},
 		{"other", "provider-bob", "{\"claudeCodeApiKey\":\"secret\"}", 403},
+		{"guest-platform", "", "{\"giteeToken\":\"test-secret\",\"gitlabToken\":\"test-secret\"}", 403},
+		{"other-platform", "provider-bob", "{\"giteeTokenClear\":true,\"gitlabTokenClear\":true}", 403},
 		{"invalid", "provider-alice", "{\"codexApiKey\":\"secret\",\"codexBaseUrl\":\"file:///tmp/x\"}", 400},
 		{"url-secret", "provider-alice", "{\"claudeCodeBaseUrl\":\"https://user:secret@example.com\"}", 400},
 		{"query", "provider-alice", "{\"codexBaseUrl\":\"https://example.com?key=secret\"}", 400},
-		{"valid", "provider-alice", "{\"codexApiKey\":\"codex-test-secret\",\"codexBaseUrl\":\"http://localhost:9999/v1\",\"claudeCodeApiKey\":\"claude-test-secret\",\"claudeCodeBaseUrl\":\"https://example.com/anthropic\"}", 200},
+		{"valid", "provider-alice", "{\"codexApiKey\":\"codex-test-secret\",\"codexBaseUrl\":\"http://localhost:9999/v1\",\"claudeCodeApiKey\":\"claude-test-secret\",\"claudeCodeBaseUrl\":\"https://example.com/anthropic\",\"giteeToken\":\"gitee-test-secret\",\"gitlabToken\":\"gitlab-test-secret\"}", 200},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPut, fmt.Sprintf("/api/users/%d/credentials", alice.ID), strings.NewReader(tc.body))
@@ -70,14 +72,28 @@ func TestProviderCredentialAPIAuthorizationAndURLs(t *testing.T) {
 				if err := json.Unmarshal(rec.Body.Bytes(), &public); err != nil {
 					t.Fatal(err)
 				}
-				if !public.CodexAPIKeyConfigured || !public.ClaudeCodeAPIKeyConfigured {
+				if !public.CodexAPIKeyConfigured || !public.ClaudeCodeAPIKeyConfigured || !public.GiteeTokenConfigured || !public.GitLabTokenConfigured {
 					t.Fatal("configured state missing")
 				}
 				stored, _ := st.User(alice.ID)
-				if stored.CodexAPIKey != "codex-test-secret" || stored.ClaudeCodeAPIKey != "claude-test-secret" {
-					t.Fatalf("provider keys were not stored: %+v", stored)
+				if stored.CodexAPIKey != "codex-test-secret" || stored.ClaudeCodeAPIKey != "claude-test-secret" || stored.GiteeToken != "gitee-test-secret" || stored.GitLabToken != "gitlab-test-secret" {
+					t.Fatal("provider keys were not stored")
 				}
 			}
 		})
+	}
+}
+
+func TestPlatformRepositoryBindings(t *testing.T) {
+	f := cvBNewHTTPFixture(t)
+	for _, tc := range []struct{ url, provider, identity string }{
+		{"https://gitee.com/team/repo.git", "gitee", "gitee:team/repo"},
+		{"https://gitlab.com/group/subgroup/repo", "gitlab", "gitlab:group/subgroup/repo"},
+	} {
+		resp := cvBRequest(t, f, http.MethodPost, "/api/repositories", map[string]string{"projectId": "platform", "repoUrl": tc.url}, true)
+		var repository domain.Repository
+		if resp.Code != http.StatusOK || json.Unmarshal(resp.Body.Bytes(), &repository) != nil || repository.Provider != tc.provider || repository.GongfengProjectID != tc.identity || repository.DefaultBranch != "main" {
+			t.Fatalf("%s repository was not saved correctly: HTTP %d", tc.provider, resp.Code)
+		}
 	}
 }

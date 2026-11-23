@@ -32,7 +32,7 @@ func withRepositoryGit(ctx context.Context, repository domain.RepositoryContext)
 	if repository.Provider == domain.RepositoryProviderSSH {
 		return gitwork.WithSSHRemote(ctx, repository.CloneURL)
 	}
-	return ctx
+	return gitwork.WithToken(ctx, gitwork.TokenForRemote(ctx, repository.CloneURL))
 }
 
 func sshRepositoryURLs(repositories []domain.RepositoryContext) []string {
@@ -129,10 +129,16 @@ func explainGitAuthFailure(err error, tokenConfigured bool) error {
 	if strings.Contains(msg, "Git Token") || !gitCommandFailure.MatchString(msg) || !gitAuthFailure.MatchString(msg) {
 		return err
 	}
-	if !tokenConfigured {
-		return fmt.Errorf("运行责任人未配置 Git Token，无法拉取仓库。%s。原始错误：%w", gitTokenFixHint, err)
+	label, hint := "Git Token", gitTokenFixHint
+	if strings.Contains(strings.ToLower(msg), "gitee.com") {
+		label, hint = "Gitee 访问令牌", "请责任人到「个人配置 → Gitee」配置个人访问令牌，并授予目标仓库的读取与推送权限"
+	} else if strings.Contains(strings.ToLower(msg), "gitlab.com") {
+		label, hint = "GitLab 访问令牌", "请责任人到「个人配置 → GitLab」配置个人访问令牌，并授予 read_repository 与 write_repository 权限"
 	}
-	return fmt.Errorf("运行责任人的 Git Token 无效、已过期或权限不足，无法拉取仓库。%s；并确认责任人对该仓库有权限。原始错误：%w", gitTokenFixHint, err)
+	if !tokenConfigured {
+		return fmt.Errorf("运行责任人未配置 %s，无法拉取仓库。%s。原始错误：%w", label, hint, err)
+	}
+	return fmt.Errorf("运行责任人的 %s 无效、已过期或权限不足，无法拉取仓库。%s；并确认责任人对该仓库有权限。原始错误：%w", label, hint, err)
 }
 
 const gitAuthIncludeFile = "agentflow.auth"

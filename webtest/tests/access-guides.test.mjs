@@ -36,6 +36,8 @@ test('token management renders client specs, revealed prompts, and credential hi
   assert.match(spec.code, /Bearer abc/);
   assert.match(app.evaluate(`accessMcpAgentPrompt(accessMcpClientSpec('cursor','http://x','abc'),'http://x','abc')`), /禁止使用 fetch/);
   assert.equal(app.evaluate(`credentialHint('工蜂 Authentication failed，需由责任人处理').field`), 'gitToken');
+  assert.equal(app.evaluate(`credentialHint('Authentication failed for https://gitee.com/a/b.git').field`), 'giteeToken');
+  assert.equal(app.evaluate(`credentialHint('https://gitlab.com/a/b.git: HTTP Basic: Access denied').field`), 'gitlabToken');
   assert.match(app.evaluate(`credentialActionHTML('CodeBuddy API Key 被拒绝')`), /codeBuddyApiKey/);
 
   body.querySelector('[data-revealed-client="codex"]').click();

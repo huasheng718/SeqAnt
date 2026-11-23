@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
-	"slices"
 	"strings"
 	"time"
 
@@ -127,9 +126,15 @@ func (h *agentToolGateway) workspaceSubmitMR(ctx context.Context, s *AgentToolSe
 	}
 	gitToken := strings.TrimSpace(h.repo.GitCredential(ctx, s.User.ID))
 	_, apiToken := gitwork.SplitToken(gitToken)
-	if apiToken == "" && !slices.ContainsFunc(run.RepositoryContexts(), func(rc domain.RepositoryContext) bool { return rc.Provider == domain.RepositoryProviderSSH }) {
-		return "", fmt.Errorf("你还没有配置 Git Token，无法推送和发起 PR。请到「个人配置 → 个人凭证」配置：打开 https://github.com/settings/tokens 新建令牌，为目标仓库授予 Contents 和 Pull requests 的读写权限，复制后粘贴并点校验")
+	for _, rc := range run.RepositoryContexts() {
+		if rc.ReadOnly || rc.Provider == domain.RepositoryProviderSSH {
+			continue
+		}
+		if strings.TrimSpace(h.repo.GitCredentialForRemote(ctx, s.User.ID, rc.CloneURL)) == "" {
+			return "", fmt.Errorf("你还没有配置代码平台访问令牌，无法推送 %s。请到「个人配置 → 个人凭证」配置对应平台", rc.Name)
+		}
 	}
+
 	if h.engine == nil {
 		return "", fmt.Errorf("执行引擎不可用")
 	}

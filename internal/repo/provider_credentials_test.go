@@ -104,12 +104,15 @@ func TestProviderUserCredentials(t *testing.T) {
 			if err := st.PutUser(domain.User{ID: u.ID, LoginName: login, ChineseName: "更新姓名"}); err != nil {
 				t.Fatal(err)
 			}
-			_, err = st.UpdateUserCredentials(u.ID, UserCredentialUpdate{GitToken: "git-secret"})
+			_, err = st.UpdateUserCredentials(u.ID, UserCredentialUpdate{GitToken: "git-secret", GiteeToken: "gitee-secret", GitLabToken: "gitlab-secret"})
 			if err != nil {
 				t.Fatal(err)
 			}
+			if err := st.PutUser(domain.User{ID: u.ID, LoginName: login, ChineseName: "再次登录"}); err != nil {
+				t.Fatal(err)
+			}
 			got, ok := st.User(u.ID)
-			if !ok || got.CodexAPIKey != "codex-secret" || got.ClaudeCodeAPIKey != "claude-secret" || got.CodexBaseURL != codexURL || got.ClaudeCodeBaseURL != claudeURL || len(got.CodexModels) != 1 || got.CodexModels[0].ID != "gpt-5.5" || got.CodexModels[0].Name != "" || len(got.ClaudeCodeModels) != 1 || got.ClaudeCodeModels[0].Name != "Sonnet" {
+			if !ok || got.CodexAPIKey != "codex-secret" || got.ClaudeCodeAPIKey != "claude-secret" || got.GiteeToken != "gitee-secret" || got.GitLabToken != "gitlab-secret" || got.CodexBaseURL != codexURL || got.ClaudeCodeBaseURL != claudeURL || len(got.CodexModels) != 1 || got.CodexModels[0].ID != "gpt-5.5" || got.CodexModels[0].Name != "" || len(got.ClaudeCodeModels) != 1 || got.ClaudeCodeModels[0].Name != "Sonnet" {
 				t.Fatalf("credentials did not survive refresh and partial update: %+v %+v", got.CodexModels, got.ClaudeCodeModels)
 			}
 			{
@@ -132,7 +135,7 @@ func TestProviderUserCredentials(t *testing.T) {
 			}
 			public := domain.PublicUser(got)
 			raw, _ := json.Marshal(public)
-			if strings.Contains(string(raw), "secret") || !public.CodexAPIKeyConfigured || !public.ClaudeCodeAPIKeyConfigured {
+			if strings.Contains(string(raw), "secret") || !public.CodexAPIKeyConfigured || !public.ClaudeCodeAPIKeyConfigured || !public.GiteeTokenConfigured || !public.GitLabTokenConfigured {
 				t.Fatal("public user leaked credentials or lost configured state")
 			}
 			empty := ""
@@ -142,8 +145,16 @@ func TestProviderUserCredentials(t *testing.T) {
 				t.Fatal(err)
 			}
 			cleared, _ := st.User(u.ID)
-			if cleared.CodexAPIKey != "" || cleared.ClaudeCodeAPIKey != "" || cleared.CodexBaseURL != "" || cleared.ClaudeCodeBaseURL != "" || len(cleared.CodexModels) != 0 || len(cleared.ClaudeCodeModels) != 0 || cleared.GitToken != "git-secret" {
+			if cleared.CodexAPIKey != "" || cleared.ClaudeCodeAPIKey != "" || cleared.CodexBaseURL != "" || cleared.ClaudeCodeBaseURL != "" || len(cleared.CodexModels) != 0 || len(cleared.ClaudeCodeModels) != 0 || cleared.GitToken != "git-secret" || cleared.GiteeToken != "gitee-secret" || cleared.GitLabToken != "gitlab-secret" {
 				t.Fatal("clear operation did not isolate providers")
+			}
+			_, err = st.UpdateUserCredentials(u.ID, UserCredentialUpdate{GiteeTokenClear: true, GitLabTokenClear: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			cleared, _ = st.User(u.ID)
+			if cleared.GiteeToken != "" || cleared.GitLabToken != "" {
+				t.Fatal("Gitee/GitLab clear operation did not remove provider tokens")
 			}
 		})
 	}

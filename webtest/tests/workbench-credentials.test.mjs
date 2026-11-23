@@ -193,3 +193,68 @@ test('Git token verification rejects invalid tokens before save and accepts vali
   assert.equal(invalid.saved, false);
   assert.equal(valid.saved, true);
 });
+
+test('Gitee and GitLab platform credentials can be added, edited, and removed', async (t) => {
+  const app = await loadApp();
+  t.after(app.close);
+  app.evaluate(`state.data.users[0].id=1;state.currentUser={...state.data.users[0],id:1,isGuest:false};state.data.users[0]=state.currentUser`);
+  const savedUsers = {
+    giteeToken: false,
+    gitlabToken: false,
+  };
+  app.router.put('/api/users/1/credentials', (call) => {
+    const body = call.body;
+    if (body.giteeToken) savedUsers.giteeToken = true;
+    if (body.gitlabToken) savedUsers.gitlabToken = true;
+    if (body.giteeTokenClear) savedUsers.giteeToken = false;
+    if (body.gitlabTokenClear) savedUsers.gitlabToken = false;
+    return {
+      id: 1,
+      username: 'tester',
+      giteeTokenConfigured: savedUsers.giteeToken,
+      gitlabTokenConfigured: savedUsers.gitlabToken,
+    };
+  });
+  await app.evaluate(`renderPersonalSettings()`);
+  app.evaluate(`openCredentialWizard()`);
+  const platform = app.document.querySelector('#credentialWizard [aria-label="平台集成"]');
+  assert.ok(platform.querySelector('[data-wizard-kind="giteeToken"]'));
+  assert.ok(platform.querySelector('[data-wizard-kind="gitlabToken"]'));
+  app.evaluate(`closeCredentialWizard(true)`);
+  for (const [kind, token] of [['giteeToken', 'gitee-pat'], ['gitlabToken', 'gitlab-pat']]) {
+    app.evaluate(`openCredentialWizard('${kind}')`);
+    const wizard = () => app.document.querySelector('#credentialWizard');
+    wizard().querySelector('[data-wizard-next]').click();
+    await settle(2);
+    const secret = wizard().querySelector('input[name="secret"]');
+    secret.value = token;
+    secret.dispatchEvent(new app.window.Event('input', { bubbles: true }));
+    wizard().querySelector('[data-wizard-next]').click();
+    await settle(2);
+    wizard().querySelector('[data-wizard-next]').click();
+    await settle(4);
+    assert.match(wizard().textContent, /已保存/);
+    wizard().querySelector('[data-wizard-done]').click();
+    await app.evaluate(`renderPersonalSettings()`);
+  }
+  for (const kind of ['giteeToken', 'gitlabToken']) {
+    assert.ok(app.router.calls.some((call) => call.body?.[kind] === (kind === 'giteeToken' ? 'gitee-pat' : 'gitlab-pat')));
+    const row = () => app.document.querySelector(`[data-credential-row="${kind}"]`);
+    assert.ok(row().classList.contains('is-configured'));
+    row().querySelector('.credential-row-main').click();
+    const input = row().querySelector('[name="secret"]');
+    assert.equal(input.value, '', 'saved tokens are never returned to inputs');
+    input.value = 'rotated-pat';
+    input.dispatchEvent(new app.window.Event('input', { bubbles: true }));
+    row().querySelector('[data-credential-act="save"]').click();
+    await settle(6);
+    assert.ok(app.router.calls.some((call) => call.body?.[kind] === 'rotated-pat'));
+    row().querySelector('.credential-row-main').click();
+    row().querySelector('[data-credential-act="delete"]').click();
+    row().querySelector('[data-credential-act="confirm-delete"]').click();
+    await settle(6);
+    assert.ok(app.router.calls.some((call) => call.body?.[`${kind}Clear`] === true));
+    assert.equal(row().classList.contains('is-configured'), false);
+  }
+  assert.equal(app.router.calls.some((call) => call.path.endsWith('/git-token/verify')), false, 'provider tokens must not be sent to the GitHub verification API');
+});

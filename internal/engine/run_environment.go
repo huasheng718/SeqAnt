@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 
 	"agentflow/internal/domain"
+	"agentflow/internal/gitwork"
 	"agentflow/internal/repo"
 	"agentflow/internal/runtime"
 )
@@ -228,8 +229,9 @@ func (e *Engine) acquireRunEnvironment(ctx context.Context, run domain.Run, prof
 func (e *Engine) resolveRunCredentials(run domain.Run) runtime.RunCredentials {
 	userID := run.ExecutionContext.ResponsibleUserID
 	credentials := runtime.RunCredentials{
-		CodeBuddy: resolveCodeBuddyCredential(e.repo, userID),
-		GitToken:  resolveGitToken(e.repo, userID),
+		CodeBuddy:     resolveCodeBuddyCredential(e.repo, userID),
+		GitToken:      resolveGitToken(e.repo, userID),
+		GitHostTokens: e.repo.GitHostCredentials(userID),
 	}
 	credentials.GitSSHKeys = e.repo.GitSSHKeysForRemotes(userID, sshRepositoryURLs(run.RepositoryContexts()))
 	identity := resolveGitIdentity(e.repo, userID)
@@ -242,6 +244,7 @@ func (e *Engine) resolveRunCredentials(run domain.Run) runtime.RunCredentials {
 	}
 	if e.controlledRun(run) {
 		credentials.GitToken = ""
+		credentials.GitHostTokens = nil
 		return credentials
 	}
 	scriptAssets, _, _ := runtime.PrepareMCPServers(e.resolveScriptMCPAssets(run.ExecutionContext.ProjectID, userID), runtime.MCPTarget{GitToken: credentials.GitToken})
@@ -382,4 +385,8 @@ func (e *Engine) LocalRunWorkspace(run domain.Run) (string, string) {
 // Empty means that the authoritative workspace belongs to the control plane.
 func (e *Engine) RunExecutionRunner(run domain.Run) string {
 	return e.defaultExecutionRunner(run)
+}
+
+func withRunGitCredentials(ctx context.Context, credentials runtime.RunCredentials) context.Context {
+	return gitwork.WithHostTokens(withGitToken(ctx, credentials.GitToken), credentials.GitHostTokens)
 }

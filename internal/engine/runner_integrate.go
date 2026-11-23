@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"agentflow/internal/domain"
+	"agentflow/internal/gitwork"
 )
 
 // integrationTaskNode attributes integrate actions in runner task lists; the
@@ -25,7 +26,7 @@ func (e *Engine) integrateOnRunner(ctx context.Context, runner domain.Runner, ru
 	}
 	invocation := &domain.RunnerInvocation{RunID: run.ID, NodeID: integrationTaskNode}
 	identity := gitIdentityFrom(ctx)
-	bindRunnerRepositories(invocation, run, gitTokenFrom(ctx), identity.name, identity.email)
+	bindRunnerRepositories(invocation, run, gitTokenFrom(ctx), identity.name, identity.email, gitwork.HostTokensFrom(ctx))
 	invocation.Repository = nil
 	var target *domain.RunnerRepository
 	for i := range invocation.Repositories {

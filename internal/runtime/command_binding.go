@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"agentflow/internal/gitwork"
 	"agentflow/internal/observability"
 	"fmt"
 	"net/url"
@@ -104,6 +105,7 @@ func bindCommand(sandbox Sandbox, workspace string, command CommandSpec, credent
 			if err := bindGitEnvironment(sandbox, workspace, bound.environment, credentials.GitToken); err != nil {
 				return CommandSpec{}, err
 			}
+			gitwork.BindHostCredentials(bound.environment, credentials.GitHostTokens)
 		case BindMCP:
 			if err := bindMCPCallEnvironment(sandbox, workspace, bound.environment, credentials.MCPServers); err != nil {
 				return CommandSpec{}, err
@@ -277,10 +279,13 @@ func privateHomePaths(sandbox Sandbox, workspace string, command CommandSpec) (h
 
 // GitEnvironment is the git environment a child process needs to reach
 // private remotes with token without the token touching any git config.
-func GitEnvironment(sandbox Sandbox, workspace, token string) (map[string]string, error) {
+func GitEnvironment(sandbox Sandbox, workspace, token string, hostTokens ...map[string]string) (map[string]string, error) {
 	environment := map[string]string{}
 	if err := bindGitEnvironment(sandbox, workspace, environment, token); err != nil {
 		return nil, err
+	}
+	if len(hostTokens) > 0 {
+		gitwork.BindHostCredentials(environment, hostTokens[0])
 	}
 	return environment, nil
 }

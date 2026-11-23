@@ -6,6 +6,8 @@ export const CREDENTIALS = {
   codexApiKey: "Codex API Key",
   claudeCodeApiKey: "Claude Code API Key",
   gitToken: "GitHub Git Token",
+  giteeToken: "Gitee 访问令牌",
+  gitlabToken: "GitLab 访问令牌",
   gitSshKey: "Git SSH 密钥",
 };
 
@@ -103,6 +105,22 @@ export const CREDENTIAL_GUIDES = {
       "回到这里点「重试节点」",
     ],
   },
+  giteeToken: {
+    url: "/#/settings",
+    link: "配置 Gitee 访问令牌",
+    steps: [
+      "到「个人配置 → Gitee」创建个人访问令牌并复制",
+      "保存后回到这里点「重试节点」",
+    ],
+  },
+  gitlabToken: {
+    url: "/#/settings",
+    link: "配置 GitLab 访问令牌",
+    steps: [
+      "到「个人配置 → GitLab」创建个人访问令牌并复制",
+      "保存后回到这里点「重试节点」",
+    ],
+  },
   codeBuddyApiKey: {
     url: CODEBUDDY_ENVIRONMENTS[0].keyUrl,
     link: "打开 CodeBuddy 创建 Key",
@@ -148,6 +166,8 @@ const RULES = [
     "gitSshKey",
     /Git SSH (?:密钥|私钥)/i,
   ],
+  ["giteeToken", /Gitee[^。\n]{0,16}(?:Token|令牌|访问令牌)|gitee\.com[^\n]*(?:Authentication failed|could not read Username|HTTP Basic: Access denied)|(?:Authentication failed|could not read Username|HTTP Basic: Access denied)[^\n]*gitee\.com/i],
+  ["gitlabToken", /GitLab[^。\n]{0,16}(?:Token|令牌|访问令牌)|gitlab\.com[^\n]*(?:Authentication failed|could not read Username|HTTP Basic: Access denied)|(?:Authentication failed|could not read Username|HTTP Basic: Access denied)[^\n]*gitlab\.com/i],
   [
     "gitToken",
     /Git Token|工蜂[^。\n]{0,12}令牌|could not read Username|Authentication failed|HTTP Basic: Access denied|terminal prompts disabled|requested URL returned error: 40[13]/i,

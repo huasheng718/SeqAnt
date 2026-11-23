@@ -57,9 +57,6 @@ func EnvToken() string {
 // WithToken attaches the token Run uses for this context's git commands.
 func WithToken(ctx context.Context, token string) context.Context {
 	token = strings.TrimSpace(token)
-	if token == "" {
-		return ctx
-	}
 	return context.WithValue(ctx, tokenCtxKey{}, token)
 }
 
@@ -125,6 +122,8 @@ func Env(token string) []string {
 			strings.HasPrefix(kv, "SSH_ASKPASS="),
 			strings.HasPrefix(kv, "GIT_ALLOW_PROTOCOL="),
 			strings.HasPrefix(kv, "GIT_PROTOCOL_FROM_USER="),
+			strings.HasPrefix(kv, "AGENTFLOW_GIT_HOST_USER_"),
+			strings.HasPrefix(kv, "AGENTFLOW_GIT_HOST_PASSWORD_"),
 			strings.HasPrefix(kv, gitHTTPUserEnv+"="),
 			strings.HasPrefix(kv, gitHTTPPassEnv+"="):
 			continue

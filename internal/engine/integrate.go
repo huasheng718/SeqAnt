@@ -71,7 +71,7 @@ func (e *Engine) integrateScheduledRun(id string) (bool, error) {
 	if env == nil {
 		return false, fmt.Errorf("run sandbox missing")
 	}
-	ctx := withGitIdentity(withGitToken(context.Background(), env.credentialSnapshot().GitToken), env.credentialSnapshot().GitUserName, env.credentialSnapshot().GitUserEmail)
+	ctx := withGitIdentity(withRunGitCredentials(context.Background(), env.credentialSnapshot()), env.credentialSnapshot().GitUserName, env.credentialSnapshot().GitUserEmail)
 	runner, onRunner, err := e.integrationRunner(r)
 	if err != nil {
 		return false, err

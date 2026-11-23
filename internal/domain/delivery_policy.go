@@ -37,10 +37,10 @@ func RestrictDeliveryAssets(assets AgentAssetBundle) AgentAssetBundle {
 
 func hostingCredential(key string) bool {
 	switch strings.ToUpper(strings.TrimSpace(key)) {
-	case "AGENTFLOW_GIT_TOKEN", "GIT_TOKEN", "GITHUB_TOKEN", "GH_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GITLAB_TOKEN", "GITLAB_ACCESS_TOKEN", "GONGFENG_TOKEN", "GIT_ASKPASS", "SSH_ASKPASS", "GIT_CONFIG", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT":
+	case "AGENTFLOW_GIT_TOKEN", "GIT_TOKEN", "GITHUB_TOKEN", "GH_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GITEE_TOKEN", "GITEE_ACCESS_TOKEN", "GITLAB_TOKEN", "GITLAB_ACCESS_TOKEN", "GONGFENG_TOKEN", "GIT_ASKPASS", "SSH_ASKPASS", "GIT_CONFIG", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT":
 		return true
 	}
-	return strings.HasPrefix(strings.ToUpper(key), "GIT_CONFIG_KEY_") || strings.HasPrefix(strings.ToUpper(key), "GIT_CONFIG_VALUE_")
+	return strings.HasPrefix(strings.ToUpper(key), "GIT_CONFIG_KEY_") || strings.HasPrefix(strings.ToUpper(key), "GIT_CONFIG_VALUE_") || strings.HasPrefix(strings.ToUpper(key), "AGENTFLOW_GIT_HOST_")
 }
 
 // RestrictDeliveryEnvironment only classifies known hosting credential keys;

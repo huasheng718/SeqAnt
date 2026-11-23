@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"os/exec"
 	"path"
@@ -788,7 +789,7 @@ func (d *Daemon) executeTerminal(ctx context.Context, task domain.RunnerTask) ex
 		}
 		command = runtime.WithCommandEnvironment(command, env)
 		command.Argv = runtime.BindMCPCallArgv(sandbox, command.Argv)
-		gitEnv, err := runtime.GitEnvironment(sandbox, workspace, invocationGitToken(task.Invocation))
+		gitEnv, err := runtime.GitEnvironment(sandbox, workspace, invocationGitToken(task.Invocation), invocationGitHostTokens(task.Invocation))
 		if err != nil {
 			return execResult{status: domain.RunnerTaskFailed, errMsg: fmt.Sprintf("prepare git credentials: %v", err)}
 		}
@@ -918,7 +919,7 @@ func (d *Daemon) executeInvocation(ctx context.Context, task domain.RunnerTask) 
 		commandEnv[key] = value
 	}
 	if hasCredentialBinding(prepared.Command.CredentialBindings, runtime.BindGit) {
-		gitEnv, gitErr := runtime.GitEnvironment(sandbox, workspace, invocationGitToken(inv))
+		gitEnv, gitErr := runtime.GitEnvironment(sandbox, workspace, invocationGitToken(inv), invocationGitHostTokens(inv))
 		if gitErr != nil {
 			return execResult{status: domain.RunnerTaskFailed, errMsg: fmt.Sprintf("prepare git credentials: %v", gitErr)}, nil
 		}
@@ -1113,21 +1114,53 @@ func bindInvocationCredentials(inv *domain.RunnerInvocation, bindings []runtime.
 	return argv, env, nil
 }
 
-// invocationGitToken is the token child processes use for git remotes; every
-// repository of one run carries the same responsible user's token.
+// invocationGitToken is the legacy default, also used by GitHub MCP.
+// Gitee/GitLab credentials travel only through their URL-scoped helpers.
 func invocationGitToken(inv *domain.RunnerInvocation) string {
 	if inv == nil {
 		return ""
 	}
 	for _, repo := range inv.Repositories {
+		if parsed, _ := url.Parse(repo.CloneURL); parsed != nil && (strings.EqualFold(parsed.Hostname(), "gitee.com") || strings.EqualFold(parsed.Hostname(), "gitlab.com")) {
+			continue
+		}
 		if token := strings.TrimSpace(repo.GitToken); token != "" {
 			return token
 		}
 	}
 	if inv.Repository != nil {
+		parsed, _ := url.Parse(inv.Repository.CloneURL)
+		if parsed != nil && (strings.EqualFold(parsed.Hostname(), "gitee.com") || strings.EqualFold(parsed.Hostname(), "gitlab.com")) {
+			return ""
+		}
 		return strings.TrimSpace(inv.Repository.GitToken)
 	}
 	return ""
+}
+
+func invocationGitHostTokens(inv *domain.RunnerInvocation) map[string]string {
+	tokens := map[string]string{"gitee.com": "", "gitlab.com": ""}
+	if inv == nil {
+		return tokens
+	}
+	repositories := append([]domain.RunnerRepository{}, inv.Repositories...)
+	if inv.Repository != nil {
+		repositories = append(repositories, *inv.Repository)
+	}
+	for _, repository := range repositories {
+		if repository.UseSSH {
+			continue
+		}
+		parsed, err := url.Parse(repository.CloneURL)
+		if err != nil || (parsed.Scheme != "https" && parsed.Scheme != "http") {
+			continue
+		}
+		host := strings.ToLower(parsed.Hostname())
+		if _, exists := tokens[host]; exists {
+			tokens[host] = repository.GitToken
+		}
+	}
+	return tokens
 }
 
 func hasCredentialBinding(bindings []runtime.CredentialBinding, want runtime.CredentialBinding) bool {

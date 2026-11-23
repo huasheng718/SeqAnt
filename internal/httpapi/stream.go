@@ -337,7 +337,7 @@ func (h *streamHandlers) prepareClarifyRepo(ctx context.Context, repo domain.Rep
 		return cacheDir, true, ""
 	}
 
-	token := engine.ResolveClarifyGitToken(h.repo, responsibleUserID)
+	token := h.repo.GitCredentialForRemote(ctx, responsibleUserID, repo.CloneURL)
 	prepCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
 
@@ -644,8 +644,9 @@ func (h *streamHandlers) executeClarify(ctx context.Context, issue domain.Issue,
 	clarifyID := fmt.Sprintf("clarify-%d", time.Now().UnixNano())
 	modelID := clarifyAllowedModel(request.Model)
 	credentials := runtime.RunCredentials{
-		CodeBuddy: runtime.CodeBuddyCredential{APIKey: strings.TrimSpace(responsible.CodeBuddyAPIKey), InternetEnvironment: strings.TrimSpace(responsible.CodeBuddyInternetEnvironment)},
-		GitToken:  strings.TrimSpace(h.repo.GitCredential(ctx, responsible.ID)),
+		CodeBuddy:     runtime.CodeBuddyCredential{APIKey: strings.TrimSpace(responsible.CodeBuddyAPIKey), InternetEnvironment: strings.TrimSpace(responsible.CodeBuddyInternetEnvironment)},
+		GitToken:      strings.TrimSpace(h.repo.GitCredential(ctx, responsible.ID)),
+		GitHostTokens: h.repo.GitHostCredentials(responsible.ID),
 	}
 	turnPrompt := userMsg
 	if resume {

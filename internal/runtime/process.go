@@ -130,6 +130,7 @@ func sensitiveProcessEnvironmentKey(key string) bool {
 		key == "OPENAI_API_KEY" || key == "CODEX_API_KEY" ||
 		key == "ANTHROPIC_API_KEY" || key == "ANTHROPIC_AUTH_TOKEN" || key == "CLAUDE_CODE_OAUTH_TOKEN" ||
 		key == "AGENTFLOW_GIT_TOKEN" ||
+		strings.HasPrefix(key, "AGENTFLOW_GIT_HOST_PASSWORD_") ||
 		strings.HasPrefix(key, "GIT_CONFIG_KEY_")
 }
 

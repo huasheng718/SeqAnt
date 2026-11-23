@@ -40,15 +40,16 @@ type CodeBuddyCredential struct {
 // RunCredentials lives only on the in-memory run sandbox handle. It is never
 // serialized into domain objects, run-context.json, or workspace files.
 type RunCredentials struct {
-	CodeBuddy    CodeBuddyCredential
-	Codex        ProviderCredential
-	ClaudeCode   ProviderCredential
-	AgentCLI     map[string]ProviderCredential
-	GitToken     string
-	GitSSHKeys   map[string]string `json:"-"`
-	GitUserName  string
-	GitUserEmail string
-	MCPServers   []domain.MCPServerDefinition
+	CodeBuddy     CodeBuddyCredential
+	Codex         ProviderCredential
+	ClaudeCode    ProviderCredential
+	AgentCLI      map[string]ProviderCredential
+	GitToken      string
+	GitHostTokens map[string]string `json:"-"`
+	GitSSHKeys    map[string]string `json:"-"`
+	GitUserName   string
+	GitUserEmail  string
+	MCPServers    []domain.MCPServerDefinition
 }
 
 type ProviderCredential struct {

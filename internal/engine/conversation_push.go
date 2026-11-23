@@ -38,12 +38,24 @@ func (e *Engine) PushConversationWorkspace(ctx context.Context, runID string, ar
 	if WorkspaceRunID(run) != run.ID {
 		return nil, fmt.Errorf("子 SOP 共享父任务工作区，请从父任务提交")
 	}
-	if strings.TrimSpace(gitToken) == "" {
-		return nil, fmt.Errorf("未配置 Git Token，无法推送工作分支。%s", gitTokenFixHint)
+	if len(args) == 6 {
+		if userID, ok := args[0].(int64); ok {
+			ctx = gitwork.WithHostTokens(ctx, e.repo.GitHostCredentials(userID))
+		}
 	}
+	ctx = withGitToken(ctx, gitToken)
 	var repositories []domain.RepositoryContext
 	for _, rc := range run.RepositoryContexts() {
 		if strings.TrimSpace(rc.CloneURL) != "" && strings.TrimSpace(rc.WorkBranch) != "" {
+			if rc.Provider != domain.RepositoryProviderSSH && strings.TrimSpace(gitwork.TokenForRemote(ctx, rc.CloneURL)) == "" {
+				label := "Git Token"
+				if rc.Provider == "gitee" {
+					label = "Gitee 访问令牌"
+				} else if rc.Provider == "gitlab" {
+					label = "GitLab 访问令牌"
+				}
+				return nil, fmt.Errorf("未配置 %s，无法推送 %s；请到「个人配置 → 个人凭证」配置对应平台", label, rc.Name)
+			}
 			repositories = append(repositories, rc)
 		}
 	}
@@ -68,6 +80,7 @@ func (e *Engine) PushConversationWorkspace(ctx context.Context, runID string, ar
 	}
 	heads := []domain.RunnerWorkBranchHead{}
 	for _, rc := range repositories {
+		ctx := withRepositoryGit(ctx, rc)
 		dir := repositoryWorkspacePath(root, rc)
 		if !gitwork.HasWork(ctx, dir, repositoryBaseBranch(rc)) {
 			continue
@@ -131,7 +144,7 @@ func (e *Engine) pushConversationOnRunner(ctx context.Context, runnerID string, 
 		return nil, fmt.Errorf("执行机器 %s 的 runner 版本是 %s，还不支持直推共享分支（需要 %s 及以上）；请先升级 runner，或改用 MR 提交", runnerID, strings.TrimSpace(runner.RunnerVersion), domain.RunnerVersionSharedPush)
 	}
 	invocation := &domain.RunnerInvocation{RunID: run.ID, NodeID: conversationPushNode}
-	bindRunnerRepositories(invocation, run, gitToken, gitUserName, gitUserEmail)
+	bindRunnerRepositories(invocation, run, gitToken, gitUserName, gitUserEmail, gitwork.HostTokensFrom(ctx))
 	invocation.Repository = nil
 	wanted := map[string]bool{}
 	for _, rc := range repositories {

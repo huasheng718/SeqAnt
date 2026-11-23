@@ -33,6 +33,10 @@ type User struct {
 	GitToken                     string    `json:"gitToken,omitempty"`
 	GitTokenConfigured           bool      `json:"gitTokenConfigured,omitempty"`
 	GitTokenOAuth                bool      `json:"gitTokenOAuth,omitempty"`
+	GiteeToken                   string    `json:"giteeToken,omitempty"`
+	GiteeTokenConfigured         bool      `json:"giteeTokenConfigured,omitempty"`
+	GitLabToken                  string    `json:"gitlabToken,omitempty"`
+	GitLabTokenConfigured        bool      `json:"gitlabTokenConfigured,omitempty"`
 	GitSSHKeyConfigured          bool      `json:"gitSshKeyConfigured,omitempty"`
 	GongfengRefreshToken         string    `json:"-"`
 	GongfengTokenExpiresAt       time.Time `json:"-"`
@@ -83,6 +87,10 @@ func PublicUser(u User) User {
 	u.GitTokenConfigured = strings.TrimSpace(u.GitToken) != ""
 	u.GitTokenOAuth = strings.TrimSpace(u.GongfengRefreshToken) != ""
 	u.GitToken = ""
+	u.GiteeTokenConfigured = strings.TrimSpace(u.GiteeToken) != ""
+	u.GiteeToken = ""
+	u.GitLabTokenConfigured = strings.TrimSpace(u.GitLabToken) != ""
+	u.GitLabToken = ""
 	u.GongfengRefreshToken = ""
 	u.GongfengTokenExpiresAt = time.Time{}
 	u.CodeBuddyAPIKeyConfigured = strings.TrimSpace(u.CodeBuddyAPIKey) != ""

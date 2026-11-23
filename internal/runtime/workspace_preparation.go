@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"agentflow/internal/domain"
+	"agentflow/internal/gitwork"
 )
 
 // Preparation receipts describe environment reconstruction only. They are not
@@ -179,6 +180,10 @@ func redactPreparationOutput(sb Sandbox, output string) string {
 		credentials := managed.credentials
 		managed.credentialsMu.RUnlock()
 		secrets = append(secrets, credentials.GitToken, credentials.CodeBuddy.APIKey, credentials.Codex.APIKey, credentials.ClaudeCode.APIKey)
+		for _, token := range credentials.GitHostTokens {
+			_, secret := gitwork.SplitToken(token)
+			secrets = append(secrets, token, secret)
+		}
 		for _, server := range credentials.MCPServers {
 			for _, value := range server.Headers {
 				secrets = append(secrets, value)

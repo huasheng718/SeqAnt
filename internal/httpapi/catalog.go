@@ -169,7 +169,7 @@ func (h *catalogHandlers) repositories(c *gin.Context) {
 	if primary != "" {
 		info, ok := domain.ParseRepositoryURL(primary)
 		if !ok {
-			c.JSON(400, gin.H{"error": "仓库 URL 无法识别，请提供 GitHub 链接或 Git SSH 克隆地址"})
+			c.JSON(400, gin.H{"error": "仓库 URL 无法识别，请提供 GitHub / Gitee / GitLab HTTPS 链接或 Git SSH 克隆地址"})
 			return
 		}
 		if body.RepoURL != "" && body.URL != "" {
@@ -191,7 +191,7 @@ func (h *catalogHandlers) repositories(c *gin.Context) {
 		if info, ok := domain.ParseRepositoryURL(v.GongfengProjectID); ok {
 			v.GongfengProjectID = info.Project
 		} else if !strings.HasPrefix(v.GongfengProjectID, "github:") && !domain.IsSafeGongfengProjectID(v.GongfengProjectID) {
-			c.JSON(400, map[string]string{"error": "仓库链接无法识别：请提供有效的 GitHub 仓库地址"})
+			c.JSON(400, map[string]string{"error": "仓库链接无法识别：请提供有效的 GitHub / Gitee / GitLab 仓库地址"})
 			return
 		}
 	}
@@ -221,20 +221,22 @@ func (h *catalogHandlers) repositories(c *gin.Context) {
 		}
 	}
 	if v.ProjectID == "" || v.Name == "" || v.GongfengProjectID == "" {
-		c.JSON(400, map[string]string{"error": "请提供 projectId 和 GitHub 仓库地址 repoUrl，名称和仓库标识会自动识别"})
+		c.JSON(400, map[string]string{"error": "请提供 projectId 和代码仓库地址 repoUrl，名称和仓库标识会自动识别"})
 		return
 	}
-	if strings.HasPrefix(v.GongfengProjectID, "github:") {
-		v.Provider = "github"
-		if v.DefaultBranch == "" {
-			v.DefaultBranch = "main"
+	for _, provider := range []string{"github", "gitee", "gitlab"} {
+		if strings.HasPrefix(v.GongfengProjectID, provider+":") {
+			v.Provider = provider
+			if v.DefaultBranch == "" {
+				v.DefaultBranch = "main"
+			}
 		}
 	}
 	if v.Provider == "" {
 		v.Provider = "gongfeng"
 	}
-	if v.Provider != "gongfeng" && v.Provider != "github" {
-		c.JSON(400, map[string]string{"error": "provider must be github or gongfeng"})
+	if v.Provider != "gongfeng" && v.Provider != "github" && v.Provider != "gitee" && v.Provider != "gitlab" {
+		c.JSON(400, map[string]string{"error": "provider must be github, gitee, gitlab or gongfeng"})
 		return
 	}
 	if v.DefaultBranch == "" {

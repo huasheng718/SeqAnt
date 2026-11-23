@@ -180,3 +180,5 @@ Object.assign(window.LF_I18N_EN,{
   "外部原单会保留，后续同步可能重新导入。":"The original external record is kept, and a later sync may import it again.",
   "需求已有执行记录或已完成，请确认强制删除":"This requirement has execution history or is already completed. Confirm force deletion."
 });
+
+Object.assign(window.LF_I18N_EN,{"Gitee 访问令牌":"Gitee access token","GitLab 访问令牌":"GitLab access token","克隆 Gitee 私有仓库、创建任务分支、推送交付产物":"Clone private Gitee repositories, create task branches, push deliverables","克隆 GitLab 私有仓库、创建任务分支、推送交付产物":"Clone private GitLab repositories, create task branches, push deliverables","用于 gitee.com 仓库的 HTTPS 克隆与推送，保存后对下一次任务生效。":"HTTPS clone and push for gitee.com repositories. Applies from the next task.","用于 gitlab.com 仓库的 HTTPS 克隆与推送；自建 GitLab 可使用 Git SSH 密钥。":"HTTPS clone and push for gitlab.com repositories. Use Git SSH keys for self-hosted GitLab.","请输入 Gitee 个人访问令牌（PAT）":"Enter a Gitee personal access token (PAT)","请输入 GitLab 个人访问令牌（PAT）":"Enter a GitLab personal access token (PAT)","令牌只在任务运行时使用":"Used only when tasks run","Gitee 访问令牌 已保存":"Gitee access token saved","GitLab 访问令牌 已保存":"GitLab access token saved"});
