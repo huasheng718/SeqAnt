@@ -9,12 +9,13 @@ import (
 	"testing"
 )
 
-// The product is LoopForge. "AgentFlow" survives only in internal identifiers
+// The product is SeqAnt. "AgentFlow" survives only in internal identifiers
 // (AgentFlowHarnessIcons, agentflow-* message types, cookies), never as a word
 // a user can read in the console or chat UI.
-var visibleOldBrand = regexp.MustCompile(`AgentFlow([^A-Za-z0-9_]|$)`)
+var brandSourceURL = regexp.MustCompile(`https?://[^\s"<>]+`)
+var visibleOldBrand = regexp.MustCompile(`(?:AgentFlow|LoopForge)([^A-Za-z0-9_]|$)`)
 
-func TestUserFacingFrontendSaysLoopForge(t *testing.T) {
+func TestUserFacingFrontendSaysSeqAnt(t *testing.T) {
 	roots := []string{"app", "extensions", "../chatbot/src", "../chatbot/public"}
 	files := []string{"../chatbot/index.html", "mcp-setup.txt"}
 	for _, pattern := range []string{"*.js", "*.html"} {
@@ -51,7 +52,9 @@ func TestUserFacingFrontendSaysLoopForge(t *testing.T) {
 			t.Fatal(err)
 		}
 		for number, line := range strings.Split(string(data), "\n") {
-			if visibleOldBrand.MatchString(line) {
+			// Preserve upstream URLs and machine identifiers.
+			visible := brandSourceURL.ReplaceAllString(line, "")
+			if visibleOldBrand.MatchString(visible) {
 				t.Errorf("%s:%d still shows the old product name: %s", file, number+1, strings.TrimSpace(line))
 			}
 		}

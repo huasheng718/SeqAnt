@@ -130,7 +130,7 @@
 }
 
 .sliding-tabs[data-sliding-tabs] > [data-sliding-tab]:focus-visible {
-  outline: 2px solid var(--accent, #7b61ff);
+  outline: 2px solid var(--accent, var(--hui-accent));
   outline-offset: -2px;
 }
 

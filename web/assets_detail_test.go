@@ -62,7 +62,7 @@ func TestAssetsStylesheetFollowsHarnessTokens(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{":root {\n", `html[data-theme="dark"] {`, "--hui-stage: #f4f3f8;", "--hui-stage: #18181c;"} {
+	for _, want := range []string{":root {\n", `html[data-theme="dark"] {`, "--hui-stage: #f0f7f6;", "--hui-stage: #192c32;"} {
 		if !strings.Contains(string(tokenCSS), want) {
 			t.Fatalf("harness-ui.css token block is missing %q", want)
 		}

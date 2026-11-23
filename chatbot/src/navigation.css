@@ -2,42 +2,42 @@
 .chat-shell {
   --sidebar-width: 304px;
   --navigation-header-height: 78px;
-  --navigation-rail: #fff;
-  --navigation-border: #e5e5e899;
-  --navigation-secondary: #52525b;
-  --surface: #fff;
-  --subtle: #f8f8f8;
-  --hover: #f4f4f5;
-  --selected: #f1f1f1;
-  --text: #18181b;
-  --muted: #71717a;
-  --line: #e5e5e8;
+  --navigation-rail: var(--hui-surface);
+  --navigation-border: var(--hui-border);
+  --navigation-secondary: var(--hui-secondary);
+  --surface: var(--hui-surface);
+  --subtle: var(--hui-canvas);
+  --hover: var(--hui-soft);
+  --selected: var(--hui-accent-soft);
+  --text: var(--hui-text);
+  --muted: var(--hui-muted);
+  --line: var(--hui-border);
   grid-template-rows: var(--navigation-header-height) minmax(0, 1fr);
   background: var(--surface);
 }
 
 [data-theme="dark"] .chat-shell {
-  --navigation-rail: #0a0a0b;
-  --navigation-border: #36363e;
-  --navigation-secondary: #a1a1aa;
-  --surface: #141417;
-  --subtle: #202025;
-  --hover: #25252b;
-  --selected: #26262c;
-  --text: #ededf0;
-  --muted: #a1a1aa;
-  --line: #26262b;
+  --navigation-rail: var(--hui-surface);
+  --navigation-border: var(--hui-border);
+  --navigation-secondary: var(--hui-secondary);
+  --surface: var(--hui-surface);
+  --subtle: var(--hui-canvas);
+  --hover: var(--hui-soft);
+  --selected: var(--hui-accent-soft);
+  --text: var(--hui-text);
+  --muted: var(--hui-muted);
+  --line: var(--hui-border);
 }
 
 /* Sidebar text matches the host settings sidebar; --muted is also used by the conversation body, so scope it here. */
 .chat-shell .conversation-sidebar {
-  --muted: #3f3f46;
-  --navigation-secondary: #52525b;
+  --muted: var(--hui-secondary);
+  --navigation-secondary: var(--hui-muted);
 }
 
 [data-theme="dark"] .chat-shell .conversation-sidebar {
-  --muted: #d4d4d8;
-  --navigation-secondary: #c4c4cc;
+  --muted: var(--hui-secondary);
+  --navigation-secondary: var(--hui-muted);
 }
 
 /* The gray group and white card share their top and bottom edges. */

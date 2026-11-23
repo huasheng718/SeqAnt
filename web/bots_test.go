@@ -154,8 +154,8 @@ assert.doesNotMatch(css,/\.page-header|\.bot-edit-head/,'Bot page uses the share
 assert.doesNotMatch(css,/--hui-[a-z-]+:/,'Bot page reads the shared tokens instead of declaring them');
 const sharedCSS=fs.readFileSync('app/harness-ui.css','utf8');
 assert.match(sharedCSS,/\.hui-lamp::after \{[^}]*animation: huiBreath /,'live badges breathe through the shared lamp');
-for(const token of ['--hui-accent: #7b61ff','--hui-text: #252529','--hui-border: #eae9ee','--hui-success: #338768','--hui-error: #c15161'])assert.ok(sharedCSS.includes(token),token);
-assert.match(sharedCSS,/html\[data-theme="dark"\] \{[^}]*--hui-accent: #a08aff[^}]*--hui-surface: #141417/,'dark tokens');
+for(const token of ['--hui-accent: #18767a','--hui-text: #16252c','--hui-border: #e5ebe8','--hui-success: #237953','--hui-error: #be4148'])assert.ok(sharedCSS.includes(token),token);
+assert.match(sharedCSS,/html\[data-theme="dark"\] \{[^}]*--hui-accent: #70c3bd[^}]*--hui-surface: #16252c/,'dark tokens');
 assert.match(css,/#botsContent \.bot-record-tabs\.sliding-tabs\[data-sliding-tabs\]>\[data-sliding-indicator\]\{[^}]*height:2px!important[^}]*background:var\(--hui-accent\)/,'records use an underline');
 assert.match(css,/\.bot-list-table tbody tr:hover \.bot-row-actions,\.bot-list-table tbody tr:focus-within \.bot-row-actions\{opacity:1\}/);
 assert.doesNotMatch(css,/\.bot-check input\[type="checkbox"\]\{appearance:none/,'bot switches use the global Harness switch');

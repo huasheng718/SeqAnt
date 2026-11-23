@@ -5,68 +5,114 @@
  *    页面文件只写布局与本页独有的差异。
  */
 :root {
-  --hui-accent: #7b61ff;
-  --hui-accent-hover: #684ce9;
-  --hui-accent-soft: #f0edff;
-  --hui-text: #252529;
-  --hui-muted: #6f6f79;
-  --hui-secondary: #62626c;
-  --hui-tertiary: #9a9aa4;
-  --hui-border: #eae9ee;
-  --hui-border-soft: #f1f0f4;
-  --hui-border-strong: #dcdbe3;
-  --hui-canvas: #fafafb;
-  --hui-soft: #f5f6f7;
+  --hui-accent: #18767a;
+  --hui-accent-hover: #10585e;
+  --hui-accent-soft: #e7f2f1;
+  --hui-text: #16252c;
+  --hui-muted: #5d7078;
+  --hui-secondary: #34464e;
+  --hui-tertiary: #71868b;
+  --hui-border: #e5ebe8;
+  --hui-border-soft: #eef2f0;
+  --hui-border-strong: #d2dedc;
+  --hui-canvas: #f6f8f7;
+  --hui-soft: #f0f7f6;
   --hui-surface: #fff;
-  --hui-stage: #f4f3f8;
+  --hui-stage: #f0f7f6;
   --hui-on-accent: #fff;
   --hui-panel-shadow: 0 1px 2px #0000000a, 0 2px 8px #00000004;
   --hui-card-shadow: 0 6px 20px rgba(0, 0, 0, .05);
   --hui-popover-shadow: 0 8px 28px rgba(0, 0, 0, .07), 0 2px 8px rgba(0, 0, 0, .024);
   --hui-ind-shadow: 0 1px 3px rgba(24, 24, 27, .04), 0 2px 5px rgba(24, 24, 27, .024);
   --hui-focus-ring: color-mix(in srgb, var(--hui-accent) 55%, transparent);
-  --hui-info: #597dcc;
-  --hui-success: #338768;
-  --hui-error: #c15161;
-  --hui-warn: #b7791f;
-  --hui-neutral: #6b6b76;
+  --hui-info: #316db0;
+  --hui-success: #237953;
+  --hui-error: #be4148;
+  --hui-warn: #9b661c;
+  --hui-neutral: #5d7078;
   --hui-ease-flow: cubic-bezier(.16, 1, .3, 1);
-  --hui-sans: Inter, "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", ui-sans-serif, sans-serif;
+  --hui-sans: Inter, Arial, "Noto Sans CJK SC", "Source Han Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
   --hui-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  --hui-tip: #252529;
+  --hui-tip: #16252c;
   --hui-tip-text: #fff;
   --hui-scrim: rgba(15, 15, 20, .32);
   --hui-z-popover: 9999;
   --hui-z-tooltip: 10050;
 }
 html[data-theme="dark"] {
-  --hui-accent: #a08aff;
-  --hui-accent-hover: #b2a0ff;
-  --hui-accent-soft: #242033;
-  --hui-text: #ededf0;
-  --hui-muted: #a1a1ac;
-  --hui-secondary: #b1b1ba;
-  --hui-tertiary: #6e6e78;
-  --hui-border: #26262b;
-  --hui-border-soft: #1f1f24;
-  --hui-border-strong: #393940;
-  --hui-canvas: #111114;
-  --hui-soft: #1c1c21;
-  --hui-surface: #141417;
-  --hui-stage: #18181c;
-  --hui-on-accent: #141417;
+  --hui-accent: #70c3bd;
+  --hui-accent-hover: #9bd5ce;
+  --hui-accent-soft: #203e40;
+  --hui-text: #e8f0ee;
+  --hui-muted: #a0b6b7;
+  --hui-secondary: #bdcecc;
+  --hui-tertiary: #789092;
+  --hui-border: #2c4145;
+  --hui-border-soft: #23363b;
+  --hui-border-strong: #405a5e;
+  --hui-canvas: #111e23;
+  --hui-soft: #1d3137;
+  --hui-surface: #16252c;
+  --hui-stage: #192c32;
+  --hui-on-accent: #102b2d;
   --hui-panel-shadow: 0 1px 2px #0000002e;
   --hui-card-shadow: 0 6px 20px rgba(0, 0, 0, .35);
   --hui-popover-shadow: 0 16px 44px rgba(0, 0, 0, .32), 0 3px 10px rgba(0, 0, 0, .12);
   --hui-ind-shadow: 0 1px 3px rgba(0, 0, 0, .4);
-  --hui-info: #8aa8ee;
-  --hui-success: #34d399;
-  --hui-error: #f0899a;
-  --hui-warn: #f2c46d;
-  --hui-neutral: #a1a1ac;
-  --hui-tip: #ededf0;
-  --hui-tip-text: #141417;
+  --hui-info: #8bb6ec;
+  --hui-success: #78cda0;
+  --hui-error: #f1999e;
+  --hui-warn: #e7bf7d;
+  --hui-neutral: #a0b6b7;
+  --hui-tip: #e8f0ee;
+  --hui-tip-text: #16252c;
   --hui-scrim: rgba(0, 0, 0, .5);
+}
+
+
+/* SeqAnt: legacy pages inherit the same brand palette as Harness components. */
+:root, html[data-theme="light"], html[data-theme="dark"] {
+  --bg: var(--hui-canvas);
+  --bg-soft: var(--hui-soft);
+  --panel: var(--hui-surface);
+  --panel-2: var(--hui-canvas);
+  --panel-3: var(--hui-soft);
+  --text: var(--hui-text);
+  --text-strong: var(--hui-text);
+  --muted: var(--hui-muted);
+  --muted-2: var(--hui-tertiary);
+  --line: var(--hui-border);
+  --line-strong: var(--hui-border-strong);
+  --border: var(--hui-border);
+  --border-strong: var(--hui-border-strong);
+  --hover: var(--hui-soft);
+  --blue: var(--hui-accent);
+  --blue-dim: var(--hui-accent-hover);
+  --blue-soft: var(--hui-accent-soft);
+  --primary: var(--hui-accent);
+  --green: var(--hui-success);
+  --amber: var(--hui-warn);
+  --red: var(--hui-error);
+  --accent-gradient: var(--hui-accent);
+  --accent-gradient-soft: var(--hui-accent-soft);
+  --shadow: var(--hui-panel-shadow);
+  --shadow-sm: var(--hui-panel-shadow);
+  --v3-bg: var(--hui-canvas);
+  --v3-surface: var(--hui-surface);
+  --v3-soft: var(--hui-soft);
+  --v3-ink: var(--hui-text);
+  --v3-ink-2: var(--hui-secondary);
+  --v3-ink-3: var(--hui-muted);
+  --v3-line: var(--hui-border);
+  --v3-line-2: var(--hui-border-strong);
+  --v3-accent: var(--hui-accent);
+  --v3-accent-ink: var(--hui-accent);
+  --v3-accent-soft: var(--hui-accent-soft);
+  --v3-positive: var(--hui-success);
+  --v3-warning: var(--hui-warn);
+  --v3-danger: var(--hui-error);
+  --v3-info: var(--hui-info);
+  --glow-blue: 0 0 0 3px var(--hui-accent-soft);
 }
 
 /* ---------- Harness 视图 ----------
@@ -482,3 +528,9 @@ html[data-theme="dark"] {
   .hui-switch,
   .hui-switch::before { transition: none !important; animation: none !important; }
 }
+
+/* Official SeqAnt SVGs keep their original aspect ratio and colors. */
+.seqant-logo { display: block; width: 168px; max-width: 100%; height: auto; }
+.seqant-logo-dark { display: none; }
+html[data-theme="dark"] .seqant-logo-light { display: none; }
+html[data-theme="dark"] .seqant-logo-dark { display: block; }

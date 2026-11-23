@@ -1,31 +1,31 @@
 /* The settings navigation uses the same floating card as the workbench. */
 .platform-sidebar {
-  --text: #18181b;
-  --muted: #3f3f46;
-  --muted-2: #52525b;
-  --hover: #f4f4f5;
-  --blue: #18181b;
-  --blue-soft: #e8e8ea;
-  --line: #e5e5e8;
+  --text: var(--hui-text);
+  --muted: var(--hui-secondary);
+  --muted-2: var(--hui-muted);
+  --hover: var(--hui-soft);
+  --blue: var(--hui-accent);
+  --blue-soft: var(--hui-accent-soft);
+  --line: var(--hui-border);
   height: calc(100vh - 28px) !important;
   height: calc(100dvh - 28px) !important;
   margin: 14px 0;
   padding: 0 14px;
-  border: 1px solid #e5e5e899;
+  border: 1px solid var(--hui-border);
   border-radius: 16px;
   background: var(--shell-canvas) !important;
   box-shadow: 0 2px 8px #00000006;
 }
 
 html[data-theme="dark"] .platform-sidebar {
-  --text: #ededf0;
-  --muted: #d4d4d8;
-  --muted-2: #c4c4cc;
-  --hover: #25252b;
-  --blue: #ededf0;
-  --blue-soft: #26262c;
-  --line: #26262b;
-  border-color: #36363e;
+  --text: var(--hui-text);
+  --muted: var(--hui-secondary);
+  --muted-2: var(--hui-muted);
+  --hover: var(--hui-soft);
+  --blue: var(--hui-accent);
+  --blue-soft: var(--hui-accent-soft);
+  --line: var(--hui-border);
+  border-color: var(--hui-border-strong);
 }
 
 body.management-mode .app-shell::before {

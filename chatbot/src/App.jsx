@@ -69,6 +69,7 @@ import SessionContextMenu from "./SessionContextMenu";
 import { usePanelPresence } from "./usePanelPresence";
 import HomeWelcome from "./HomeWelcome";
 import ModelPicker from "./ModelPicker";
+import HomeLogo from "./HomeLogo";
 import ModelProviderIcon, { hasProviderLogo } from "./ModelProviderIcon";
 import PermissionPicker from "./PermissionPicker";
 import { engineBrand } from "./engines.js";
@@ -1074,14 +1075,11 @@ export default function App() {
         <button
           className="brand-home"
           onClick={startNewChat}
-          aria-label="LoopForge 首页"
+          aria-label="SeqAnt 首页"
           inert={!sidebar}
           aria-hidden={!sidebar || undefined}
         >
-          <span className="brand-icon">
-            <HarnessIcon name="workflow" size={20} />
-          </span>
-          <strong>LoopForge</strong>
+          <HomeLogo className="sidebar-logo" />
         </button>
         <IconButton
           className="sidebar-toggle"
@@ -1702,10 +1700,10 @@ export default function App() {
                 <div className="composer-context">
                   <span
                     className="context-pill host-status"
-                    title="对话在 LoopForge 云端运行"
+                    title="对话在 SeqAnt 云端运行"
                   >
                     <HarnessIcon name="server" size={13} interactive={false} />
-                    <span>LoopForge 云端</span>
+                    <span>SeqAnt 云端</span>
                     <i
                       className={`connection-dot ${chat.ready ? "online" : ""}`}
                     />

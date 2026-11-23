@@ -5,11 +5,11 @@
  * stays with collaboration.css / product-v4.css, so no display is forced here.
  */
 .topbar {
-  --topbar-accent: #7b61ff;
+  --topbar-accent: var(--hui-accent);
   --topbar-hover: color-mix(in srgb, var(--text) 5%, transparent);
   --topbar-ease: cubic-bezier(.16, 1, .3, 1);
 }
-html[data-theme="dark"] .topbar { --topbar-accent: #a08aff; }
+html[data-theme="dark"] .topbar { --topbar-accent: var(--hui-accent); }
 
 /* Container: 94% panel + blur, hairline divider, no shadow. */
 .topbar,

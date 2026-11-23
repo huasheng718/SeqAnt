@@ -11,21 +11,21 @@ html[data-theme="dark"]{--v4-canvas:var(--bg);--v4-navy:var(--panel);--v4-shadow
 :root {
   --rail-w: 56px;
   --sidebar-w: 304px;
-  --shell-canvas: #fff;
+  --shell-canvas: var(--hui-canvas);
   --shell-inset-x: 14px;
-  --rail-surface: #fff;
-  --rail-hover: #ededed;
-  --rail-active: #eaeaea;
-  --rail-ink: #18181b;
-  --rail-muted: #66666f;
+  --rail-surface: var(--hui-surface);
+  --rail-hover: var(--hui-soft);
+  --rail-active: var(--hui-accent-soft);
+  --rail-ink: var(--hui-text);
+  --rail-muted: var(--hui-muted);
 }
 html[data-theme="dark"] {
-  --shell-canvas: #141417;
-  --rail-surface: #0a0a0b;
-  --rail-hover: #202025;
-  --rail-active: #26262c;
-  --rail-ink: #ededf0;
-  --rail-muted: #a1a1aa;
+  --shell-canvas: var(--hui-canvas);
+  --rail-surface: var(--hui-surface);
+  --rail-hover: var(--hui-soft);
+  --rail-active: var(--hui-accent-soft);
+  --rail-ink: var(--hui-text);
+  --rail-muted: var(--hui-muted);
 }
 .app-shell {
   display: grid !important;
@@ -411,8 +411,8 @@ body.platform-rail-expanded .platform-rail #userName {
   display: flex !important;
   align-items: center !important;
   justify-content: center !important;
-  background: linear-gradient(135deg, var(--blue), #8b5cf6) !important;
-  color: #fff !important;
+  background: var(--hui-accent) !important;
+  color: var(--hui-on-accent) !important;
   font-size: 13px !important;
   font-weight: 700 !important;
   overflow: hidden !important;
@@ -2020,7 +2020,7 @@ html[data-theme="dark"] .agent-studio-v2{box-shadow:0 18px 56px rgba(0,0,0,.42),
   gap: 28px;
   padding: 22px 26px;
   border-radius: 16px;
-  background: linear-gradient(135deg, color-mix(in srgb, var(--v3-accent) 7%, var(--v3-surface)) 0%, color-mix(in srgb, #8b5cf6 6%, var(--v3-surface)) 100%);
+  background: linear-gradient(135deg, color-mix(in srgb, var(--v3-accent) 7%, var(--v3-surface)) 0%, color-mix(in srgb, var(--hui-accent) 6%, var(--v3-surface)) 100%);
   border: 1px solid color-mix(in srgb, var(--v3-accent) 25%, var(--v3-line));
   box-shadow: 0 4px 20px -2px rgba(91, 140, 255, 0.08);
 }
@@ -2210,13 +2210,13 @@ html[data-theme="dark"] .agent-studio-v2{box-shadow:0 18px 56px rgba(0,0,0,.42),
   font-size: 12.5px !important;
   font-weight: 700 !important;
   border-radius: 8px !important;
-  background: linear-gradient(135deg, #4f46e5, #7c3aed) !important;
+  background: var(--hui-accent) !important;
   border: none !important;
-  color: #fff !important;
+  color: var(--hui-on-accent) !important;
   display: inline-flex !important;
   align-items: center !important;
   gap: 7px !important;
-  box-shadow: 0 2px 8px rgba(124, 58, 237, 0.3) !important;
+  box-shadow: none !important;
   transition: all 0.18s ease !important;
   cursor: pointer !important;
 }
@@ -2337,8 +2337,8 @@ html[data-theme="dark"] .agent-studio-v2{box-shadow:0 18px 56px rgba(0,0,0,.42),
   gap: 10px;
   padding: 12px 16px;
   border-radius: 9px;
-  background: color-mix(in srgb, #8b5cf6 8%, var(--v3-surface));
-  border: 1px solid color-mix(in srgb, #8b5cf6 25%, transparent);
+  background: color-mix(in srgb, var(--hui-accent) 8%, var(--v3-surface));
+  border: 1px solid color-mix(in srgb, var(--hui-accent) 25%, transparent);
   font-size: 11.5px;
   color: var(--v3-ink-2);
   line-height: 1.55;

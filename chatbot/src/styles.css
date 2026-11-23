@@ -1,37 +1,26 @@
 :root {
-  font-family:
-    ui-sans-serif,
-    system-ui,
-    -apple-system,
-    BlinkMacSystemFont,
-    "Segoe UI",
-    "PingFang SC",
-    "Noto Sans SC",
-    "Noto Sans CJK SC",
-    "Microsoft YaHei UI",
-    "Microsoft YaHei",
-    sans-serif;
-  color: #191c1f;
-  background: #fff;
+  font-family: var(--hui-sans);
+  color: var(--hui-text);
+  background: var(--hui-surface);
   font-size: 14px;
   font-synthesis: weight;
   --chat-font-size: 14px;
   --chat-font-weight: 400;
   --chat-line-height: 1.65;
   --chat-column-width: 832px;
-  --surface: #fff;
-  --subtle: #f8f8f8;
-  --hover: #f0f0f0;
-  --selected: #eee;
-  --text: #191c1f;
-  --user-message-bg: #e8f3fe;
-  --user-message-text: #0c264a;
-  --muted: #8d8d91;
-  --line: #ededee;
+  --surface: var(--hui-surface);
+  --subtle: var(--hui-canvas);
+  --hover: var(--hui-soft);
+  --selected: var(--hui-accent-soft);
+  --text: var(--hui-text);
+  --user-message-bg: var(--hui-accent-soft);
+  --user-message-text: var(--hui-text);
+  --muted: var(--hui-muted);
+  --line: var(--hui-border);
   --shadow: 0 5px 20px #00000009, 0 2px 4px #00000003;
-  --accent: #191c1f;
-  --on-accent: white;
-  --error: #b42318;
+  --accent: var(--hui-accent);
+  --on-accent: var(--hui-on-accent);
+  --error: var(--hui-error);
   --sidebar-width: 275px;
   --panel-width: 480px;
 }
@@ -69,7 +58,7 @@ button:disabled {
 }
 button:focus-visible,
 a:focus-visible {
-  outline: 2px solid #7795c4;
+  outline: 2px solid var(--hui-accent);
   outline-offset: 2px;
 }
 input,
@@ -80,7 +69,7 @@ textarea {
 input:focus,
 select:focus,
 textarea:focus {
-  border-color: #a2a2a5;
+  border-color: var(--hui-accent);
 }
 button svg {
   flex-shrink: 0;
@@ -973,7 +962,7 @@ small {
   background: var(--hover);
 }
 .message-image-retry:focus-visible {
-  outline: 2px solid #7795c4;
+  outline: 2px solid var(--hui-accent);
   outline-offset: 2px;
 }
 .image-zoom[data-disabled],
@@ -1913,7 +1902,7 @@ small {
 .select-menu mark {
   padding: 0;
   border-radius: 2px;
-  background: color-mix(in srgb, #7b61ff 22%, transparent);
+  background: color-mix(in srgb, var(--hui-accent) 22%, transparent);
   color: inherit;
 }
 .menu-separator {
@@ -2406,21 +2395,21 @@ a.project-entry {
 }
 [data-theme="dark"] {
   color-scheme: dark;
-  --surface: #191919;
-  --subtle: #222;
-  --hover: #2b2b2b;
-  --selected: #333;
-  --text: #e7e7e8;
-  --user-message-bg: #20364f;
-  --user-message-text: #dcecff;
-  --muted: #929298;
-  --line: #303030;
-  --accent: #e0e0e0;
-  --on-accent: #222;
+  --surface: var(--hui-surface);
+  --subtle: var(--hui-canvas);
+  --hover: var(--hui-soft);
+  --selected: var(--hui-accent-soft);
+  --text: var(--hui-text);
+  --user-message-bg: var(--hui-accent-soft);
+  --user-message-text: var(--hui-text);
+  --muted: var(--hui-muted);
+  --line: var(--hui-border);
+  --accent: var(--hui-accent);
+  --on-accent: var(--hui-on-accent);
   --shadow: 0 7px 25px #0005;
-  --error: #f28c7e;
-  background: #191919;
-  color: #e7e7e8;
+  --error: var(--hui-error);
+  background: var(--hui-surface);
+  color: var(--hui-text);
 }
 [data-theme="dark"] .sidebar-footer > .icon-button:first-child {
   background: #383838;

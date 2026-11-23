@@ -1,11 +1,11 @@
 /* Grasp-inspired home composition. Harness icon motion lives in harness-icons.css. */
 .home-shell {
-  --home-canvas: #fff;
-  --home-sidebar: #fff;
-  --home-ink: #18181b;
-  --home-secondary: #71717a;
-  --home-border: #e5e5e8;
-  --home-blue: #5273dc;
+  --home-canvas: var(--hui-surface);
+  --home-sidebar: var(--hui-surface);
+  --home-ink: var(--hui-text);
+  --home-secondary: var(--hui-muted);
+  --home-border: var(--hui-border);
+  --home-blue: var(--hui-accent);
   --home-ease: cubic-bezier(0.22, 1, 0.36, 1);
   grid-template-rows: 58px minmax(0, 1fr);
   color: var(--home-ink);
@@ -282,7 +282,7 @@
   gap: 12px;
 }
 .home-starter {
-  --starter-color: #5577d5;
+  --starter-color: var(--hui-accent);
   display: flex;
   flex-direction: column;
   position: relative;
@@ -297,12 +297,6 @@
     border-color 220ms ease,
     box-shadow 220ms ease,
     transform 220ms ease;
-}
-.home-starter-violet {
-  --starter-color: #8a6aca;
-}
-.home-starter-green {
-  --starter-color: #3a8c7d;
 }
 .home-starter:hover,
 .home-starter:focus-visible {
@@ -401,22 +395,13 @@
   line-height: 1.7;
 }
 [data-theme="dark"] .home-shell {
-  --home-canvas: #141417;
-  --home-sidebar: #141417;
-  --home-ink: #ededf0;
-  --home-secondary: #a1a1aa;
-  --home-border: #26262b;
-  --home-blue: #8ca6f2;
-  --surface: #141417;
-}
-[data-theme="dark"] .home-shell .home-starter-blue {
-  --starter-color: #8ca6f2;
-}
-[data-theme="dark"] .home-shell .home-starter-violet {
-  --starter-color: #b29ade;
-}
-[data-theme="dark"] .home-shell .home-starter-green {
-  --starter-color: #7fbdaf;
+  --home-canvas: var(--hui-surface);
+  --home-sidebar: var(--hui-surface);
+  --home-ink: var(--hui-text);
+  --home-secondary: var(--hui-muted);
+  --home-border: var(--hui-border);
+  --home-blue: var(--hui-accent);
+  --surface: var(--hui-surface);
 }
 [data-theme="dark"] .home-shell .home-starter:is(:hover, :focus-visible) {
   box-shadow: 0 12px 26px -10px

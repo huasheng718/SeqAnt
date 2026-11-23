@@ -1884,7 +1884,7 @@ function renderUserProfilePopover() {
         </div>
         <div class="upp-info-item">
           <span class="upp-label">认证方式</span>
-          <span class="upp-value">LoopForge 本地账号</span>
+          <span class="upp-value">SeqAnt 本地账号</span>
         </div>
       </div>
       <div class="upp-divider"></div>
