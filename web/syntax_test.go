@@ -306,7 +306,7 @@ func TestMCPSetupInstructionsAreEmbedded(t *testing.T) {
 		}
 	}
 	if strings.Contains(text, "AgentFlow") {
-		t.Fatal("MCP setup instructions should name the product LoopForge, not AgentFlow")
+		t.Fatal("MCP setup instructions should name the product SeqAnt, not AgentFlow")
 	}
 	embedSource, err := os.ReadFile("embed.go")
 	if err != nil {

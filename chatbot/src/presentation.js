@@ -19,7 +19,7 @@ export async function createPresentation(source) {
   const { default: PptxGenJS } = await import("pptxgenjs");
   const pptx = new PptxGenJS();
   pptx.layout = "LAYOUT_WIDE";
-  pptx.author = "LoopForge";
+  pptx.author = "SeqAnt";
   pptx.subject = "会话生成的演示文稿";
   pptx.title = presentationTitle(source);
   pptx.lang = "zh-CN";

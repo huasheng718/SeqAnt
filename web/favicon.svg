@@ -1,12 +1,9 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
-  <defs>
-    <linearGradient id="g" x1="0" y1="8" x2="0" y2="58" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#3b8eea"/>
-      <stop offset="1" stop-color="#8b5cf6"/>
-    </linearGradient>
-  </defs>
-  <g fill="none" stroke="url(#g)" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M10.5 27 A11.5 11.5 0 0 1 33.5 27 V45"/>
-    <circle cx="43.5" cy="45" r="10"/>
-  </g>
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 216 216" role="img" aria-label="SeqAnt app icon">
+<rect x="0" y="0" width="216" height="216" rx="47" fill="#18767A"/>
+<g transform="translate(6 8)" style="color:#FFFFFF" fill="#FFFFFF">
+<path d="M19 128 C28 104 57 96 78 100 C97 103 112 111 123 124 C100 117 81 120 62 134 C46 146 36 156 28 166 C18 166 13 151 19 128 Z"/>
+<path d="M48 172 C61 151 85 128 112 128 C121 128 128 130 135 136 C111 143 95 161 77 172 C64 180 55 180 48 172 Z"/>
+<path d="M130 82 C145 72 161 72 171 83 C185 99 184 121 172 130 C162 136 148 129 135 119 L116 101 C116 92 121 87 130 82 Z"/>
+<path d="M132 84 C128 58 140 39 162 35" fill="none" stroke="currentColor" stroke-width="10" stroke-linecap="round"/>
+<path d="M158 81 C162 60 178 47 195 50" fill="none" stroke="currentColor" stroke-width="10" stroke-linecap="round"/>
+<circle cx="155" cy="100" r="5.6" fill="#18767A"/></g></svg>

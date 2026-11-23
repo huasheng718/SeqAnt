@@ -105,7 +105,7 @@ html[data-theme] .platform-sidebar button.nav:not(.active):hover,
 }
 
 .chat-shell .session-row.active {
-  background: #e8e8ea;
+  background: var(--hui-accent-soft);
 }
 
 [data-theme="dark"] .chat-shell .session-row.active {

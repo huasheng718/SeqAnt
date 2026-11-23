@@ -38,13 +38,13 @@ func TestPlatformSidebarTextContrast(t *testing.T) {
 		property string
 		want     string
 	}{
-		{".platform-sidebar", "--muted", "#3f3f46"},
-		{".platform-sidebar", "--muted-2", "#52525b"},
-		{".platform-sidebar", "--blue-soft", "#e8e8ea"},
-		{".platform-sidebar", "--text", "#18181b"},
-		{`html[data-theme="dark"] .platform-sidebar`, "--muted", "#d4d4d8"},
-		{`html[data-theme="dark"] .platform-sidebar`, "--muted-2", "#c4c4cc"},
-		{`html[data-theme="dark"] .platform-sidebar`, "--blue-soft", "#26262c"},
+		{".platform-sidebar", "--muted", "var(--hui-secondary)"},
+		{".platform-sidebar", "--muted-2", "var(--hui-muted)"},
+		{".platform-sidebar", "--blue-soft", "var(--hui-accent-soft)"},
+		{".platform-sidebar", "--text", "var(--hui-text)"},
+		{`html[data-theme="dark"] .platform-sidebar`, "--muted", "var(--hui-secondary)"},
+		{`html[data-theme="dark"] .platform-sidebar`, "--muted-2", "var(--hui-muted)"},
+		{`html[data-theme="dark"] .platform-sidebar`, "--blue-soft", "var(--hui-accent-soft)"},
 		{".management-navigation > p", "color", "var(--muted-2)"},
 		{".platform-sidebar .nav", "color", "var(--muted)"},
 		{"html[data-theme] .platform-sidebar .nav.active", "background", "var(--blue-soft)"},
@@ -71,10 +71,10 @@ func TestChatbotSidebarTextContrast(t *testing.T) {
 		property string
 		want     string
 	}{
-		{".chat-shell .conversation-sidebar", "--muted", "#3f3f46"},
-		{".chat-shell .conversation-sidebar", "--navigation-secondary", "#52525b"},
-		{`[data-theme="dark"] .chat-shell .conversation-sidebar`, "--muted", "#d4d4d8"},
-		{`[data-theme="dark"] .chat-shell .conversation-sidebar`, "--navigation-secondary", "#c4c4cc"},
+		{".chat-shell .conversation-sidebar", "--muted", "var(--hui-secondary)"},
+		{".chat-shell .conversation-sidebar", "--navigation-secondary", "var(--hui-muted)"},
+		{`[data-theme="dark"] .chat-shell .conversation-sidebar`, "--muted", "var(--hui-secondary)"},
+		{`[data-theme="dark"] .chat-shell .conversation-sidebar`, "--navigation-secondary", "var(--hui-muted)"},
 		{".chat-shell .section-label", "color", "var(--muted)"},
 		{".chat-shell .sidebar-section-heading", "color", "var(--muted)"},
 		{".chat-shell .session-row.active .session-link", "font-weight", "600"},
@@ -91,7 +91,7 @@ func TestChatbotSidebarTextContrast(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := sidebarCSSBlock(t, string(ink), ".chat-shell .session-row.active")
-	if got := sidebarCSSValue(body, "background"); got != "#e8e8ea" {
-		t.Errorf(".chat-shell .session-row.active { background } = %q, want %q", got, "#e8e8ea")
+	if got := sidebarCSSValue(body, "background"); got != "var(--hui-accent-soft)" {
+		t.Errorf(".chat-shell .session-row.active { background } = %q, want %q", got, "var(--hui-accent-soft)")
 	}
 }

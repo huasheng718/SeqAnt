@@ -23,7 +23,7 @@ func TestNativeChatFrameHasNoTitleTooltip(t *testing.T) {
 	if regexp.MustCompile(`\stitle=`).Match(tag) {
 		t.Errorf("chatNextFrame must not have a title attribute: %s", tag)
 	}
-	if !strings.Contains(string(tag), `aria-label="LoopForge 工作台"`) {
+	if !strings.Contains(string(tag), `aria-label="SeqAnt 工作台"`) {
 		t.Errorf("chatNextFrame should keep an aria-label for accessibility: %s", tag)
 	}
 	bundle, err := readAppBundle()

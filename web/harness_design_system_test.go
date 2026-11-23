@@ -222,7 +222,7 @@ func TestAccessCapabilityTableKeepsShortColumnsOnOneLine(t *testing.T) {
 	}
 }
 
-// Accent fills flip to a light purple in dark mode, so text on them must use --hui-on-accent instead of white.
+// Accent fills flip to a light teal in dark mode, so text on them must use --hui-on-accent instead of white.
 func TestAccentFillsUseOnAccentText(t *testing.T) {
 	rule := regexp.MustCompile(`([^{}]+)\{([^{}]*)\}`)
 	accentFill := regexp.MustCompile(`background(?:-color)?\s*:\s*var\(--(?:hui|pw|cr|hu|pa|rv)-accent\)`)
