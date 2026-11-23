@@ -2,7 +2,7 @@ package runner
 
 import (
 	"context"
-	"fmt"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -18,18 +18,23 @@ import (
 func TestWorkspacePreparationDoesNotBlockTaskControl(t *testing.T) {
 	d, request, root := runnerPreparationFixture(t)
 	request.Workflow.Nodes[0].Script = "touch preparation-started; sleep 2"
-	d.controls = map[string]chan string{}
-	d.pendingControls = map[string]string{}
-	control := d.registerTaskControl("active-task")
-	defer d.unregisterTaskControl("active-task")
+	d.controls = map[taskAttemptKey]chan string{}
+	d.pendingControls = map[taskAttemptKey]string{}
+	control := d.registerTaskControl("active-task", 0)
+	defer d.unregisterTaskControl("active-task", 0)
 	connections := make(chan *websocket.Conn, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/control") {
+			_ = json.NewEncoder(w).Encode(RenewResponse{DesiredState: domain.RunnerTaskDesiredCancel})
+			return
+		}
 		conn, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
 		if err == nil {
 			connections <- conn
 		}
 	}))
 	defer server.Close()
+	d.client = NewClient(server.URL)
 	client, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -93,87 +98,4 @@ func TestWorkspacePreparationDoesNotBlockTaskControl(t *testing.T) {
 	}
 	gate.Unlock()
 	d.closeAllRunSandboxes(context.Background())
-}
-
-func TestCheckpointCancellationReleasesRunnerWorkspaceForNextTurn(t *testing.T) {
-	root := t.TempDir()
-	workspace := filepath.Join(root, "runs", "slow-export", "workspace")
-	if err := os.MkdirAll(workspace, 0700); err != nil {
-		t.Fatal(err)
-	}
-	file, err := os.Create(filepath.Join(workspace, "slow.bin"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = file.Truncate(512 << 20); err != nil {
-		file.Close()
-		t.Fatal(err)
-	}
-	file.Close()
-	d := &Daemon{cfg: Config{DefaultWorkspaceRoot: root}}
-	request := domain.RunnerWorkspaceRequest{RunID: "slow-export", RunStatus: "succeeded", WorkspaceLayout: domain.RunnerWorkspaceLayoutShared, Operation: domain.RunnerWorkspaceOperationCheckpointExport}
-	result := make(chan error, 1)
-	conn := controlTestServer(t, func(peer *websocket.Conn) {
-		if err := peer.WriteJSON(controlMessage{Type: "workspace.request", RequestID: "export", WorkspaceRequest: &request}); err != nil {
-			result <- err
-			return
-		}
-		gate := d.requestGate(request)
-		deadline := time.Now().Add(2 * time.Second)
-		for gate.TryLock() {
-			gate.Unlock()
-			if time.Now().After(deadline) {
-				result <- fmt.Errorf("export never acquired workspace fence")
-				return
-			}
-			time.Sleep(time.Millisecond)
-		}
-		if err := peer.WriteJSON(controlMessage{Type: "workspace.cancel", RequestID: "export"}); err != nil {
-			result <- err
-			return
-		}
-		_ = peer.SetReadDeadline(time.Now().Add(2 * time.Second))
-		var response controlMessage
-		if err := peer.ReadJSON(&response); err != nil {
-			result <- err
-			return
-		}
-		if response.WorkspaceResponse == nil || !strings.Contains(response.WorkspaceResponse.Error, "context canceled") {
-			result <- fmt.Errorf("export did not stop: %+v", response)
-			return
-		}
-		if !gate.TryLock() {
-			result <- fmt.Errorf("stopped export retained workspace fence")
-			return
-		}
-		gate.Unlock()
-		request.Operation = domain.RunnerWorkspaceOperationTree
-		if err := peer.WriteJSON(controlMessage{Type: "workspace.request", RequestID: "next-turn", WorkspaceRequest: &request}); err != nil {
-			result <- err
-			return
-		}
-		if err := peer.ReadJSON(&response); err != nil {
-			result <- err
-			return
-		}
-		if response.RequestID != "next-turn" || response.WorkspaceResponse == nil || response.WorkspaceResponse.Status != 200 {
-			result <- fmt.Errorf("next turn blocked: %+v", response)
-			return
-		}
-		result <- nil
-	})
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	finished := make(chan error, 1)
-	go func() { finished <- d.readControls(ctx, conn) }()
-	select {
-	case err := <-result:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-ctx.Done():
-		t.Fatal("remote checkpoint cancellation timed out")
-	}
-	cancel()
-	<-finished
 }

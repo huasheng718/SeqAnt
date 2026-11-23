@@ -31,14 +31,14 @@ func (d *Daemon) claimTask(ctx context.Context, providers []string, capacity int
 		lease.Close()
 		return task, found, err
 	}
-	// Legacy WaitForTask can claim; both it and Claim retain the usage lease.
+	// Retain the usage lease for this exact claimed execution.
 	state := &managedTask{lease: lease}
 	state.inventory, state.err = managedcli.PinInventory(d.cfg.ManagedCLIRoot, d.managedRunKey(*task))
 	d.mu.Lock()
 	if d.managedTasks == nil {
-		d.managedTasks = make(map[string]*managedTask)
+		d.managedTasks = make(map[taskAttemptKey]*managedTask)
 	}
-	d.managedTasks[task.ID] = state
+	d.managedTasks[taskAttemptKey{task.ID, task.Attempt}] = state
 	d.mu.Unlock()
 	return task, true, nil
 }
@@ -54,10 +54,10 @@ func (d *Daemon) managedRunKey(task domain.RunnerTask) string {
 	return d.runnerID() + ":" + runID
 }
 
-func (d *Daemon) managedTaskState(taskID string) *managedTask {
+func (d *Daemon) managedTaskState(taskID string, attempt int) *managedTask {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return d.managedTasks[taskID]
+	return d.managedTasks[taskAttemptKey{taskID, attempt}]
 }
 
 func defaultProviderBinary(provider string) string {
@@ -82,7 +82,7 @@ func (d *Daemon) managedBinary(task domain.RunnerTask) (string, bool) {
 			return "", false
 		}
 	}
-	state := d.managedTaskState(task.ID)
+	state := d.managedTaskState(task.ID, task.Attempt)
 	if state == nil || state.err != nil {
 		return "", false
 	}
@@ -146,10 +146,10 @@ func (d *Daemon) detectManagedRuntimes(ctx context.Context) ([]domain.RunnerRunt
 	return detectRuntimes(ctx, d.cfg.ExtraBinaries, inventory), nil
 }
 
-func (d *Daemon) releaseManagedTask(taskID string) {
+func (d *Daemon) releaseManagedTask(taskID string, attempt int) {
 	d.mu.Lock()
-	state := d.managedTasks[taskID]
-	delete(d.managedTasks, taskID)
+	state := d.managedTasks[taskAttemptKey{taskID, attempt}]
+	delete(d.managedTasks, taskAttemptKey{taskID, attempt})
 	d.mu.Unlock()
 	if state != nil {
 		if err := state.lease.Close(); err != nil {

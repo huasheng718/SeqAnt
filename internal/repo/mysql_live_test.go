@@ -2,15 +2,129 @@ package repo
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"agentflow/internal/domain"
 )
+
+func TestMySQLRunnerMaintenanceTaskQueueIsAtomic(t *testing.T) {
+	dsn := os.Getenv("AGENTFLOW_TEST_MYSQL_DSN")
+	if dsn == "" {
+		t.Skip("AGENTFLOW_TEST_MYSQL_DSN is not set")
+	}
+	s, err := Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	suffix := time.Now().UTC().UnixNano()
+	for index, action := range []string{domain.RunnerTaskActionCleanupRun, domain.RunnerTaskActionArchivePreview} {
+		t.Run(action, func(t *testing.T) {
+			runID := fmt.Sprintf("atomic-maintenance-%d-%d", suffix, index)
+			if err := s.PutRun(domain.Run{ID: runID}); err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				_ = s.runnerTasksForRunAction(s.DB, runID, action).Delete(&runnerTaskRow{}).Error
+				_ = s.DB.Where("id = ?", runID).Delete(&runRow{}).Error
+			}()
+			var wg sync.WaitGroup
+			start := make(chan struct{})
+			results := make(chan domain.RunnerTask, 16)
+			created := make(chan bool, 16)
+			for i := 0; i < 16; i++ {
+				wg.Add(1)
+				go func(i int) {
+					defer wg.Done()
+					<-start
+					task, fresh, err := s.QueueRunnerMaintenanceTask(domain.RunnerTask{ID: fmt.Sprintf("am-%d-%d-%d", suffix, index, i), RunID: runID, Provider: "terminal", Action: action, MaxAttempts: 3})
+					if err != nil {
+						t.Errorf("concurrent MySQL queue: %v", err)
+						return
+					}
+					results <- task
+					created <- fresh
+				}(i)
+			}
+			close(start)
+			wg.Wait()
+			close(results)
+			close(created)
+			id, count, freshCount := "", 0, 0
+			for fresh := range created {
+				if fresh {
+					freshCount++
+				}
+			}
+			for task := range results {
+				count++
+				if id == "" {
+					id = task.ID
+				}
+				if task.ID != id {
+					t.Errorf("concurrent task identities: %s / %s", id, task.ID)
+				}
+			}
+			if count != 16 || freshCount != 1 {
+				t.Fatalf("results=%d created=%d, want 16/1", count, freshCount)
+			}
+			var rows int64
+			if err := s.runnerTasksForRunAction(s.DB, runID, action).Count(&rows).Error; err != nil || rows != 1 {
+				t.Fatalf("stored tasks=%d err=%v", rows, err)
+			}
+			if err := s.CancelRunnerTask(id, time.Now().UTC()); err != nil {
+				t.Fatal(err)
+			}
+			next, fresh, err := s.QueueRunnerMaintenanceTask(domain.RunnerTask{ID: fmt.Sprintf("am-next-%d-%d", suffix, index), RunID: runID, Provider: "terminal", Action: action, MaxAttempts: 3})
+			if err != nil || !fresh || next.ID == id || next.Attempt != 0 || next.MaxAttempts != 3 {
+				t.Fatalf("next=%+v fresh=%v err=%v", next, fresh, err)
+			}
+			if latest, ok := s.LatestRunnerTaskForRunAction(runID, action); !ok || latest.ID != next.ID {
+				t.Fatalf("latest=%+v ok=%v", latest, ok)
+			}
+		})
+	}
+	t.Run("different-runs", func(t *testing.T) {
+		for round := 0; round < 5; round++ {
+			runIDs := []string{fmt.Sprintf("atomic-cross-%d-%d-a", suffix, round), fmt.Sprintf("atomic-cross-%d-%d-b", suffix, round)}
+			for _, runID := range runIDs {
+				if err := s.PutRun(domain.Run{ID: runID}); err != nil {
+					t.Fatal(err)
+				}
+				defer func(runID string) {
+					_ = s.runnerTasksForRunAction(s.DB, runID, domain.RunnerTaskActionCleanupRun).Delete(&runnerTaskRow{}).Error
+					_ = s.DB.Where("id = ?", runID).Delete(&runRow{}).Error
+				}(runID)
+			}
+			var wg sync.WaitGroup
+			start := make(chan struct{})
+			for i := 0; i < 16; i++ {
+				wg.Add(1)
+				go func(i int) {
+					defer wg.Done()
+					<-start
+					_, _, err := s.QueueRunnerMaintenanceTask(domain.RunnerTask{ID: fmt.Sprintf("ac-%d-%d-%d", suffix, round, i), RunID: runIDs[i%2], Provider: "terminal", Action: domain.RunnerTaskActionCleanupRun, MaxAttempts: 3})
+					if err != nil {
+						t.Errorf("round=%d independent run queue: %v", round, err)
+					}
+				}(i)
+			}
+			close(start)
+			wg.Wait()
+			for _, runID := range runIDs {
+				var rows int64
+				if err := s.runnerTasksForRunAction(s.DB, runID, domain.RunnerTaskActionCleanupRun).Count(&rows).Error; err != nil || rows != 1 {
+					t.Fatalf("round=%d run=%s stored=%d err=%v", round, runID, rows, err)
+				}
+			}
+		}
+	})
+}
 
 func TestMySQLReadsObserveExternalChangesWithoutReload(t *testing.T) {
 	dsn := os.Getenv("AGENTFLOW_TEST_MYSQL_DSN")
@@ -173,8 +287,6 @@ func TestMySQLRunnerTaskCompletionScrubsCredentials(t *testing.T) {
 			CodexAPIKey:      "codex-secret",
 			CodexBaseURL:     "https://gateway.example/v1",
 			Repository:       &domain.RunnerRepository{CloneURL: "https://example.com/repo.git", GitToken: "git-secret"},
-			GitSSHUserID:     42,
-			GitSSHKeys:       map[string]string{"git@gitlab.example.org:team/app.git": "ssh-key-must-not-be-queued"},
 		},
 	}
 	if err := s.PutRunnerTask(task); err != nil {
@@ -187,87 +299,14 @@ func TestMySQLRunnerTaskCompletionScrubsCredentials(t *testing.T) {
 	if claimed.Sandbox == nil || claimed.Sandbox.Profile.Driver != "docker" {
 		t.Fatalf("claimed task lost runner sandbox: %+v", claimed.Sandbox)
 	}
-	if claimed.Invocation == nil || len(claimed.Invocation.GitSSHKeys) != 0 || claimed.Invocation.GitSSHUserID != 42 {
-		t.Fatal("queue must retain the SSH credential reference only")
-	}
-	if err := s.CompleteRunnerTask(claimed.ID, runnerID, domain.RunnerTaskSuccess, nil, "done", "", nil, nil, time.Now().UTC()); err != nil {
+	if err := s.CompleteRunnerTask(claimed.ID, runnerID, claimed.Attempt, domain.RunnerTaskSuccess, nil, "done", "", nil, nil, time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
 	var payload string
 	if err := s.DB.Raw(`SELECT payload FROM runner_tasks WHERE id=?`, taskID).Scan(&payload).Error; err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(payload, "codex-secret") || strings.Contains(payload, "git-secret") || strings.Contains(payload, "gateway.example") || strings.Contains(payload, "gitSsh") {
+	if strings.Contains(payload, "codex-secret") || strings.Contains(payload, "git-secret") || strings.Contains(payload, "gateway.example") {
 		t.Fatalf("completed task retained credential material: %s", payload)
-	}
-}
-
-func TestMySQLGitSSHCredentialLifecycle(t *testing.T) {
-	dsn := os.Getenv("AGENTFLOW_TEST_MYSQL_DSN")
-	if dsn == "" {
-		t.Skip("AGENTFLOW_TEST_MYSQL_DSN is not set")
-	}
-	s, err := Open(dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-	login := fmt.Sprintf("git-ssh-%d", time.Now().UnixNano())
-	if err := s.PutUser(domain.User{LoginName: login}); err != nil {
-		t.Fatal(err)
-	}
-	user, ok := s.UserByLoginName(login)
-	if !ok {
-		t.Fatal("test user not found")
-	}
-	defer func() {
-		_ = s.DB.Exec(`DELETE FROM user_git_ssh_keys WHERE user_id=?`, user.ID).Error
-		_ = s.DB.Exec(`DELETE FROM user_configs WHERE user_id=?`, user.ID).Error
-		_ = s.DB.Exec(`DELETE FROM users WHERE id=?`, user.ID).Error
-	}()
-	if _, err := s.UpdateUserCredentials(user.ID, UserCredentialUpdate{GitToken: "test-only token"}); err != nil {
-		t.Fatal(err)
-	}
-	const first = "git@gitlab.example.org:team/app.git"
-	const sameHost = "git@gitlab.example.org:other/repo.git"
-	const second = "ssh://git@git.example.org:2222/team/app.git"
-	const missing = "git@git.example.org:team/app.git"
-	if err := s.SaveGitSSHKey(user.ID, "", "gitlab.example.org", "GitLab", "test-only first key"); err != nil {
-		t.Fatal(err)
-	}
-	if stored, ok := s.User(user.ID); !ok || !stored.GitSSHKeyConfigured {
-		t.Fatal("stored SSH host key is missing its configured flag")
-	}
-	if err := s.SaveGitSSHKey(user.ID, "", "GITLAB.EXAMPLE.ORG:22", "Duplicate", "test-only duplicate key"); !errors.Is(err, ErrGitSSHKeyExists) {
-		t.Fatalf("duplicate host: %v", err)
-	}
-	if err := s.SaveGitSSHKey(user.ID, "", "git.example.org:2222", "Other host", "test-only second key"); err != nil {
-		t.Fatal(err)
-	}
-	keys, err := s.GitSSHKeyDescriptions(user.ID)
-	if err != nil || len(keys) != 2 || keys[0].Host != "gitlab.example.org:22" || keys[1].Host != "git.example.org:2222" {
-		t.Fatalf("list SSH host key metadata: %+v (%v)", keys, err)
-	}
-	if err := s.SaveGitSSHKey(user.ID, keys[0].ID, keys[0].Host, "GitLab", ""); err != nil {
-		t.Fatalf("unchanged key update: %v", err)
-	}
-	selected := s.GitSSHKeysForRemotes(user.ID, []string{first, sameHost, second, missing})
-	if selected[first] != "test-only first key" || selected[sameHost] != selected[first] || selected[second] != "test-only second key" || selected[missing] != "" {
-		t.Fatal("host matching, shared key or port isolation failed")
-	}
-	if err := s.SaveGitSSHKey(user.ID, keys[0].ID, keys[0].Host, "New name", "rotated key"); err != nil {
-		t.Fatal(err)
-	}
-	selected = s.GitSSHKeysForRemotes(user.ID, []string{first, second})
-	if selected[first] != "rotated key" || selected[second] != "test-only second key" {
-		t.Fatal("rotation changed a different host's key")
-	}
-	for _, key := range keys {
-		if err := s.DeleteGitSSHKey(user.ID, key.ID); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if user, _ := s.User(user.ID); user.GitSSHKeyConfigured || user.GitToken != "test-only token" {
-		t.Fatal("deleting SSH keys changed the token or left the configured flag set")
 	}
 }

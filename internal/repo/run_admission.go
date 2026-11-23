@@ -22,13 +22,11 @@ const ProjectRunLimit = 10
 // "runner:<id>" for a personal machine. Each bucket has its own lock row, so
 // different projects and machines never wait on each other.
 //
-// Lock rule: a transaction that takes a bucket lock takes it FIRST, before any
-// run row lock, and holds at most one bucket. Only transactions that claim a
-// slot (insert a running run, restart a succeeded/unstarted run, promote the
-// queue) or change a machine limit take it. Writes that keep or release a
-// slot never do: a release that races an admission decision can only make it
-// over-count and queue a little longer, never exceed the limit, and the next
-// promotion pass corrects it.
+// Lock rule: a transaction that takes bucket locks takes the complete sorted
+// set FIRST, before any Run row lock. Only transactions that claim a slot
+// (insert/restart/promote) or change a machine limit take them. Writes that
+// keep or release a slot never do: a release that races admission can only
+// make it over-count and queue a little longer, never exceed the limit.
 type runAdmissionLockRow struct {
 	ID string `gorm:"column:id;primaryKey;size:128"`
 }
@@ -56,10 +54,13 @@ func (d *deps) admissionTxOptions() []*sql.TxOptions {
 }
 
 // admissionLockRequired aborts a write attempt that turned out to claim a
-// slot without holding its bucket lock; writeRun retries with the lock.
-type admissionLockRequired struct{ key string }
+// slot without holding its complete bucket lock set; writeRun retries with
+// those locks in lexical order.
+type admissionLockRequired struct{ keys []string }
 
-func (e *admissionLockRequired) Error() string { return "admission lock required for " + e.key }
+func (e *admissionLockRequired) Error() string {
+	return "admission locks required for " + strings.Join(e.keys, ",")
+}
 
 func admissionBucketKey(project, runnerID string, exempt bool) string {
 	if exempt {
@@ -71,6 +72,11 @@ func admissionBucketKey(project, runnerID string, exempt bool) string {
 // runAdmissionBucketKey is the persisted bucket of a run whose project and
 // exemption are already frozen on it.
 func runAdmissionBucketKey(run domain.Run) string {
+	if len(run.ExecutionContext.NodePlacements) > 0 {
+		// Keep a scalar marker for old readers without allowing it to double
+		// count the additive membership rows.
+		return "placed:" + strings.TrimSpace(run.ID)
+	}
 	return admissionBucketKey(run.ExecutionContext.ProjectID, run.ExecutionContext.ExecutionRunnerID, run.ConcurrencyExempt)
 }
 
@@ -89,6 +95,82 @@ type admissionScope struct {
 
 func newAdmissionScope(tx *gorm.DB) *admissionScope {
 	return &admissionScope{tx: tx, runners: map[string]runnerAdmissionInfo{}, issues: map[string]string{}}
+}
+
+func sortedUniqueAdmissionKeys(values []string) []string {
+	seen := make(map[string]bool, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// buckets returns every limited bucket frozen by a Run. A placed Run can
+// reserve several personal Runner limits and the shared project limit when a
+// shared Runner participates. Unlimited personal Runners do not need a lock.
+func (s *admissionScope) buckets(run domain.Run) ([]string, error) {
+	if len(run.ExecutionContext.NodePlacements) == 0 {
+		key := admissionBucketKey(run.ExecutionContext.ProjectID, run.ExecutionContext.ExecutionRunnerID, run.ConcurrencyExempt)
+		limit, err := s.limit(key)
+		if err != nil || limit <= 0 {
+			return nil, err
+		}
+		return []string{key}, nil
+	}
+	keys := []string{}
+	for _, placement := range run.ExecutionContext.NodePlacements {
+		info, err := s.runner(placement.RunnerID)
+		if err != nil {
+			return nil, err
+		}
+		if info.personal {
+			if info.limit > 0 {
+				keys = append(keys, admissionBucketKey("", placement.RunnerID, true))
+			}
+			continue
+		}
+		keys = append(keys, admissionBucketKey(run.ExecutionContext.ProjectID, "", false))
+	}
+	return sortedUniqueAdmissionKeys(keys), nil
+}
+
+func (s *admissionScope) membership(runID string) ([]string, error) {
+	var rows []runAdmissionMembershipRow
+	if err := s.tx.Where("run_id = ?", runID).Order("bucket ASC").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	keys := make([]string, 0, len(rows))
+	for _, row := range rows {
+		keys = append(keys, row.Bucket)
+	}
+	return sortedUniqueAdmissionKeys(keys), nil
+}
+
+func (s *admissionScope) rowBuckets(row runRow) ([]string, error) {
+	if membership, err := s.membership(row.ID); err != nil {
+		return nil, err
+	} else if len(membership) > 0 {
+		return membership, nil
+	}
+	run := runFromRow(row)
+	if len(run.ExecutionContext.NodePlacements) > 0 {
+		return s.buckets(run)
+	}
+	if row.QuotaBucket != nil && *row.QuotaBucket != "" && !strings.HasPrefix(*row.QuotaBucket, "placed:") {
+		return []string{*row.QuotaBucket}, nil
+	}
+	key, err := s.rowBucketKey(row)
+	if err != nil || key == "" {
+		return nil, err
+	}
+	return []string{key}, nil
 }
 
 func (s *admissionScope) runner(id string) (runnerAdmissionInfo, error) {
@@ -185,8 +267,7 @@ func (s *admissionScope) rowBucketKey(row runRow) (string, error) {
 func (s *admissionScope) occupied(key, exclude string) (int, error) {
 	var rows []runRow
 	q := s.tx.Select("id", "kind", "workflow_id", "status", "quota_bucket", "quota_project_id", "quota_parent_run_id", "quota_exempt", "admission_state", "execution_context").
-		Where("(quota_bucket = ? OR quota_bucket IS NULL) AND status NOT IN ? AND (admission_state IS NULL OR admission_state <> ?)",
-			key, []string{"succeeded", "queued"}, "unstarted")
+		Where("status NOT IN ? AND (admission_state IS NULL OR admission_state <> ?)", []string{"succeeded", "queued"}, "unstarted")
 	if exclude != "" {
 		q = q.Where("id <> ?", exclude)
 	}
@@ -207,23 +288,39 @@ func (s *admissionScope) occupied(key, exclude string) (int, error) {
 		if row.Kind == domain.RunKindWorkspace || row.WorkflowID == domain.FreeCollaborationWorkflowID {
 			continue
 		}
-		bucket, err := s.rowBucketKey(row)
+		buckets, err := s.rowBuckets(row)
 		if err != nil {
 			return 0, err
 		}
-		if bucket == key {
-			n++
+		for _, bucket := range buckets {
+			if bucket == key {
+				n++
+				break
+			}
 		}
 	}
 	return n, nil
 }
 
-// hasQueued reports whether a run already waits in the bucket; a new request
-// must not overtake it. Queued rows always carry a persisted bucket.
+// hasQueued reports whether a Run already waits in the bucket; a new request
+// must not overtake it. Membership rows are resolved for placed candidates.
 func (s *admissionScope) hasQueued(key, exclude string) (bool, error) {
-	var ids []string
-	err := s.tx.Model(&runRow{}).Where("quota_bucket = ? AND status = ? AND id <> ?", key, "queued", exclude).Limit(1).Pluck("id", &ids).Error
-	return len(ids) > 0, err
+	var rows []runRow
+	if err := s.tx.Select("id", "kind", "workflow_id", "status", "quota_bucket", "quota_project_id", "quota_parent_run_id", "quota_exempt", "admission_state", "execution_context").Where("status = ? AND id <> ?", "queued", exclude).Find(&rows).Error; err != nil {
+		return false, err
+	}
+	for _, row := range rows {
+		buckets, err := s.rowBuckets(row)
+		if err != nil {
+			return false, err
+		}
+		for _, bucket := range buckets {
+			if bucket == key {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
 }
 
 func queuedMessage(key string) string {
@@ -233,10 +330,10 @@ func queuedMessage(key string) string {
 	return "等待项目可用运行名额"
 }
 
-// prepareRunAdmission freezes the run's quota identity and decides whether a
-// running write claims a slot. lockedKey is the bucket lock held by the
-// caller's transaction ("" for none).
-func (r *RunsRepo) prepareRunAdmission(tx *gorm.DB, run *domain.Run, current runRow, exists bool, lockedKey string) error {
+// prepareRunAdmission freezes the Run's quota identity and decides whether a
+// running write claims a slot. lockedKeys is the complete bucket lock set held
+// by the caller's transaction (nil for the first optimistic attempt).
+func (r *RunsRepo) prepareRunAdmission(tx *gorm.DB, run *domain.Run, current runRow, exists bool, lockedKeys []string) error {
 	s := newAdmissionScope(tx)
 	if exists {
 		cur := runFromRow(current)
@@ -302,35 +399,102 @@ func (r *RunsRepo) prepareRunAdmission(tx *gorm.DB, run *domain.Run, current run
 	if strings.TrimSpace(run.ExecutionContext.ParentRunID) != "" {
 		return r.checkParentAdmission(tx, *run)
 	}
-	key := runAdmissionBucketKey(*run)
-	limit, err := s.limit(key)
-	if err != nil || limit <= 0 {
-		return err
-	}
-	if key != lockedKey {
-		return &admissionLockRequired{key: key}
-	}
-	occupied, err := s.occupied(key, run.ID)
+	keys, err := s.buckets(*run)
 	if err != nil {
 		return err
 	}
-	queued, err := s.hasQueued(key, run.ID)
-	if err != nil {
-		return err
+	locked := make(map[string]bool, len(lockedKeys))
+	for _, key := range lockedKeys {
+		locked[key] = true
 	}
-	if occupied >= limit || queued {
+	for _, key := range keys {
+		if !locked[key] {
+			return &admissionLockRequired{keys: keys}
+		}
+	}
+	queued := false
+	for _, key := range keys {
+		limit, err := s.limit(key)
+		if err != nil {
+			return err
+		}
+		if limit <= 0 {
+			continue
+		}
+		occupied, err := s.occupied(key, run.ID)
+		if err != nil {
+			return err
+		}
+		waiting, err := s.hasQueued(key, run.ID)
+		if err != nil {
+			return err
+		}
+		if occupied >= limit || waiting {
+			queued = true
+		}
+	}
+	if queued {
 		run.Status, run.AdmissionState = "queued", "queued"
-		run.QueueEnteredAt = time.Now().UTC()
+		if run.QueueEnteredAt.IsZero() {
+			run.QueueEnteredAt = time.Now().UTC()
+		}
 		run.OwnerInstanceID, run.LeaseUntil = "", time.Time{}
 		run.CancelRequested, run.PauseRequested = false, false
 		for i := range run.Events {
 			if run.Events[i].Type == "run.started" && !exists {
 				run.Events[i].Type = "run.queued"
-				run.Events[i].Message = queuedMessage(key)
+				messageKey := "project:"
+				if len(keys) > 0 {
+					messageKey = keys[0]
+				}
+				run.Events[i].Message = queuedMessage(messageKey)
 			}
 		}
 	}
 	return nil
+}
+
+// persistRunAdmissionMemberships freezes the complete bucket set alongside
+// the Run row. Existing membership is immutable; a changed placed request is
+// rejected before any header update can be committed.
+func (r *RunsRepo) persistRunAdmissionMemberships(tx *gorm.DB, run domain.Run, current runRow, exists bool) error {
+	if len(run.ExecutionContext.NodePlacements) == 0 {
+		return nil
+	}
+	s := newAdmissionScope(tx)
+	want, err := s.buckets(run)
+	if err != nil {
+		return err
+	}
+	if exists {
+		got, err := s.membership(run.ID)
+		if err != nil {
+			return err
+		}
+		if len(got) > 0 && !sameAdmissionKeys(got, want) {
+			return fmt.Errorf("placed Run admission membership changed")
+		}
+	}
+	for _, bucket := range want {
+		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&runAdmissionMembershipRow{RunID: run.ID, Bucket: bucket}).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func sameAdmissionKeys(left, right []string) bool {
+	left = sortedUniqueAdmissionKeys(left)
+	right = sortedUniqueAdmissionKeys(right)
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *RunsRepo) checkParentAdmission(tx *gorm.DB, run domain.Run) error {
@@ -353,92 +517,178 @@ func (r *RunsRepo) checkParentAdmission(tx *gorm.DB, run domain.Run) error {
 	return nil
 }
 
-// PromoteQueuedRuns admits queued runs FIFO within each bucket, one short
-// transaction per bucket. A bucket whose limit was raised or cleared releases
-// its queue on the next pass. A failing bucket does not block the others.
+// PromoteQueuedRuns admits queued Runs in deterministic queue order. Each
+// candidate locks its complete sorted bucket set and is promoted only when it
+// is oldest in every participating bucket and every bucket has capacity. A
+// blocked candidate in one bucket does not prevent a disjoint candidate from
+// progressing.
 func (r *RunsRepo) PromoteQueuedRuns() ([]string, error) {
-	var raw []*string
-	if err := r.DB.Model(&runRow{}).Where("status = ?", "queued").Distinct("quota_bucket").Pluck("quota_bucket", &raw).Error; err != nil {
+	var queued []runRow
+	if err := r.DB.Select("id", "queue_entered_at", "created_at").Where("status = ?", "queued").Find(&queued).Error; err != nil {
 		return nil, err
 	}
-	keys := make([]string, 0, len(raw))
-	for _, key := range raw {
-		if key != nil && *key != "" {
-			keys = append(keys, *key)
+	sort.Slice(queued, func(i, j int) bool {
+		qi, qj := queued[i].QueueEntered, queued[j].QueueEntered
+		if qi == nil && qj != nil {
+			return true
 		}
-	}
-	sort.Strings(keys)
+		if qi != nil && qj == nil {
+			return false
+		}
+		if qi != nil && qj != nil && !qi.Equal(*qj) {
+			return qi.Before(*qj)
+		}
+		ci, cj := queued[i].Created, queued[j].Created
+		if ci == nil && cj != nil {
+			return true
+		}
+		if ci != nil && cj == nil {
+			return false
+		}
+		if ci != nil && cj != nil && !ci.Equal(*cj) {
+			return ci.Before(*cj)
+		}
+		return queued[i].ID < queued[j].ID
+	})
 	var promoted []string
 	var firstErr error
-	for _, key := range keys {
-		ids, err := r.promoteBucket(key)
-		promoted = append(promoted, ids...)
+	for _, row := range queued {
+		ok, err := r.promoteCandidate(row.ID)
+		if ok {
+			promoted = append(promoted, row.ID)
+		}
 		if err != nil && firstErr == nil {
-			firstErr = fmt.Errorf("promote %s: %w", key, err)
+			firstErr = fmt.Errorf("promote %s: %w", row.ID, err)
 		}
 	}
 	return promoted, firstErr
 }
 
-func (r *RunsRepo) promoteBucket(key string) ([]string, error) {
-	var promoted []string
+func (r *RunsRepo) promoteCandidate(id string) (bool, error) {
+	promoted := false
 	err := r.DB.Transaction(func(tx *gorm.DB) error {
-		promoted = nil
-		if err := lockAdmissionGate(r.deps, tx, key); err != nil {
+		s := newAdmissionScope(tx)
+		// Read the candidate without owning it, derive the complete lock set,
+		// then acquire bucket locks before taking the Run row lock.
+		var candidate runRow
+		if err := tx.Where("id = ?", id).Take(&candidate).Error; err != nil {
 			return err
 		}
-		s := newAdmissionScope(tx)
-		limit, err := s.limit(key)
+		if candidate.Status != "queued" {
+			return nil
+		}
+		keys, err := s.rowBuckets(candidate)
 		if err != nil {
 			return err
 		}
-		occupied := 0
-		if limit > 0 {
-			if occupied, err = s.occupied(key, ""); err != nil {
+		for _, key := range keys {
+			if err := lockAdmissionGate(r.deps, tx, key); err != nil {
 				return err
 			}
-			if occupied >= limit {
+		}
+		row, err := r.takeRunForUpdate(tx, id)
+		if err != nil {
+			return err
+		}
+		if row.Status != "queued" {
+			return nil
+		}
+		currentKeys, err := s.rowBuckets(row)
+		if err != nil {
+			return err
+		}
+		if !sameAdmissionKeys(keys, currentKeys) {
+			return nil
+		}
+		// The Run row was locked after the bucket gates, so all checks below
+		// observe a single frozen candidate and cannot partially reserve it.
+		for _, key := range keys {
+			limit, err := s.limit(key)
+			if err != nil {
+				return err
+			}
+			if limit <= 0 {
+				continue
+			}
+			occupied, err := s.occupied(key, id)
+			if err != nil {
+				return err
+			}
+			older, err := s.olderQueuedSharesBucket(tx, id, row, key)
+			if err != nil {
+				return err
+			}
+			if occupied >= limit || older {
 				return nil
 			}
 		}
-		var queued []runRow
-		if err := tx.Select("id", "queue_entered_at", "created_at").Where("quota_bucket = ? AND status = ?", key, "queued").
-			Order("queue_entered_at, created_at, id").Find(&queued).Error; err != nil {
+		now := time.Now().UTC()
+		res := tx.Model(&runRow{}).Where("id = ? AND status = ?", id, "queued").Updates(map[string]any{
+			"status": "running", "admission_state": "held", "revision": gorm.Expr("revision + 1"), "updated_at": now,
+			"cancel_requested": false, "pause_requested": false, "owner_instance_id": "", "lease_until": nil,
+		})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return nil
+		}
+		var seq int64
+		if err := tx.Model(&runEventRow{}).Select("COALESCE(MAX(seq), -1) + 1").Where("run_id = ?", id).Scan(&seq).Error; err != nil {
 			return err
 		}
-		for _, row := range queued {
-			if limit > 0 && occupied >= limit {
-				break
-			}
-			now := time.Now().UTC()
-			// A concurrent cancel holds the run row; re-check the status here.
-			res := tx.Model(&runRow{}).Where("id = ? AND status = ?", row.ID, "queued").Updates(map[string]any{
-				"status": "running", "admission_state": "held", "revision": gorm.Expr("revision + 1"), "updated_at": now,
-				"cancel_requested": false, "pause_requested": false, "owner_instance_id": "", "lease_until": nil,
-			})
-			if res.Error != nil {
-				return res.Error
-			}
-			if res.RowsAffected == 0 {
-				continue
-			}
-			var seq int64
-			if err := tx.Model(&runEventRow{}).Select("COALESCE(MAX(seq), -1) + 1").Where("run_id = ?", row.ID).Scan(&seq).Error; err != nil {
-				return err
-			}
-			ev := domain.RunEvent{ID: fmt.Sprintf("adm-%d-%d", now.UnixNano(), seq), RunID: row.ID, Type: "run.started", Message: "获得运行名额，开始执行", Timestamp: now}
-			if err := tx.Create(&runEventRow{RunID: row.ID, Seq: seq, EventID: ev.ID, Type: ev.Type, Message: ev.Message, Payload: jsonBytes(ev), Ts: &now}).Error; err != nil {
-				return err
-			}
-			occupied++
-			promoted = append(promoted, row.ID)
+		ev := domain.RunEvent{ID: fmt.Sprintf("adm-%d-%d", now.UnixNano(), seq), RunID: id, Type: "run.started", Message: "获得运行名额，开始执行", Timestamp: now}
+		if err := tx.Create(&runEventRow{RunID: id, Seq: seq, EventID: ev.ID, Type: ev.Type, Message: ev.Message, Payload: jsonBytes(ev), Ts: &now}).Error; err != nil {
+			return err
 		}
+		promoted = true
 		return nil
 	}, r.admissionTxOptions()...)
-	if err != nil {
-		return nil, err
+	return promoted, err
+}
+
+func (s *admissionScope) olderQueuedSharesBucket(tx *gorm.DB, candidateID string, candidate runRow, key string) (bool, error) {
+	var rows []runRow
+	if err := tx.Select("id", "kind", "workflow_id", "status", "quota_bucket", "quota_project_id", "quota_parent_run_id", "quota_exempt", "admission_state", "execution_context", "queue_entered_at", "created_at").Where("status = ?", "queued").Find(&rows).Error; err != nil {
+		return false, err
 	}
-	return promoted, nil
+	for _, row := range rows {
+		if row.ID == candidateID || !queuedBefore(row, candidate) {
+			continue
+		}
+		buckets, err := s.rowBuckets(row)
+		if err != nil {
+			return false, err
+		}
+		for _, bucket := range buckets {
+			if bucket == key {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+func queuedBefore(left, right runRow) bool {
+	if left.QueueEntered != nil && right.QueueEntered == nil {
+		return true
+	}
+	if left.QueueEntered == nil && right.QueueEntered != nil {
+		return false
+	}
+	if left.QueueEntered != nil && right.QueueEntered != nil && !left.QueueEntered.Equal(*right.QueueEntered) {
+		return left.QueueEntered.Before(*right.QueueEntered)
+	}
+	if left.Created != nil && right.Created == nil {
+		return true
+	}
+	if left.Created == nil && right.Created != nil {
+		return false
+	}
+	if left.Created != nil && right.Created != nil && !left.Created.Equal(*right.Created) {
+		return left.Created.Before(*right.Created)
+	}
+	return left.ID < right.ID
 }
 
 // CancelQueuedRun settles a queued run as cancelled-before-start. It takes

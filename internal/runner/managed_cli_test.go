@@ -21,13 +21,23 @@ import (
 
 func managedTestDaemon(t *testing.T, root string, tasks []domain.RunnerTask, status map[string]int, onComplete func()) (*Daemon, *atomic.Int32, <-chan CompleteRequest) {
 	t.Helper()
+	for i := range tasks {
+		tasks[i].Attempt = 1
+	}
 	claims := &atomic.Int32{}
 	completed := make(chan CompleteRequest, 8)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Runner-Task-Protocol", "2")
 		w.Header().Set("Content-Type", "application/json")
 		action := filepath.Base(r.URL.Path)
 		n := -1
 		if action == "claim" {
+			var req ClaimRequest
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			if req.Preflight {
+				_ = json.NewEncoder(w).Encode(map[string]bool{"taskAvailable": int(claims.Load()) < len(tasks)})
+				return
+			}
 			n = int(claims.Add(1)) - 1
 		}
 		if code := status[action]; code != 0 {
@@ -125,7 +135,7 @@ func TestManagedPinFailureCompletesTaskBeforeReleasingUsage(t *testing.T) {
 		t.Fatalf("completion=%+v", req)
 	}
 	assertManagedMaintenance(t, root, false)
-	if d.managedTaskState(task.ID) != nil || atomic.LoadInt32(&d.running) != 0 {
+	if d.managedTaskState(task.ID, task.Attempt) != nil || atomic.LoadInt32(&d.running) != 0 {
 		t.Fatal("task state leaked")
 	}
 }

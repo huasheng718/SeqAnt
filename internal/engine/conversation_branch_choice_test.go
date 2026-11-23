@@ -88,13 +88,14 @@ func TestPushConversationWorkspaceRefusesAnotherCheckedOutBranch(t *testing.T) {
 	}
 	t.Cleanup(st.Close)
 	e := New(st, runtime.NewManager(filepath.Join(root, "workspaces")))
+	_ = e.ConfigureDeliveryPolicy(domain.DeliveryPolicyLegacy)
 	run := domain.Run{
 		ID:               "run-drifted",
 		Kind:             domain.RunKindWorkspace,
 		Status:           "waiting",
 		Input:            "改文案",
 		WorkflowSnapshot: domain.WorkflowDefinition{ID: domain.ConversationWorkspaceWorkflowID},
-		ExecutionContext: domain.TelemetryContext{ProjectID: "platform", ExecutionMode: domain.ExecutionModeCloud},
+		ExecutionContext: domain.TelemetryContext{DeliveryPolicy: domain.DeliveryPolicyLegacy, ProjectID: "platform", ExecutionMode: domain.ExecutionModeCloud},
 		Repositories: []domain.RepositoryContext{
 			{RepositoryID: "repo-1", Name: "app", CloneURL: remote, BaseBranch: "master", WorkBranch: "feature/recorded", WorkspaceDir: "app"},
 			{RepositoryID: "repo-2", Name: "docs", CloneURL: remote, BaseBranch: "master", ReadOnly: true, WorkspaceDir: "docs"},

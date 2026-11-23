@@ -162,6 +162,12 @@ func (e *Engine) cleanupRunWorkspace(runID string) {
 }
 
 func (e *Engine) cleanupWorkspace(run domain.Run, now time.Time) {
+	if run.WorkspaceCleanedAt.IsZero() {
+		if participants := e.placedWorkspaceParticipants(run.ID); len(participants) > 0 {
+			e.cleanupPlacedWorkspace(run, now, participants)
+			return
+		}
+	}
 	managed, checkpointClaimed, releaseCheckpoint, checkpointErr := e.claimIdleConversationWorkspace(run, now)
 	if releaseCheckpoint != nil {
 		defer releaseCheckpoint()
@@ -178,7 +184,7 @@ func (e *Engine) cleanupWorkspace(run domain.Run, now time.Time) {
 		if runnerID == "" {
 			return
 		}
-		task, exists := e.repo.RunnerTask("rt-cleanup-" + safeRunnerPath(run.ID))
+		task, exists := e.repo.LatestRunnerTaskForRunAction(run.ID, domain.RunnerTaskActionCleanupRun)
 		if !exists {
 			// A removed Runner has already cleaned its workspace as part of
 			// deregistration; otherwise allow the request to be queued again.

@@ -18,6 +18,26 @@ const (
 	mysqlSeedMarkerID = -1
 )
 
+type assistantPreferenceRow struct {
+	UserID         int64      `gorm:"column:user_id;primaryKey;autoIncrement:false"`
+	ProactiveRoles bool       `gorm:"column:proactive_roles;not null;default:false"`
+	ProactiveSOPs  bool       `gorm:"column:proactive_sops;not null;default:false"`
+	Instructions   string     `gorm:"column:instructions;type:text"`
+	UpdatedAt      *time.Time `gorm:"column:updated_at"`
+}
+
+func (assistantPreferenceRow) TableName() string { return "assistant_preferences" }
+
+type gitSSHKeyRow struct {
+	UserID     int64  `gorm:"primaryKey;autoIncrement:false"`
+	ID         string `gorm:"primaryKey;size:64"`
+	Name       string `gorm:"size:80;not null"`
+	Host       string `gorm:"type:text;not null"`
+	PrivateKey string `gorm:"type:text;not null"`
+}
+
+func (gitSSHKeyRow) TableName() string { return "user_git_ssh_keys" }
+
 type userRow struct {
 	ID           int64      `gorm:"column:id;primaryKey;autoIncrement"`
 	StaffID      int        `gorm:"column:staff_id"`
@@ -51,16 +71,6 @@ type userConfigRow struct {
 }
 
 func (userConfigRow) TableName() string { return "user_configs" }
-
-type gitSSHKeyRow struct {
-	UserID     int64  `gorm:"primaryKey;autoIncrement:false"`
-	ID         string `gorm:"primaryKey;size:64"`
-	Name       string `gorm:"size:80;not null"`
-	Host       string `gorm:"type:text;not null"`
-	PrivateKey string `gorm:"type:text;not null"`
-}
-
-func (gitSSHKeyRow) TableName() string { return "user_git_ssh_keys" }
 
 type apiTokenRow struct {
 	ID         string     `gorm:"column:id;primaryKey;size:64"`
@@ -326,6 +336,37 @@ type runRow struct {
 
 func (runRow) TableName() string { return "runs" }
 
+// runAdmissionMembershipRow is the additive index for Runs that participate
+// in more than one admission bucket (for example, a placed Run using two
+// personal Runners plus a shared project Runner). Legacy Runs continue to use
+// runRow.QuotaBucket as their scalar compatibility field.
+type runAdmissionMembershipRow struct {
+	RunID  string `gorm:"column:run_id;primaryKey;size:64;index:idx_run_admission_membership_bucket,priority:2"`
+	Bucket string `gorm:"column:bucket;primaryKey;size:128;index:idx_run_admission_membership_bucket,priority:1"`
+}
+
+func (runAdmissionMembershipRow) TableName() string { return "run_admission_memberships" }
+
+// runWorkspaceCleanupParticipantRow keeps aggregate cleanup state after a Run
+// is deleted. Runner task history remains the source of participant identity;
+// this row records each registration's independent outcome.
+type runWorkspaceCleanupParticipantRow struct {
+	RunID              string     `gorm:"column:run_id;primaryKey;size:64;index:idx_cleanup_participants_status,priority:1"`
+	Action             string     `gorm:"column:action;primaryKey;size:64"`
+	RunnerID           string     `gorm:"column:runner_id;primaryKey;size:64"`
+	RegistrationSHA256 string     `gorm:"column:registration_sha256;primaryKey;size:64"`
+	Status             string     `gorm:"column:status;index:idx_cleanup_participants_status,priority:2;size:32"`
+	TaskID             string     `gorm:"column:task_id;size:64"`
+	Error              string     `gorm:"column:error;type:text"`
+	Created            *time.Time `gorm:"column:created_at"`
+	Updated            *time.Time `gorm:"column:updated_at"`
+	Completed          *time.Time `gorm:"column:completed_at"`
+}
+
+func (runWorkspaceCleanupParticipantRow) TableName() string {
+	return "run_workspace_cleanup_participants"
+}
+
 type runNodeRow struct {
 	RunID   string `gorm:"column:run_id;primaryKey;size:64"`
 	NodeID  string `gorm:"column:node_id;primaryKey;size:64"`
@@ -516,11 +557,12 @@ type runnerTaskRow struct {
 func (runnerTaskRow) TableName() string { return "runner_tasks" }
 
 type runnerTaskEventRow struct {
-	TaskID string     `gorm:"column:task_id;primaryKey;size:64"`
-	Seq    int64      `gorm:"column:seq;primaryKey"`
-	Type   string     `gorm:"column:type;size:32"`
-	Data   string     `gorm:"column:data;type:text"`
-	Ts     *time.Time `gorm:"column:ts"`
+	TaskID  string     `gorm:"column:task_id;primaryKey;size:64"`
+	Attempt int        `gorm:"column:attempt;primaryKey;not null;default:0"`
+	Seq     int64      `gorm:"column:seq;primaryKey"`
+	Type    string     `gorm:"column:type;size:32"`
+	Data    string     `gorm:"column:data;type:text"`
+	Ts      *time.Time `gorm:"column:ts"`
 }
 
 func (runnerTaskEventRow) TableName() string { return "runner_task_events" }
@@ -532,17 +574,6 @@ type userRunnerPrefRow struct {
 }
 
 func (userRunnerPrefRow) TableName() string { return "user_runner_prefs" }
-
-// assistantPreferenceRow: a missing row means both switches are off.
-type assistantPreferenceRow struct {
-	UserID         int64      `gorm:"column:user_id;primaryKey;autoIncrement:false"`
-	ProactiveRoles bool       `gorm:"column:proactive_roles;not null;default:false"`
-	ProactiveSOPs  bool       `gorm:"column:proactive_sops;not null;default:false"`
-	Instructions   string     `gorm:"column:instructions;type:text"`
-	UpdatedAt      *time.Time `gorm:"column:updated_at"`
-}
-
-func (assistantPreferenceRow) TableName() string { return "assistant_preferences" }
 
 type assistantSessionRow struct {
 	ID        string     `gorm:"column:id;primaryKey;size:64"`
@@ -699,18 +730,18 @@ func (knowledgeSubmissionRow) TableName() string { return "knowledge_submissions
 // allModels lists every table for the sqlite test schema (AutoMigrate).
 func allModels() []any {
 	return []any{domain.BotUserBinding{}, domain.BotBindingChallenge{}, domain.BotConnection{}, domain.BotConversation{}, domain.BotInteraction{}, notificationBotRow{}, botCredentialRow{}, domain.NotificationDelivery{},
-		userRow{}, localAccountRow{}, userConfigRow{}, gitSSHKeyRow{}, authIntegrationRow{}, platformCodeBuddyKeyRow{}, apiTokenRow{}, genericTemplateRow{},
+		userRow{}, localAccountRow{}, userConfigRow{}, authIntegrationRow{}, platformCodeBuddyKeyRow{}, apiTokenRow{}, genericTemplateRow{},
 		insightSourceRow{}, insightExecutionRow{},
 		projectRow{}, projectMemberRow{}, repositoryRow{}, businessDomainRow{}, businessDomainAssignmentRow{},
 		agentRow{}, ruleRow{}, skillRow{}, skillFileRow{}, mcpServerRow{}, mcpFileRow{}, executorRow{},
 		dockerfileRow{}, environmentRow{}, sandboxRow{},
 		workflowRow{}, syncConfigRow{}, scheduleJobRow{}, sharedScheduleVersionRow{},
 		issueRow{}, issueCommentRow{}, taskRow{},
-		runAdmissionLockRow{}, runRow{}, runNodeRow{}, runEventRow{}, runTelemetryRow{}, runLogRow{}, runArtifactRow{}, runEvalRow{},
+		runAdmissionLockRow{}, runAdmissionMembershipRow{}, runWorkspaceCleanupParticipantRow{}, runRow{}, runNodeRow{}, runEventRow{}, runTelemetryRow{}, runLogRow{}, runArtifactRow{}, runEvalRow{},
 		runPreviewRow{}, previewSessionRow{}, previewBlobRow{}, WorkspaceCheckpoint{}, workspaceCheckpointChunk{},
-		mrDeliveryStateRow{}, definitionRevisionRow{},
-		runnerRow{}, runnerTaskRow{}, runnerTaskEventRow{}, userRunnerPrefRow{},
-		assistantSessionRow{}, assistantTaskRow{}, assistantGenerationRow{}, assistantSessionReadRow{}, assistantPreferenceRow{}, assistantDiagnosticsRow{},
+		mrDeliveryStateRow{}, contributionIntegrationRow{}, contributionPublicationRow{}, definitionRevisionRow{},
+		runnerRow{}, runnerTaskRow{}, runnerTaskEventRow{}, runnerContributionBlobRow{}, userRunnerPrefRow{},
+		assistantSessionRow{}, assistantTaskRow{}, assistantGenerationRow{}, assistantSessionReadRow{},
 		chatRoomRow{}, chatMessageRow{},
 		requirementSpaceRow{}, spaceMemberRow{}, spaceArtifactRow{}, spaceArtifactRevisionRow{}, spaceThreadRow{},
 		engineInstanceRow{},

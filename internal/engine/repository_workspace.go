@@ -303,6 +303,9 @@ func seedEmptyRepository(ctx context.Context, workspace, remote, defaultBranch, 
 	if lsErr != nil || strings.TrimSpace(heads) != "" {
 		return false, nil
 	}
+	if controlledDeliveryContext(ctx) {
+		return true, ErrControlledDelivery
+	}
 	if err := reset(workspace); err != nil {
 		return true, err
 	}

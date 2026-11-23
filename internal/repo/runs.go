@@ -912,26 +912,26 @@ func (r *RunsRepo) PutRun(v domain.Run) error {
 // run) is rolled back and retried with its bucket locked first, so a bucket
 // lock is never awaited while a run row is held.
 func (r *RunsRepo) writeRun(run domain.Run, expectedRevision ...int) error {
-	lockKey := ""
+	var lockKeys []string
 	for attempt := 0; ; attempt++ {
-		err := r.writeRunOnce(run, lockKey, expectedRevision...)
+		err := r.writeRunOnce(run, lockKeys, expectedRevision...)
 		var need *admissionLockRequired
 		if errors.As(err, &need) && attempt < 3 {
-			lockKey = need.key
+			lockKeys = append([]string(nil), need.keys...)
 			continue
 		}
 		return err
 	}
 }
 
-func (r *RunsRepo) writeRunOnce(run domain.Run, lockKey string, expectedRevision ...int) error {
+func (r *RunsRepo) writeRunOnce(run domain.Run, lockKeys []string, expectedRevision ...int) error {
 	var opts []*sql.TxOptions
-	if lockKey != "" {
+	if len(lockKeys) > 0 {
 		opts = r.admissionTxOptions()
 	}
 	return r.DB.Transaction(func(tx *gorm.DB) error {
-		if lockKey != "" {
-			if err := lockAdmissionGate(r.deps, tx, lockKey); err != nil {
+		for _, key := range lockKeys {
+			if err := lockAdmissionGate(r.deps, tx, key); err != nil {
 				return err
 			}
 		}
@@ -959,6 +959,9 @@ func (r *RunsRepo) writeRunOnce(run domain.Run, lockKey string, expectedRevision
 		} else if err != gorm.ErrRecordNotFound {
 			return err
 		}
+		if err := r.preserveNodeExecutionAuthorityTx(tx, &run, current, err == nil); err != nil {
+			return err
+		}
 		if len(expectedRevision) > 0 {
 			if err != nil {
 				return ErrRunDecisionStale
@@ -969,7 +972,10 @@ func (r *RunsRepo) writeRunOnce(run domain.Run, lockKey string, expectedRevision
 				}
 			}
 		}
-		if err := r.prepareRunAdmission(tx, &run, current, err == nil, lockKey); err != nil {
+		if err := r.prepareRunAdmission(tx, &run, current, err == nil, lockKeys); err != nil {
+			return err
+		}
+		if err := r.persistRunAdmissionMemberships(tx, run, current, err == nil); err != nil {
 			return err
 		}
 		if run.Status == "queued" {

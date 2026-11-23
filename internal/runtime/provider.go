@@ -23,17 +23,18 @@ type CLIStateRequirement struct {
 }
 
 type providerMaterializeContext struct {
-	Workspace  string
-	AgentID    string
-	AgentRel   string
-	RuntimeRel string
-	ConfigRoot string
-	AgentRoot  string
-	Content    []byte
-	SkillPaths []string
-	MCPServers []domain.MCPServerDefinition
-	Assets     domain.AgentAssetBundle
-	Compiled   *compiledConfig
+	Workspace   string
+	AgentID     string
+	AgentRel    string
+	RuntimeRel  string
+	ConfigRoot  string
+	AgentRoot   string
+	Content     []byte
+	SkillPaths  []string
+	MCPServers  []domain.MCPServerDefinition
+	TrustedGate bool
+	Assets      domain.AgentAssetBundle
+	Compiled    *compiledConfig
 }
 
 type providerInvocation struct {

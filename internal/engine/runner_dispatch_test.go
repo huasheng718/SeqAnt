@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"strings"
 	"testing"
 
 	"agentflow/internal/domain"
@@ -36,6 +37,17 @@ func TestResolveRunnerResumeSessionIDPrefersEngineOption(t *testing.T) {
 	}
 }
 
+func TestApplyResumePromptPreservesRegularCorrectionContext(t *testing.T) {
+	regular := applyResumePrompt("rendered task\nfeedback: fix tests", "session", "operator note", "fix tests")
+	if !strings.Contains(regular, "请从刚才中断的位置继续执行") || !strings.Contains(regular, "rendered task") || !strings.Contains(regular, "feedback: fix tests") {
+		t.Fatalf("regular resume lost context: %q", regular)
+	}
+	protocol := applyResumePrompt("rendered task", "session", "operator note", gateMissingRetryMarker)
+	if strings.Contains(protocol, "rendered task") || !strings.Contains(protocol, "operator note") {
+		t.Fatalf("missing-submit repair should replace normal prompt: %q", protocol)
+	}
+}
+
 func TestGateCommandInvocationCarriesResponsibleGitToken(t *testing.T) {
 	t.Parallel()
 	s, err := repo.OpenTest()
@@ -48,7 +60,7 @@ func TestGateCommandInvocationCarriesResponsibleGitToken(t *testing.T) {
 	}
 	run := domain.Run{
 		ID: "run-gate",
-		ExecutionContext: domain.TelemetryContext{
+		ExecutionContext: domain.TelemetryContext{DeliveryPolicy: domain.DeliveryPolicyLegacy,
 			ProjectID:         "skillhub",
 			ResponsibleUserID: 3,
 		},
@@ -61,7 +73,7 @@ func TestGateCommandInvocationCarriesResponsibleGitToken(t *testing.T) {
 			WorkspaceDir: "skillhub",
 		}},
 	}
-	invocation := (&Engine{repo: s}).gateCommandInvocation(run, "fix")
+	invocation := (&Engine{repo: s, deliveryPolicy: domain.DeliveryPolicyLegacy}).gateCommandInvocation(run, "fix")
 	if invocation == nil || len(invocation.Repositories) != 1 {
 		t.Fatalf("invocation = %+v", invocation)
 	}

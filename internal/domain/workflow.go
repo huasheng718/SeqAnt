@@ -67,6 +67,7 @@ type WorkflowNode struct {
 	RetryStrategy         string             `json:"retryStrategy,omitempty"` // targeted_fix, full_redo
 	CarryOver             []string           `json:"carryOver,omitempty"`
 	MaxAttempts           int                `json:"maxAttempts"`
+	MaxDurationSec        int                `json:"maxDurationSec,omitempty"`
 	MaxReworks            int                `json:"maxReworks"`
 	Notifications         []NodeNotification `json:"notifications,omitempty"`
 	Position              Position           `json:"position"`

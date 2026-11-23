@@ -28,7 +28,11 @@ type capturingSandbox struct {
 }
 
 func TestLocalWorkspaceGitDiscoveryCannotReachParent(t *testing.T) {
-	parent := t.TempDir()
+	// Git reports physical paths (for example /private/var on macOS).
+	parent, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if out, err := exec.Command("git", "-C", parent, "init", "-q").CombinedOutput(); err != nil {
 		t.Fatalf("git init: %v %s", err, out)
 	}

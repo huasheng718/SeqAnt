@@ -18,7 +18,7 @@ import (
 // control plane asked for a direct push). Conflicts are reported in the
 // result, not as a failure.
 func (d *Daemon) executeIntegrate(ctx context.Context, task domain.RunnerTask) execResult {
-	if err := d.client.StartTask(ctx, task.ID); err != nil {
+	if err := d.client.StartTask(ctx, task.ID, task.Attempt); err != nil {
 		return execResult{status: domain.RunnerTaskFailed, errMsg: fmt.Sprintf("start: %v", err)}
 	}
 	results, err := integrateTaskRepositories(ctx, d.taskWorkspace(task), task.Invocation, task.IntegrationLabel)
@@ -31,7 +31,7 @@ func (d *Daemon) executeIntegrate(ctx context.Context, task domain.RunnerTask) e
 		lines = append(lines, domain.RunnerTaskEvent{Seq: int64(i + 1), Type: "system", Data: msg, Ts: time.Now().UTC()})
 	}
 	if len(lines) > 0 {
-		_ = d.client.SendEvents(ctx, task.ID, lines)
+		_ = d.client.SendEvents(ctx, task.ID, task.Attempt, lines)
 	}
 	if err != nil {
 		return execResult{status: domain.RunnerTaskFailed, exitCode: 1, errMsg: err.Error()}

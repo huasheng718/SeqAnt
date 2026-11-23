@@ -43,6 +43,7 @@ type Engine struct {
 	instanceID     string
 	workspaceHost  string
 	leaseTTL       time.Duration
+	deliveryPolicy string
 	executeRuns    bool
 	draining       bool
 
@@ -56,6 +57,13 @@ type Engine struct {
 	// FindBranchMR resolves the Gongfeng MR whose source is a run repository's
 	// work branch. Nil (local/dev) falls back to MR links in run artifacts.
 	FindBranchMR func(projectID, sourceBranch string) (domain.DeliveryMR, bool, error)
+
+	// CreateContributionPR is a create-only adapter. It must verify the exact
+	// branch SHA and refuse merged/closed/auto-merge-enabled PRs.
+	CreateContributionPR func(context.Context, string, string, string, string, string, string) (domain.ContributionPRReceipt, error)
+	// PublishContributionObjects is a provider-specific create-only transport
+	// for exact Git objects. Nil uses the verified native Git HTTPS transport.
+	PublishContributionObjects func(context.Context, string, string, string, string, string, string) error
 
 	// runnerDispatchNotify wakes long-polling CLI runners when the engine
 	// queues a runner task. Wired via SetRunnerDispatchNotify (httpapi.New);

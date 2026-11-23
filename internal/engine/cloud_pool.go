@@ -232,11 +232,18 @@ func (e *Engine) bindPoolRunner(ctx context.Context, run domain.Run, nodeID stri
 		case <-time.After(2 * time.Second):
 		}
 	}
+	if run.ExecutionContext.RunnerWorkspaceLayout == domain.RunnerWorkspaceLayoutAttempt {
+		if err := e.requireWorkspaceIsolation(runner.ID); err != nil {
+			return run, err
+		}
+	}
 	e.updateRun(run.ID, func(c *domain.Run) {
 		c.ExecutionContext.ExecutionMode = domain.ExecutionModeRunner
 		c.ExecutionContext.ExecutionPool = domain.ExecutionModeCloud
 		c.ExecutionContext.ExecutionRunnerID = runner.ID
-		c.ExecutionContext.RunnerWorkspaceLayout = domain.RunnerWorkspaceLayoutShared
+		if c.ExecutionContext.RunnerWorkspaceLayout == "" {
+			c.ExecutionContext.RunnerWorkspaceLayout = domain.RunnerWorkspaceLayoutShared
+		}
 		msg := fmt.Sprintf("已分配云端执行机器 %s", runner.Name)
 		if previous != "" {
 			name := previous

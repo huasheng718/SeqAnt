@@ -105,10 +105,13 @@ func TestRunnerTaskPayloadScrubbedOnTerminalTransitions(t *testing.T) {
 	completed.ID = "task-completed"
 	completed.Status = domain.RunnerTaskRunning
 	completed.LeaseOwner = "runner-1"
+	completed.Attempt = 1
+	leaseUntil := now.Add(time.Minute)
+	completed.LeaseUntil = &leaseUntil
 	if err := st.PutRunnerTask(completed); err != nil {
 		t.Fatalf("put completed task: %v", err)
 	}
-	if err := st.CompleteRunnerTask("task-completed", "runner-1", domain.RunnerTaskSuccess, nil, "ok", "", nil, nil, now); err != nil {
+	if err := st.CompleteRunnerTask("task-completed", "runner-1", completed.Attempt, domain.RunnerTaskSuccess, nil, "ok", "", nil, nil, now); err != nil {
 		t.Fatalf("complete task: %v", err)
 	}
 	assertPayloadScrubbed(t, st, "task-completed")

@@ -383,6 +383,101 @@ func TestAdmissionCountsLegacyRowsWithoutBucket(t *testing.T) {
 	}
 }
 
+func placedAdmissionRun(id, project string, runners ...string) domain.Run {
+	r := admissionRun(id, project)
+	r.ExecutionContext.RunnerWorkspaceLayout = domain.RunnerWorkspaceLayoutAttempt
+	r.ExecutionContext.NodePlacements = make(map[string]domain.NodePlacementRequest, len(runners))
+	for i, runner := range runners {
+		r.ExecutionContext.NodePlacements[fmt.Sprintf("node-%d", i)] = domain.NodePlacementRequest{RunnerID: runner}
+	}
+	return r
+}
+
+func TestPlacedRunAdmissionPersistsAllRunnerMemberships(t *testing.T) {
+	s, err := OpenTest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for _, id := range []string{"mac", "linux"} {
+		if err := s.PutRunner(domain.Runner{ID: id, OwnerUserID: 7}); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SetRunnerRunLimit(id, 1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.PutRun(placedAdmissionRun("placed-1", "project", "mac", "linux")); err != nil {
+		t.Fatal(err)
+	}
+	var memberships []runAdmissionMembershipRow
+	if err := s.DB.Where("run_id = ?", "placed-1").Order("bucket").Find(&memberships).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(memberships) != 2 || memberships[0].Bucket != "runner:linux" || memberships[1].Bucket != "runner:mac" {
+		t.Fatalf("memberships=%+v", memberships)
+	}
+	row, ok := s.RunState("placed-1")
+	if !ok || row.Status != "running" || row.ExecutionContext.NodePlacements == nil {
+		t.Fatalf("placed run=%+v", row)
+	}
+	if row.ExecutionContext.ExecutionRunnerID != "" {
+		t.Fatalf("placed run leaked a Run-level runner: %q", row.ExecutionContext.ExecutionRunnerID)
+	}
+}
+
+func TestPlacedRunAdmissionIsAllOrNoneAcrossBuckets(t *testing.T) {
+	s, err := OpenTest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for _, id := range []string{"mac", "linux"} {
+		if err := s.PutRunner(domain.Runner{ID: id, OwnerUserID: 7}); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SetRunnerRunLimit(id, 1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.PutRun(placedAdmissionRun("first", "project", "mac", "linux")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutRun(placedAdmissionRun("second", "project", "mac", "linux")); err != nil {
+		t.Fatal(err)
+	}
+	second, _ := s.RunState("second")
+	if second.Status != "queued" || second.AdmissionState != "queued" {
+		t.Fatalf("second=%+v", second)
+	}
+	// A disjoint Run can occupy one participating Runner after the first Run
+	// releases both buckets; the candidate must remain queued rather than
+	// partially reserving the free bucket.
+	first, _ := s.RunState("first")
+	first.Status = "succeeded"
+	if err := s.PutRun(first); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate an already admitted legacy occupant on only the Linux bucket;
+	// this is also the old→new accounting path.
+	linuxBucket := "runner:linux"
+	if err := s.DB.Create(&runRow{ID: "linux-blocker", Status: "waiting", QuotaBucket: &linuxBucket, ExecutionContext: jsonBytes(domain.TelemetryContext{ExecutionRunnerID: "linux"})}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if promoted, err := s.PromoteQueuedRuns(); err != nil || len(promoted) != 0 {
+		t.Fatalf("partial promotion=%v err=%v", promoted, err)
+	}
+	if err := s.DB.Where("id = ?", "linux-blocker").Delete(&runRow{}).Error; err != nil {
+		t.Fatal(err)
+	}
+	// The original Run remains queued until both buckets are free; after the
+	// first Run is terminal, promotion is atomic across its two memberships.
+	promoted, err := s.PromoteQueuedRuns()
+	if err != nil || len(promoted) != 1 || promoted[0] != "second" {
+		t.Fatalf("promoted=%v err=%v", promoted, err)
+	}
+}
+
 // Chat workspaces never use SOP slots. An independently started child SOP does.
 func TestConversationWorkspacesDoNotHoldSOPSlots(t *testing.T) {
 	s, err := OpenTest()

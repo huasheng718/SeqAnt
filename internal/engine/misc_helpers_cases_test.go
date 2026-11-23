@@ -399,7 +399,7 @@ func TestRepositoryPatchRunnerQueueAndArtifactBranches(t *testing.T) {
 	if err := e.queueRunnerRunCleanup(run); err != nil {
 		t.Fatal(err)
 	}
-	if task, ok := st.RunnerTask("rt-cleanup-" + safeRunnerPath(run.ID)); !ok || task.Action != domain.RunnerTaskActionCleanupRun {
+	if task, ok := st.LatestRunnerTaskForRunAction(run.ID, domain.RunnerTaskActionCleanupRun); !ok || task.Action != domain.RunnerTaskActionCleanupRun {
 		t.Fatalf("cleanup task=%+v ok=%v", task, ok)
 	}
 	if err := e.queueRunnerPreviewArchive(run, domain.RunnerPreviewArchiveSpec{}); err != nil {

@@ -32,7 +32,7 @@ func TestAwaitRunnerTaskBridgesDurableEventsFromAnotherProcess(t *testing.T) {
 	}
 	task := domain.RunnerTask{
 		ID: "rt-cross-process", RunnerID: "runner-1", Provider: "codebuddy",
-		Status: domain.RunnerTaskRunning, LeaseOwner: "runner-1", MaxAttempts: 1, RunID: run.ID, NodeID: "work",
+		Status: domain.RunnerTaskRunning, LeaseOwner: "runner-1", Attempt: 1, LeaseUntil: &run.LeaseUntil, MaxAttempts: 1, RunID: run.ID, NodeID: "work",
 	}
 	if err := s.PutRunnerTask(task); err != nil {
 		t.Fatal(err)
@@ -58,11 +58,10 @@ func TestAwaitRunnerTaskBridgesDurableEventsFromAnotherProcess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.AppendRunnerTaskEvents(task.ID, []domain.RunnerTaskEvent{{Seq: 1, Type: "observation", Data: string(raw), Ts: time.Now().UTC()}}); err != nil {
+	if _, err := s.AppendRunnerTaskEvents(task.ID, "runner-1", task.Attempt, []domain.RunnerTaskEvent{{Seq: 1, Type: "observation", Data: string(raw), Ts: time.Now().UTC()}}, now); err != nil {
 		t.Fatal(err)
 	}
-	task.Status = domain.RunnerTaskSuccess
-	if err := s.PutRunnerTask(task); err != nil {
+	if err := s.CompleteRunnerTask(task.ID, "runner-1", task.Attempt, domain.RunnerTaskSuccess, nil, "", "", nil, nil, now); err != nil {
 		t.Fatal(err)
 	}
 

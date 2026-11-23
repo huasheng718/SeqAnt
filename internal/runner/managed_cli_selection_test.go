@@ -19,7 +19,7 @@ func TestManagedDockerAndExplicitBinaryStayUnmanaged(t *testing.T) {
 	d, _, _ := managedTestDaemon(t, root, nil, nil, nil)
 	task := domain.RunnerTask{ID: "task", Provider: "claude-code", Invocation: &domain.RunnerInvocation{}}
 	task.Invocation.Executor.Binary = "claude"
-	d.managedTasks = map[string]*managedTask{"task": {inventory: managedcli.Inventory{"claude-code": {Version: "1.0.0", Binary: binary}}}}
+	d.managedTasks = map[taskAttemptKey]*managedTask{{"task", 0}: {inventory: managedcli.Inventory{"claude-code": {Version: "1.0.0", Binary: binary}}}}
 	if got := d.invocationExecutor(task).Binary; got != binary {
 		t.Fatalf("default executor=%s", got)
 	}
@@ -58,7 +58,7 @@ func TestManagedEmptyRunPinNeverFallsBackToCurrentInventory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d.releaseManagedTask(task.ID)
+	d.releaseManagedTask(task.ID, task.Attempt)
 	binary := managedTestBinary(t, root, "claude-code", "1.0.0")
 	writeManagedTestInventory(t, root, managedcli.Inventory{"claude-code": {Version: "1.0.0", Binary: binary}})
 	d.runtimes = []domain.RunnerRuntime{{Provider: "claude-code", BinaryPath: binary}}
@@ -66,7 +66,7 @@ func TestManagedEmptyRunPinNeverFallsBackToCurrentInventory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer d.releaseManagedTask(task.ID)
+	defer d.releaseManagedTask(task.ID, task.Attempt)
 	if got, ok := d.taskProviderBinary(*task); !ok || got != hostBinary || len(d.taskManagedEnvironment(*task)) != 0 {
 		t.Fatalf("empty old pin followed managed current: %s", got)
 	}

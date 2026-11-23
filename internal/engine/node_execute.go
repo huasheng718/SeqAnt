@@ -2,12 +2,12 @@ package engine
 
 import (
 	"agentflow/internal/domain"
-	"agentflow/internal/gitwork"
 	"agentflow/internal/repo"
 	"agentflow/internal/runtime"
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -324,7 +324,9 @@ func (e *Engine) executeNode(ctx context.Context, runID string, wf domain.Workfl
 	defer unlock()
 	executionGeneration := currentLease.Generation
 	executionAttempt := 0
+	var executionDeadline *time.Time
 	started := false
+	var placementErr error
 	e.updateRun(runID, func(r *domain.Run) {
 		nr := r.Nodes[node.ID]
 		if nr.Status != "pending" {
@@ -340,18 +342,51 @@ func (e *Engine) executeNode(ctx context.Context, runID string, wf domain.Workfl
 		nr.Status = "running"
 		if !continuingInterruptedAttempt(nr) {
 			nr.Attempt++
+			nr.StartedAt = time.Now().UTC()
+			nr.ExecutionDeadline = nil
+			if node.MaxDurationSec > 0 && node.MaxDurationSec <= 86400 {
+				deadline := nr.StartedAt.Add(time.Duration(node.MaxDurationSec) * time.Second)
+				nr.ExecutionDeadline = &deadline
+			}
 		}
 		executionAttempt = nr.Attempt
-		nr.StartedAt = time.Now().UTC()
+		executionDeadline = nr.ExecutionDeadline
+		if len(r.ExecutionContext.NodePlacements) > 0 {
+			if err := e.freezeNodeExecutionPlacement(r, node, nr); err != nil {
+				placementErr = err
+				return
+			}
+		}
 		nr.GateResult = nil
 		e.event(r, node.ID, "node.started", node.Name+" 开始执行")
 	})
 	if !started {
 		return
 	}
+	if placementErr != nil {
+		e.nodeFailedAt(runID, node, executionAttempt, executionGeneration, placementErr, false)
+		return
+	}
 	ctx, cancelNode := context.WithCancel(ctx)
 	defer cancelNode()
+	if executionDeadline != nil {
+		var stopDeadline context.CancelFunc
+		ctx, stopDeadline = context.WithDeadline(ctx, *executionDeadline)
+		defer stopDeadline()
+		defer func() {
+			if domain.ExecutionDeadlineExpired(executionDeadline, time.Now().UTC()) {
+				e.nodeFailedAt(runID, node, executionAttempt, executionGeneration, domain.ErrExecutionDeadlineExceeded, false)
+			}
+		}()
+	}
 	defer e.registerNodeExecution(runID, node.ID, executionAttempt, cancelNode)()
+	if err := domain.ValidateWorkflowExecutionLimits(domain.WorkflowDefinition{Nodes: []domain.WorkflowNode{node}}); err != nil {
+		e.nodeFailedAt(runID, node, executionAttempt, executionGeneration, err, false)
+		return
+	}
+	if ctx.Err() != nil {
+		return
+	}
 	failNode := func(err error, allowReject bool) {
 		if err == nil {
 			return
@@ -397,7 +432,12 @@ func (e *Engine) executeNode(ctx context.Context, runID string, wf domain.Workfl
 		return
 	}
 	current, _ := e.repo.RunState(runID)
-	current, err := e.bindPoolRunner(ctx, current, node.ID)
+	var err error
+	if len(current.ExecutionContext.NodePlacements) > 0 {
+		current, err = e.nodeExecutionRun(current, node.ID)
+	} else {
+		current, err = e.bindPoolRunner(ctx, current, node.ID)
+	}
 	if err != nil {
 		failNode(err, false)
 		return
@@ -464,10 +504,15 @@ func (e *Engine) executeNode(ctx context.Context, runID string, wf domain.Workfl
 		return sb.Exec(ctx, runtime.CommandSpec{Argv: []string{"sh", "-lc", bindExecutionTarget(command, target)}, Provider: "verification", CredentialBindings: []runtime.CredentialBinding{runtime.BindGit, runtime.BindMCP}}, gateSink)
 	}
 	current, _ = e.repo.RunState(runID)
-	gitCredentials := sb.credentialSnapshot()
-	gitTok := gitCredentials.GitToken
-	ctx = withGitToken(ctx, gitTok)
-	ctx = gitwork.WithSSHKeys(ctx, gitCredentials.GitSSHKeys)
+	if len(current.ExecutionContext.NodePlacements) > 0 {
+		current, err = e.nodeExecutionRun(current, node.ID)
+		if err != nil {
+			failNode(err, nodeRejects(node))
+			return
+		}
+	}
+	gitTok := sb.credentialSnapshot().GitToken
+	ctx = withGitToken(e.deliveryContext(ctx, current), gitTok)
 	ctx = withGitIdentity(ctx, sb.credentialSnapshot().GitUserName, sb.credentialSnapshot().GitUserEmail)
 	// Repository checkout and Agent-configuration index isolation belong to the
 	// run environment, not to each node. The same checkout and .git/index are
@@ -616,7 +661,7 @@ func (e *Engine) executeNode(ctx context.Context, runID string, wf domain.Workfl
 			rawOutput, runErr := executeForTargets(current, node.ExecutionScope, func(target executionTarget) (string, error) {
 				bound := bindExecutionTarget(command, target)
 				targetSink := executionTargetSink(sink, target)
-				scriptAssets := e.resolveScriptMCPAssets(current.ExecutionContext.ProjectID, current.ExecutionContext.ResponsibleUserID)
+				scriptAssets := e.deliveryAssets(current, e.resolveScriptMCPAssets(current.ExecutionContext.ProjectID, current.ExecutionContext.ResponsibleUserID))
 				if execMachine := e.defaultExecutionRunner(current); execMachine != "" {
 					workspace := runnerWorkspaceRel(current, node.ID)
 					return e.dispatchRunnerScript(ctx, execMachine, current, node.ID, workspace, "shell", bound, target.directory(), effectiveNode.ArtifactOutputs, sb, sb.credentialSnapshot().GitToken, sb.credentialSnapshot().GitUserName, sb.credentialSnapshot().GitUserEmail, scriptAssets, targetSink)
@@ -689,6 +734,12 @@ func (e *Engine) executeNode(ctx context.Context, runID string, wf domain.Workfl
 				reported.reset()
 			}
 			current, _ := e.repo.RunState(runID)
+			if len(current.ExecutionContext.NodePlacements) > 0 {
+				current, err = e.nodeExecutionRun(current, node.ID)
+				if err != nil {
+					return "", err
+				}
+			}
 			invocationSeq++
 			attempt := 1
 			resumeSessionID := ""
@@ -718,16 +769,11 @@ func (e *Engine) executeNode(ctx context.Context, runID string, wf domain.Workfl
 				}
 				prompt += "\n\n" + strings.ReplaceAll(template, "{{feedback}}", feedback)
 			}
-			if resumeSessionID != "" {
-				prompt = "请从刚才中断的位置继续执行。"
-				if resumeFeedback != "" {
-					prompt += "\n\n操作员补充了以下信息，请结合它继续：\n\n" + resumeFeedback
-				}
-			}
+			prompt = applyResumePrompt(prompt, resumeSessionID, resumeFeedback, feedback)
 			if requiresSubmit {
 				prompt = appendSubmitGateInstruction(prompt, node.RejectTo, feedback == gateMissingRetryMarker)
 			}
-			assets := e.resolveAssets(agent, current.ExecutionContext.ProjectID, wf.ID, current.ExecutionContext.ResponsibleUserID)
+			assets := e.deliveryAssets(current, e.resolveAssets(agent, current.ExecutionContext.ProjectID, wf.ID, current.ExecutionContext.ResponsibleUserID))
 			warnMCPSkipped := func(message string) {
 				sink(domain.TelemetryEvent{Category: "mcp", Name: "mcp.skipped", Phase: "start", Level: "warn", Message: message})
 			}
@@ -758,11 +804,7 @@ func (e *Engine) executeNode(ctx context.Context, runID string, wf domain.Workfl
 				}
 				return result, dispatchErr
 			}
-			repositories := current.RepositoryContexts()
-			boundAssets, skipped, bindErr := runtime.PrepareMCPServers(assets, runtime.MCPTarget{
-				GitToken: gitTok, RequireCredentials: true,
-				SSHRepositoriesOnly: len(repositories) > 0 && len(sshRepositoryURLs(repositories)) == len(repositories),
-			})
+			boundAssets, skipped, bindErr := runtime.PrepareMCPServers(assets, runtime.MCPTarget{GitToken: sb.credentialSnapshot().GitToken, RequireCredentials: true})
 			for _, warning := range skipped {
 				warnMCPSkipped(warning)
 			}
@@ -874,6 +916,12 @@ func (e *Engine) executeNode(ctx context.Context, runID string, wf domain.Workfl
 		}
 		if err == nil {
 			live, _ := e.repo.RunState(runID)
+			if len(live.ExecutionContext.NodePlacements) > 0 {
+				live, err = e.nodeExecutionRun(live, node.ID)
+				if err != nil {
+					break
+				}
+			}
 			var recovered []string
 			if reported != nil {
 				recovered = reported.takeRecovered()
@@ -1012,6 +1060,13 @@ func (e *Engine) executeNode(ctx context.Context, runID string, wf domain.Workfl
 		}
 	}
 	current, _ = e.repo.RunState(runID)
+	if len(current.ExecutionContext.NodePlacements) > 0 {
+		current, err = e.nodeExecutionRun(current, node.ID)
+		if err != nil {
+			failNode(err, nodeRejects(node))
+			return
+		}
+	}
 	artifacts, err := collectArtifactsMode(outputs, current, effectiveNode, output, false)
 	if err != nil {
 		failNode(fmt.Errorf("artifact contract: %w", err), nodeRejects(node))
@@ -1023,6 +1078,9 @@ func (e *Engine) executeNode(ctx context.Context, runID string, wf domain.Workfl
 	e.updateRun(runID, func(r *domain.Run) {
 		nr := r.Nodes[node.ID]
 		if !shouldCommitNodeOutcome(*r, nr, executionGeneration, executionAttempt, true) {
+			return
+		}
+		if domain.ExecutionDeadlineExpired(nr.ExecutionDeadline, time.Now().UTC()) {
 			return
 		}
 		r.Artifacts = append(r.Artifacts, artifacts...)
@@ -1047,6 +1105,50 @@ func (e *Engine) executeNode(ctx context.Context, runID string, wf domain.Workfl
 	if domain.IsPreviewBuildNode(node.ID) {
 		e.archivePreviewAfterBuild(runID)
 	}
+}
+
+func applyResumePrompt(prompt, resumeSessionID, resumeFeedback, loopFeedback string) string {
+	if resumeSessionID == "" {
+		return prompt
+	}
+	resume := "请从刚才中断的位置继续执行。"
+	if resumeFeedback != "" {
+		resume += "\n\n操作员补充了以下信息，请结合它继续：\n\n" + resumeFeedback
+	}
+	// Missing submit is a protocol repair prompt and intentionally replaces the
+	// normal rendered prompt. A regular correction keeps the rendered task,
+	// artifacts and loop feedback so resume cannot erase the requested fix.
+	if loopFeedback == gateMissingRetryMarker {
+		return resume
+	}
+	if strings.TrimSpace(prompt) == "" {
+		return resume
+	}
+	return resume + "\n\n" + prompt
+}
+
+// freezeNodeExecutionPlacement resolves and persists one effective Node
+// attempt inside the guarded updateRun transaction. A second resolution may
+// only reproduce the exact snapshot; it can never rebind a sibling or the Run
+// default target.
+func (e *Engine) freezeNodeExecutionPlacement(run *domain.Run, node domain.WorkflowNode, nr *domain.NodeRun) error {
+	if run == nil || nr == nil || len(run.ExecutionContext.NodePlacements) == 0 {
+		return nil
+	}
+	provider, err := e.nodePlacementProvider(*run, node)
+	if err != nil {
+		return err
+	}
+	placement, err := e.resolveNodeExecutionPlacement(*run, node, nr.Attempt, provider)
+	if err != nil {
+		return err
+	}
+	if nr.ExecutionPlacement != nil && !reflect.DeepEqual(nr.ExecutionPlacement, &placement) {
+		return fmt.Errorf("%w: Node placement changed after attempt freeze", domain.ErrRunnerPlacementChanged)
+	}
+	copy := placement
+	nr.ExecutionPlacement = &copy
+	return nil
 }
 
 // archivePreviewAfterBuild publishes the static site as soon as the build

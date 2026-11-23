@@ -34,7 +34,7 @@ func (d *Daemon) keepTaskLease(parent context.Context, task domain.RunnerTask, i
 				deadline = *until
 			}
 			renewCtx, stop := context.WithDeadline(ctx, deadline)
-			response, err := d.client.RenewLease(renewCtx, task.ID)
+			response, err := d.client.RenewLease(renewCtx, task.ID, task.Attempt)
 			stop()
 			if err == nil && response != nil {
 				if strings.EqualFold(response.DesiredState, domain.RunnerTaskDesiredCancel) {

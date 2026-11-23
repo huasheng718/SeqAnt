@@ -492,7 +492,7 @@ func TestWaitingRunnerPreviewDoesNotSkipEmptyControlPlane(t *testing.T) {
 	if !ok || p.Status != domain.PreviewArchiving {
 		t.Fatalf("runner preview = %+v ok=%v", p, ok)
 	}
-	task, ok := store.RunnerTask("rt-preview-archive-" + run.ID)
+	task, ok := store.LatestRunnerTaskForRunAction(run.ID, domain.RunnerTaskActionArchivePreview)
 	if !ok || task.Status != domain.RunnerTaskQueued || task.Action != domain.RunnerTaskActionArchivePreview {
 		t.Fatalf("archive task = %+v ok=%v", task, ok)
 	}

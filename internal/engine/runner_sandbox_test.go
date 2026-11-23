@@ -143,6 +143,7 @@ print('"'"'done'"'"')'`
 func TestBindRunnerRepositoriesPreservesMultiRepositoryLayout(t *testing.T) {
 	t.Parallel()
 	run := domain.Run{
+		ExecutionContext: domain.TelemetryContext{DeliveryPolicy: domain.DeliveryPolicyLegacy},
 		Repositories: []domain.RepositoryContext{
 			{RepositoryID: "frontend", CloneURL: "https://git.example/frontend.git", BaseBranch: "main", WorkBranch: "feature/issue-7", WorkspaceDir: "frontend"},
 			{RepositoryID: "backend", CloneURL: "https://git.example/backend.git", BaseBranch: "release", WorkBranch: "feature/issue-7", WorkspaceDir: "backend"},

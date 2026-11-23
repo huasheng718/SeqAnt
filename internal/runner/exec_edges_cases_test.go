@@ -49,13 +49,15 @@ func (s *cvRBlockingRunnerSandbox) Exec(ctx context.Context, _ flowruntime.Comma
 }
 
 func TestExecuteProcessAndSandboxOutcomes(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
 	defer server.Close()
 	d := &Daemon{
 		cfg:             Config{DefaultWorkspaceRoot: t.TempDir()},
 		client:          NewClient(server.URL),
-		controls:        map[string]chan string{},
-		pendingControls: map[string]string{},
+		controls:        map[taskAttemptKey]chan string{},
+		pendingControls: map[taskAttemptKey]string{},
 	}
 	success := d.executeProcess(context.Background(), domain.RunnerTask{ID: "success"}, []string{"sh", "-c", "printf 'hello\\n'"})
 	if success.status != domain.RunnerTaskSuccess || success.result != "hello" {
@@ -82,13 +84,15 @@ func TestExecuteProcessAndSandboxOutcomes(t *testing.T) {
 }
 
 func TestExecuteProcessAndSandboxCancellation(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
 	defer server.Close()
 	d := &Daemon{
 		cfg:             Config{DefaultWorkspaceRoot: t.TempDir()},
 		client:          NewClient(server.URL),
-		controls:        map[string]chan string{},
-		pendingControls: map[string]string{},
+		controls:        map[taskAttemptKey]chan string{},
+		pendingControls: map[taskAttemptKey]string{},
 	}
 	// Cancel only after the child is running: an earlier cancel races
 	// StartTask and yields failed instead of canceled.
@@ -123,7 +127,9 @@ func TestExecuteProcessAndSandboxCancellation(t *testing.T) {
 }
 
 func TestEventBatcherRequeuesFailedFlush(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Error(w, "fail", http.StatusInternalServerError) }))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "fail", http.StatusInternalServerError)
+	}))
 	defer server.Close()
 	b := newEventBatcher(domain.RunnerTask{ID: "task"}, NewClient(server.URL))
 	b.addLine("stdout", "one")
@@ -259,15 +265,15 @@ func TestManagedRuntimeDetectionAndPendingControls(t *testing.T) {
 	}
 	d := &Daemon{
 		cfg:             Config{ManagedCLIRoot: root},
-		controls:        map[string]chan string{},
-		pendingControls: map[string]string{},
+		controls:        map[taskAttemptKey]chan string{},
+		pendingControls: map[taskAttemptKey]string{},
 	}
 	runtimes, err := d.detectManagedRuntimes(context.Background())
 	if err != nil || len(runtimes) < 2 {
 		t.Fatalf("runtimes=%+v err=%v", runtimes, err)
 	}
-	d.signalTaskControl("pending", domain.RunnerTaskDesiredCancel)
-	ch := d.registerTaskControl("pending")
+	d.signalTaskControl("pending", 0, domain.RunnerTaskDesiredCancel)
+	ch := d.registerTaskControl("pending", 0)
 	select {
 	case got := <-ch:
 		if got != domain.RunnerTaskDesiredCancel {
@@ -277,11 +283,11 @@ func TestManagedRuntimeDetectionAndPendingControls(t *testing.T) {
 		t.Fatal("pending control not delivered")
 	}
 	ch <- "full"
-	d.signalTaskControl("pending", "ignored")
+	d.signalTaskControl("pending", 0, "ignored")
 	if len(d.activeTaskIDs()) != 1 {
 		t.Fatal("active task missing")
 	}
-	d.unregisterTaskControl("pending")
+	d.unregisterTaskControl("pending", 0)
 }
 
 func TestClaimLoopImmediateBranches(t *testing.T) {
@@ -318,7 +324,9 @@ func TestClaimLoopImmediateBranches(t *testing.T) {
 }
 
 func TestExecuteRunCleanupSafeAndUnsafe(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
 	defer server.Close()
 	root := t.TempDir()
 	target := filepath.Join(root, "runs", "run")
@@ -399,7 +407,7 @@ func TestRunnerUpdateMetadataAndDownloadErrors(t *testing.T) {
 }
 
 func TestControlLoopConnectionErrorAndPreparedInvocationErrors(t *testing.T) {
-	d := &Daemon{client: NewClient("file:///tmp"), controls: map[string]chan string{}, pendingControls: map[string]string{}}
+	d := &Daemon{client: NewClient("file:///tmp"), controls: map[taskAttemptKey]chan string{}, pendingControls: map[taskAttemptKey]string{}}
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
 		time.Sleep(10 * time.Millisecond)
@@ -407,7 +415,9 @@ func TestControlLoopConnectionErrorAndPreparedInvocationErrors(t *testing.T) {
 	}()
 	d.controlLoop(ctx)
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
 	defer server.Close()
 	file := filepath.Join(t.TempDir(), "workspace-file")
 	_ = os.WriteFile(file, []byte("x"), 0o600)
@@ -440,8 +450,8 @@ func TestExecuteTaskUnsupportedAndUnavailableProvider(t *testing.T) {
 	d := &Daemon{
 		cfg:             Config{DefaultWorkspaceRoot: t.TempDir()},
 		client:          NewClient(server.URL),
-		controls:        map[string]chan string{},
-		pendingControls: map[string]string{},
+		controls:        map[taskAttemptKey]chan string{},
+		pendingControls: map[taskAttemptKey]string{},
 	}
 	atomic.StoreInt32(&d.running, 2)
 	d.executeTask(context.Background(), domain.RunnerTask{ID: "unknown", Action: "future-action"})

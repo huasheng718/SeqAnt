@@ -15,6 +15,15 @@ func (codexProvider) Kind() string { return "codex" }
 
 func (codexProvider) Materialize(ctx *providerMaterializeContext) error {
 	ctx.Compiled.Args = append(ctx.Compiled.Args, codexConfigArgs(string(ctx.Content), ctx.SkillPaths, ctx.MCPServers)...)
+	if ctx.TrustedGate {
+		// This invocation-local tool can only record the node decision. Approval
+		// of that record is separate from the workflow's human acceptance node.
+		// Approve this single internal tool, never arbitrary MCP writes.
+		ctx.Compiled.Args = append(ctx.Compiled.Args,
+			"-c", `mcp_servers.agentflow-gate.required=true`,
+			"-c", `mcp_servers.agentflow-gate.enabled_tools=["submit_gate_result"]`,
+			"-c", `mcp_servers.agentflow-gate.tools.submit_gate_result.approval_mode="approve"`)
+	}
 	ctx.Compiled.Args = append(ctx.Compiled.Args, codexHookConfigArgs(ctx.Compiled.Hooks)...)
 	return nil
 }

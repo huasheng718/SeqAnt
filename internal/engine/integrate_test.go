@@ -438,7 +438,7 @@ func TestIntegrateScheduledRunDoesNotTouchDefaultBranch(t *testing.T) {
 	t.Cleanup(st.Close)
 	run := domain.Run{
 		ID: "run-no-promote", Status: "running", Input: "timeout spike",
-		ExecutionContext: domain.TelemetryContext{ScheduleJobID: "job-1", IssueNumber: 32},
+		ExecutionContext: domain.TelemetryContext{DeliveryPolicy: domain.DeliveryPolicyLegacy, ScheduleJobID: "job-1", IssueNumber: 32},
 		Repository: domain.RepositoryContext{
 			GongfengProjectID: "team/skillhub",
 			WorkBranch:        "feature/fix-issue-30",
@@ -451,6 +451,7 @@ func TestIntegrateScheduledRunDoesNotTouchDefaultBranch(t *testing.T) {
 		t.Fatal(err)
 	}
 	e := New(st, runtime.NewManager(t.TempDir()))
+	_ = e.ConfigureDeliveryPolicy(domain.DeliveryPolicyLegacy)
 	var targets []string
 	e.MergeIntoBranch = func(projectID, sourceBranch, targetBranch, title, description string) (string, error) {
 		targets = append(targets, targetBranch)
@@ -595,7 +596,7 @@ func TestIntegrateScheduledRunUsesMRAndKeepsIntegrateUntouched(t *testing.T) {
 	t.Cleanup(st.Close)
 	run := domain.Run{
 		ID: "run-mr", Status: "running", Input: "timeout spike",
-		ExecutionContext: domain.TelemetryContext{ScheduleJobID: "job-1", IssueNumber: 30},
+		ExecutionContext: domain.TelemetryContext{DeliveryPolicy: domain.DeliveryPolicyLegacy, ScheduleJobID: "job-1", IssueNumber: 30},
 		Repository: domain.RepositoryContext{
 			GongfengProjectID: "team/skillhub",
 			WorkBranch:        "feature/fix-issue-30",
@@ -608,6 +609,7 @@ func TestIntegrateScheduledRunUsesMRAndKeepsIntegrateUntouched(t *testing.T) {
 		t.Fatal(err)
 	}
 	e := New(st, runtime.NewManager(t.TempDir()))
+	_ = e.ConfigureDeliveryPolicy(domain.DeliveryPolicyLegacy)
 	var gotProject, gotSrc, gotTgt, gotTitle string
 	e.MergeIntoBranch = func(projectID, sourceBranch, targetBranch, title, description string) (string, error) {
 		gotProject, gotSrc, gotTgt, gotTitle = projectID, sourceBranch, targetBranch, title
@@ -765,7 +767,7 @@ func TestIntegrateScheduledRunMultiRepository(t *testing.T) {
 	t.Cleanup(st.Close)
 	run := domain.Run{
 		ID: "run-multi-repo", Status: "running", Input: "multi repo change",
-		ExecutionContext: domain.TelemetryContext{ScheduleJobID: "job-9", IssueNumber: 9},
+		ExecutionContext: domain.TelemetryContext{DeliveryPolicy: domain.DeliveryPolicyLegacy, ScheduleJobID: "job-9", IssueNumber: 9},
 		Repository: domain.RepositoryContext{
 			RepositoryID: "repo-a", GongfengProjectID: "team/frontend",
 			WorkBranch: "feature/multi-1", IntegrateBranch: "agentflow/integration",
@@ -788,6 +790,7 @@ func TestIntegrateScheduledRunMultiRepository(t *testing.T) {
 		t.Fatal(err)
 	}
 	e := New(st, runtime.NewManager(t.TempDir()))
+	_ = e.ConfigureDeliveryPolicy(domain.DeliveryPolicyLegacy)
 	remotes := map[string]string{"team/frontend": remoteA, "team/backend": remoteB}
 	type mergeCall struct{ project, source, target string }
 	var calls []mergeCall

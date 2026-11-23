@@ -94,7 +94,7 @@ func TestUsageSkillZipPortable(t *testing.T) {
 	file := filepath.Join(workspace, "usage.json")
 	now := time.Now().UTC().Add(-time.Minute)
 	report := map[string]any{"id": "event-1", "type": "workflow_execution", "externalExecutionId": "external-1", "workflow": map[string]any{"id": "flow", "name": "Flow"}, "startedAt": now.Add(-time.Minute).Format(time.RFC3339), "finishedAt": now.Format(time.RFC3339), "status": "failed", "usage": []map[string]any{{"provider": "p", "model": "m", "inputTokens": 10, "outputTokens": 5, "costStatus": "unknown", "costUsd": nil}}}
-	run := func(wantOK bool) {
+	run := func(t *testing.T, wantOK bool) {
 		t.Helper()
 		body, err := json.Marshal(report)
 		if err != nil {
@@ -117,23 +117,46 @@ func TestUsageSkillZipPortable(t *testing.T) {
 			t.Fatal("report file removed")
 		}
 	}
-	run(true)
+	run(t, true)
+	// Go's RFC3339Nano removes trailing zeroes. Exercise every resulting
+	// precision against the distributed CLI, including Python 3.9/3.10.
+	for _, zone := range []string{"Z", "+08:00", "-03:30"} {
+		for digits := 0; digits <= 9; digits++ {
+			fraction := ""
+			if digits > 0 {
+				fraction = "." + "123456789"[:digits]
+			}
+			t.Run("fraction"+fraction+zone, func(t *testing.T) {
+				report["startedAt"] = "2020-01-02T03:04:04" + fraction + zone
+				report["finishedAt"] = "2020-01-02T03:04:05" + fraction + zone
+				run(t, true)
+			})
+		}
+	}
+	report["startedAt"] = "2020-01-02T03:04:04Z"
+	for _, invalid := range []string{"2020-01-02T03:04:05.123", "2020-02-30T03:04:05.123Z", "2020-01-02T03:04:05.Z", "2020-01-02T03:04:03Z"} {
+		t.Run("invalid-time-"+invalid, func(t *testing.T) {
+			report["finishedAt"] = invalid
+			run(t, false)
+		})
+	}
+	report["finishedAt"] = "2020-01-02T03:04:05Z"
 	item := report["usage"].([]map[string]any)[0]
 	delete(item, "inputTokens")
-	run(false) // Missing real counts cannot become fabricated zeroes.
+	run(t, false) // Missing real counts cannot become fabricated zeroes.
 	item["inputTokens"] = 0
 	item["costStatus"] = "reported"
 	item["costUsd"] = 0
-	run(true)
+	run(t, true)
 	item["costUsd"] = 1e300
-	run(false)
+	run(t, false)
 	item["costUsd"] = 0
 	item["costStatus"] = "unknown"
-	run(false) // Unknown cost cannot masquerade as zero.
+	run(t, false) // Unknown cost cannot masquerade as zero.
 	item["costUsd"] = nil
 	report["projectId"] = "another-project"
-	run(false)
+	run(t, false)
 	delete(report, "projectId")
 	report["status"] = "running"
-	run(false)
+	run(t, false)
 }

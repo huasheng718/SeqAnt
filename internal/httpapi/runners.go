@@ -6,11 +6,11 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
-	"slices"
+	"strconv"
 	"strings"
 	stdsync "sync"
 	"time"
@@ -128,26 +128,43 @@ func (r *runnerWaiterRegistry) unregister(w *runnerWaiter) {
 	delete(r.waiters, w.id)
 }
 
+func (w *runnerWaiter) accepts(providers []string) bool {
+	if len(providers) == 0 {
+		return false
+	}
+	for _, want := range w.providers {
+		for _, got := range providers {
+			if containsStringFold([]string{want}, got) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (r *runnerWaiterRegistry) notify(providers []string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, w := range r.waiters {
-		if !w.accepts(providers) {
-			continue
-		}
-		select {
-		case w.ch <- struct{}{}:
-		default:
+		for _, p := range providers {
+			if containsStringFold(w.providers, p) {
+				select {
+				case w.ch <- struct{}{}:
+				default:
+				}
+				break
+			}
 		}
 	}
 }
 
-// accepts reports whether any of providers matches one the waiter is polling
-// for, compared case-insensitively.
-func (w *runnerWaiter) accepts(providers []string) bool {
-	return slices.ContainsFunc(providers, func(p string) bool {
-		return slices.ContainsFunc(w.providers, func(v string) bool { return strings.EqualFold(v, p) })
-	})
+func containsStringFold(values []string, want string) bool {
+	for _, v := range values {
+		if strings.EqualFold(v, want) {
+			return true
+		}
+	}
+	return false
 }
 
 // ---------- background sweeper ----------
@@ -257,9 +274,6 @@ func (h *runnersHandlers) runnerDefault(c *gin.Context) {
 		"runner":    runner,
 		"online":    found && runner.Status == domain.RunnerStatusOnline,
 		"cloudPool": map[string]any{"configured": poolConfigured, "online": poolOnline},
-		// minRunnerVersion lets the runners page disable「设为默认」with the
-		// same rule PUT /api/runners/default enforces.
-		"minRunnerVersion": domain.RunnerVersionDefaultSelection,
 	})
 }
 
@@ -333,8 +347,7 @@ func (h *runnersHandlers) runnerRunLimitSet(c *gin.Context) {
 }
 
 // runnerDefaultSet selects or clears the user's default execution machine.
-// Only online machines bound to the requesting user, at or above
-// RunnerVersionDefaultSelection, can be selected.
+// Only machines bound to the requesting user can be selected.
 // 路由: g.PUT("/api/runners/default", h.runnerDefaultSet)
 func (h *runnersHandlers) runnerDefaultSet(c *gin.Context) {
 	user, ok := h.requestUser(c.Request, true)
@@ -359,10 +372,6 @@ func (h *runnersHandlers) runnerDefaultSet(c *gin.Context) {
 			c.JSON(http.StatusForbidden, map[string]string{"error": "只能选择自己绑定的执行机器"})
 			return
 		}
-		if reason := runner.DefaultSelectionBlocker(); reason != "" {
-			c.JSON(http.StatusConflict, map[string]string{"error": reason})
-			return
-		}
 	}
 	if err := h.repo.SetDefaultRunner(user.ID, runnerID, time.Now().UTC()); err != nil {
 		if err == repo.ErrRunnerNotFound {
@@ -373,7 +382,7 @@ func (h *runnersHandlers) runnerDefaultSet(c *gin.Context) {
 		return
 	}
 	if runnerID == "" {
-		c.JSON(http.StatusOK, map[string]any{"runnerId": "", "message": "已切回云端执行"})
+		c.JSON(http.StatusOK, map[string]any{"runnerId": "", "message": "已恢复云端 API Key 模式"})
 	} else {
 		c.JSON(http.StatusOK, map[string]any{"runnerId": runnerID, "message": "已设为默认执行机器，你的任务和沙箱将在这台机器上执行"})
 	}
@@ -780,6 +789,7 @@ func (h *runnersHandlers) runnerTasksCollection(c *gin.Context) {
 			Status:      domain.RunnerTaskQueued,
 			MaxAttempts: input.MaxAttempts,
 		}
+		task.DeliveryPolicy = h.engine.DeliveryPolicy()
 		if err := h.repo.PutRunnerTask(task); err != nil {
 			c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
@@ -823,6 +833,11 @@ func (h *runnersHandlers) runnerTaskClaim(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if c.GetHeader("X-Runner-Task-Protocol") != "2" {
+		c.JSON(http.StatusUpgradeRequired, map[string]string{"error": "runner task protocol 2 required"})
+		return
+	}
+	c.Header("X-Runner-Task-Protocol", "2")
 	var input struct {
 		AvailableRuntimes []string `json:"availableRuntimes"`
 		Capacity          int      `json:"capacity"`
@@ -841,20 +856,16 @@ func (h *runnersHandlers) runnerTaskClaim(c *gin.Context) {
 	}
 	claimOrSignal := func() (domain.RunnerTask, bool, error) {
 		if input.Preflight {
-			available, err := h.repo.RunnerTaskAvailable(runner.ID, input.AvailableRuntimes)
+			available, err := h.repo.RunnerTaskAvailableForSession(runner.ID, runner.SessionTokenHash, input.AvailableRuntimes, time.Now().UTC())
 			return domain.RunnerTask{}, available, err
 		}
-		return h.repo.ClaimRunnerTask(runner.ID, input.AvailableRuntimes, time.Now().UTC(), runnerTaskLeaseTTL)
+		return h.repo.ClaimRunnerTaskForSession(runner.ID, runner.SessionTokenHash, input.AvailableRuntimes, time.Now().UTC(), runnerTaskLeaseTTL)
 	}
+
 	respond := func(task domain.RunnerTask) {
 		if input.Preflight {
 			c.JSON(http.StatusOK, map[string]bool{"taskAvailable": true})
 			return
-		}
-		if task.Invocation != nil && task.Invocation.GitSSHUserID > 0 && runner.SupportsGitSSH() && len(task.Invocation.GitSSHRemotes()) > 0 {
-			task.Invocation.GitSSHKeys = h.repo.GitSSHKeysForRemotes(task.Invocation.GitSSHUserID, task.Invocation.GitSSHRemotes())
-			task.Invocation.GitSSHUserID = 0
-			c.Header("Cache-Control", "no-store")
 		}
 		c.JSON(http.StatusOK, map[string]any{"task": resolveRunnerTaskSandbox(task, runner.OS)})
 	}
@@ -866,7 +877,7 @@ func (h *runnersHandlers) runnerTaskClaim(c *gin.Context) {
 		}
 		task, claimed, err := claimOrSignal()
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			writeRunnerTaskAuthorizationError(c, err)
 			return
 		}
 		if claimed {
@@ -891,7 +902,7 @@ func (h *runnersHandlers) runnerTaskClaim(c *gin.Context) {
 		task, claimed, err = claimOrSignal()
 		if err != nil {
 			h.runnerWaiters.unregister(waiter)
-			c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			writeRunnerTaskAuthorizationError(c, err)
 			return
 		}
 		if claimed {
@@ -929,8 +940,12 @@ func (h *runnersHandlers) runnerTaskGet(c *gin.Context) {
 	if !ok {
 		return
 	}
-	task, exists := h.repo.RunnerTask(c.Param("id"))
-	if !exists || !runnerMaySeeTask(runner, task) {
+	task, exists, err := h.repo.RunnerTaskForSessionHistory(c.Param("id"), runner.ID, runner.SessionTokenHash, time.Now().UTC())
+	if errors.Is(err, repo.ErrRunnerPlacementSessionInvalid) {
+		writeRunnerTaskAuthorizationError(c, err)
+		return
+	}
+	if err != nil || !exists {
 		c.Status(http.StatusNotFound)
 		return
 	}
@@ -1001,12 +1016,16 @@ func (h *runnersHandlers) runnerTaskEventsOut(c *gin.Context) {
 	if !ok {
 		return
 	}
-	task, exists := h.repo.RunnerTask(c.Param("id"))
-	if !exists || !runnerMaySeeTask(runner, task) {
+	events, exists, err := h.repo.RunnerTaskEventsForSession(c.Param("id"), runner.ID, runner.SessionTokenHash, time.Now().UTC())
+	if errors.Is(err, repo.ErrRunnerPlacementSessionInvalid) {
+		writeRunnerTaskAuthorizationError(c, err)
+		return
+	}
+	if err != nil || !exists {
 		c.Status(http.StatusNotFound)
 		return
 	}
-	c.JSON(http.StatusOK, h.repo.RunnerTaskEvents(task.ID))
+	c.JSON(http.StatusOK, events)
 }
 
 // runnerTaskStart acknowledges the runner picked up the leased task.
@@ -1018,12 +1037,18 @@ func (h *runnersHandlers) runnerTaskStart(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if err := h.repo.StartRunnerTask(c.Param("id"), runner.ID, time.Now().UTC()); err != nil {
-		if err == repo.ErrRunnerTaskLeaseLost {
-			c.JSON(http.StatusConflict, map[string]string{"error": "task lease lost"})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	var input struct {
+		Attempt int `json:"attempt"`
+	}
+	if !decode(c, &input) {
+		return
+	}
+	if input.Attempt <= 0 {
+		c.JSON(http.StatusBadRequest, map[string]string{"error": "positive attempt required"})
+		return
+	}
+	if err := h.repo.StartRunnerTaskForSession(c.Param("id"), runner.ID, runner.SessionTokenHash, input.Attempt, time.Now().UTC()); err != nil {
+		writeRunnerTaskAuthorizationError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, map[string]bool{"ok": true})
@@ -1038,16 +1063,27 @@ func (h *runnersHandlers) runnerTaskLeaseRenew(c *gin.Context) {
 	if !ok {
 		return
 	}
-	desired, err := h.repo.RenewRunnerTaskLease(c.Param("id"), runner.ID, runnerTaskLeaseTTL, time.Now().UTC())
-	if err != nil {
-		if err == repo.ErrRunnerTaskLeaseLost {
-			c.JSON(http.StatusConflict, map[string]string{"error": "task lease lost"})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	var input struct {
+		Attempt int `json:"attempt"`
+	}
+	if !decode(c, &input) {
 		return
 	}
-	c.JSON(http.StatusOK, map[string]any{"leaseUntil": time.Now().UTC().Add(runnerTaskLeaseTTL), "desiredState": desired})
+	if input.Attempt <= 0 {
+		c.JSON(http.StatusBadRequest, map[string]string{"error": "positive attempt required"})
+		return
+	}
+	desired, err := h.repo.RenewRunnerTaskLeaseForSession(c.Param("id"), runner.ID, runner.SessionTokenHash, input.Attempt, runnerTaskLeaseTTL, time.Now().UTC())
+	if err != nil {
+		writeRunnerTaskAuthorizationError(c, err)
+		return
+	}
+	task, err := h.repo.RunnerTaskControlForSession(c.Param("id"), runner.ID, runner.SessionTokenHash, input.Attempt, time.Now().UTC())
+	if err != nil {
+		writeRunnerTaskAuthorizationError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, map[string]any{"leaseUntil": task.LeaseUntil, "desiredState": desired})
 }
 
 // runnerTaskEventsIngest accepts batched task events from the lease owner.
@@ -1060,25 +1096,15 @@ func (h *runnersHandlers) runnerTaskEventsIngest(c *gin.Context) {
 		return
 	}
 	taskID := c.Param("id")
-	task, exists := h.repo.RunnerTask(taskID)
-	if !exists {
-		c.Status(http.StatusNotFound)
-		return
-	}
-	// Events are accepted from the lease owner; retries after a lease loss
-	// are idempotent through (task_id, seq) anyway.
-	if task.LeaseOwner != runner.ID || (task.Status != domain.RunnerTaskLeased && task.Status != domain.RunnerTaskRunning) {
-		c.JSON(http.StatusConflict, map[string]string{"error": "task lease lost"})
-		return
-	}
 	var input struct {
-		Events []domain.RunnerTaskEvent `json:"events"`
+		Attempt int                      `json:"attempt"`
+		Events  []domain.RunnerTaskEvent `json:"events"`
 	}
 	if !decode(c, &input) {
 		return
 	}
-	if len(input.Events) == 0 {
-		c.JSON(http.StatusOK, map[string]int{"accepted": 0})
+	if input.Attempt <= 0 {
+		c.JSON(http.StatusBadRequest, map[string]string{"error": "positive attempt required"})
 		return
 	}
 	if len(input.Events) > 500 {
@@ -1086,6 +1112,14 @@ func (h *runnersHandlers) runnerTaskEventsIngest(c *gin.Context) {
 		return
 	}
 	for i := range input.Events {
+		if input.Events[i].Attempt != 0 && input.Events[i].Attempt != input.Attempt {
+			c.JSON(http.StatusBadRequest, map[string]string{"error": "event attempt must match request attempt"})
+			return
+		}
+		if input.Events[i].Seq <= 0 {
+			c.JSON(http.StatusBadRequest, map[string]string{"error": "positive event seq required"})
+			return
+		}
 		if input.Events[i].Type == "" {
 			input.Events[i].Type = "stdout"
 		}
@@ -1093,9 +1127,9 @@ func (h *runnersHandlers) runnerTaskEventsIngest(c *gin.Context) {
 			input.Events[i].Ts = time.Now().UTC()
 		}
 	}
-	accepted, err := h.repo.AppendRunnerTaskEvents(taskID, input.Events)
+	accepted, err := h.repo.AppendRunnerTaskEventsForSession(taskID, runner.ID, runner.SessionTokenHash, input.Attempt, input.Events, time.Now().UTC())
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeRunnerTaskAuthorizationError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, map[string]int{"accepted": accepted})
@@ -1111,6 +1145,7 @@ func (h *runnersHandlers) runnerTaskComplete(c *gin.Context) {
 		return
 	}
 	var input struct {
+		Attempt   int                       `json:"attempt"`
 		Status    string                    `json:"status"`
 		ExitCode  *int                      `json:"exitCode"`
 		Result    string                    `json:"result"`
@@ -1119,6 +1154,10 @@ func (h *runnersHandlers) runnerTaskComplete(c *gin.Context) {
 		Outputs   *domain.RunnerTaskOutputs `json:"outputs"`
 	}
 	if !decode(c, &input) {
+		return
+	}
+	if input.Attempt <= 0 {
+		c.JSON(http.StatusBadRequest, map[string]string{"error": "positive attempt required"})
 		return
 	}
 	if input.Status == "" {
@@ -1138,12 +1177,12 @@ func (h *runnersHandlers) runnerTaskComplete(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, map[string]string{"error": message})
 		return
 	}
-	if err := h.repo.CompleteRunnerTask(c.Param("id"), runner.ID, input.Status, input.ExitCode, input.Result, input.Error, input.Artifacts, input.Outputs, time.Now().UTC()); err != nil {
-		if err == repo.ErrRunnerTaskLeaseLost {
-			c.JSON(http.StatusConflict, map[string]string{"error": "task lease lost"})
+	if err := h.repo.CompleteRunnerTaskForSession(c.Param("id"), runner.ID, runner.SessionTokenHash, input.Attempt, input.Status, input.ExitCode, input.Result, input.Error, input.Artifacts, input.Outputs, time.Now().UTC()); err != nil {
+		if errors.Is(err, repo.ErrRunnerContributionInvalid) || errors.Is(err, repo.ErrRunnerContributionConflict) || errors.Is(err, repo.ErrRunnerContributionTooLarge) {
+			writeContributionError(c, err)
 			return
 		}
-		c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeRunnerTaskAuthorizationError(c, err)
 		return
 	}
 	h.engine.NotifyRunnerTaskChanged(c.Param("id"))
@@ -1162,13 +1201,18 @@ func (h *runnersHandlers) runnerTaskControl(c *gin.Context) {
 	if !ok {
 		return
 	}
-	task, exists := h.repo.RunnerTaskControl(c.Param("id"))
-	if !exists {
+	attempt, err := strconv.Atoi(c.Query("attempt"))
+	if err != nil || attempt <= 0 {
+		c.JSON(http.StatusBadRequest, map[string]string{"error": "positive attempt required"})
+		return
+	}
+	if _, exists := h.repo.RunnerTaskControl(c.Param("id")); !exists {
 		c.Status(http.StatusNotFound)
 		return
 	}
-	if task.LeaseOwner != runner.ID {
-		c.JSON(http.StatusConflict, map[string]string{"error": "task lease lost"})
+	task, err := h.repo.RunnerTaskControlForSession(c.Param("id"), runner.ID, runner.SessionTokenHash, attempt, time.Now().UTC())
+	if err != nil {
+		writeRunnerTaskAuthorizationError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, map[string]any{
@@ -1263,8 +1307,17 @@ func (h *runnersHandlers) runnerPreviewContent(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, map[string]string{"error": "preview upload token required"})
 		return
 	}
+	attempt, err := strconv.Atoi(c.GetHeader("X-Runner-Task-Attempt"))
+	if err != nil || attempt <= 0 || c.GetHeader("X-Runner-Task-ID") == "" {
+		c.JSON(http.StatusBadRequest, map[string]string{"error": "task ID and positive attempt required"})
+		return
+	}
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, svc.Config().MaxCompressed+1)
-	if err := svc.AcceptUpload(c.Request.Context(), c.Param("previewId"), runner.ID, token, c.Request.Body); err != nil {
+	if err := svc.AcceptUpload(c.Request.Context(), c.Param("previewId"), runner.ID, c.GetHeader("X-Runner-Task-ID"), attempt, token, c.Request.Body); err != nil {
+		if err == repo.ErrRunnerTaskLeaseLost {
+			c.JSON(http.StatusConflict, map[string]string{"error": "task lease lost"})
+			return
+		}
 		c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
@@ -1275,6 +1328,24 @@ func (h *runnersHandlers) runnerPreviewComplete(c *gin.Context) {
 	if _, ok := h.runnerSessionAuth(c); !ok {
 		return
 	}
-	_, _ = io.Copy(io.Discard, io.LimitReader(c.Request.Body, 1<<20))
-	c.JSON(http.StatusOK, map[string]bool{"ok": true})
+	c.JSON(http.StatusGone, map[string]string{"error": "preview completion is committed by the fenced content upload"})
+}
+
+func writeRunnerTaskAuthorizationError(c *gin.Context, err error) {
+	status := http.StatusInternalServerError
+	message := err.Error()
+	switch {
+	case errors.Is(err, repo.ErrRunnerPlacementSessionInvalid):
+		status = http.StatusUnauthorized
+		c.Header("WWW-Authenticate", `Bearer realm="AgentFlow Runner"`)
+	case errors.Is(err, domain.ErrRunnerPlacementInvalid):
+		status = http.StatusBadRequest
+	case errors.Is(err, domain.ErrRunnerPlacementDenied):
+		status = http.StatusForbidden
+	case errors.Is(err, repo.ErrRunnerTaskLeaseLost):
+		status, message = http.StatusConflict, "task lease lost"
+	case errors.Is(err, domain.ErrRunnerPlacementChanged), errors.Is(err, domain.ErrRunnerPlacementUnavailable), errors.Is(err, repo.ErrRunnerTaskNotClaimable):
+		status = http.StatusConflict
+	}
+	c.JSON(status, map[string]string{"error": message})
 }

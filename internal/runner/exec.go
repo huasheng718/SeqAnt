@@ -36,6 +36,7 @@ const (
 type eventBatcher struct {
 	mu       sync.Mutex
 	taskID   string
+	attempt  int
 	client   *Client
 	seq      int64
 	size     int
@@ -49,7 +50,7 @@ type eventBatcher struct {
 // process events back to the control plane.
 func (d *Daemon) executeSandboxProcess(ctx context.Context, task domain.RunnerTask, sandbox flowruntime.Sandbox, command flowruntime.CommandSpec) execResult {
 	batcher := newEventBatcher(task, d.client)
-	if err := d.client.StartTask(ctx, task.ID); err != nil {
+	if err := d.client.StartTask(ctx, task.ID, task.Attempt); err != nil {
 		return execResult{status: domain.RunnerTaskFailed, errMsg: fmt.Sprintf("start: %v", err)}
 	}
 	execCtx, cancel := context.WithCancel(ctx)
@@ -77,7 +78,7 @@ func (d *Daemon) executeSandboxProcess(ctx context.Context, task domain.RunnerTa
 	defer renewTicker.Stop()
 	controlTicker := time.NewTicker(controlFallbackInterval)
 	defer controlTicker.Stop()
-	controlCh := d.taskControl(task.ID)
+	controlCh := d.taskControl(task.ID, task.Attempt)
 	flushTicker := time.NewTicker(eventFlushInterval)
 	defer flushTicker.Stop()
 	canceled := false
@@ -112,7 +113,7 @@ func (d *Daemon) executeSandboxProcess(ctx context.Context, task domain.RunnerTa
 				continue
 			}
 			renewCtx, renewCancel := context.WithTimeout(ctx, 20*time.Second)
-			resp, renewErr := d.client.RenewLease(renewCtx, task.ID)
+			resp, renewErr := d.client.RenewLease(renewCtx, task.ID, task.Attempt)
 			renewCancel()
 			if renewErr == nil && resp != nil && strings.EqualFold(resp.DesiredState, domain.RunnerTaskDesiredCancel) && !canceled {
 				canceled = true
@@ -121,7 +122,7 @@ func (d *Daemon) executeSandboxProcess(ctx context.Context, task domain.RunnerTa
 			}
 		case <-controlTicker.C:
 			controlCtx, controlCancel := context.WithTimeout(ctx, 5*time.Second)
-			resp, controlErr := d.client.TaskControl(controlCtx, task.ID)
+			resp, controlErr := d.client.TaskControl(controlCtx, task.ID, task.Attempt)
 			controlCancel()
 			if controlErr == nil && resp != nil && strings.EqualFold(resp.DesiredState, domain.RunnerTaskDesiredCancel) && !canceled {
 				canceled = true
@@ -146,7 +147,7 @@ func tailString(value string, limit int) string {
 }
 
 func newEventBatcher(task domain.RunnerTask, client *Client) *eventBatcher {
-	b := &eventBatcher{taskID: task.ID, client: client}
+	b := &eventBatcher{taskID: task.ID, attempt: task.Attempt, client: client}
 	if task.Invocation != nil {
 		b.observer = flowruntime.NewProtocolObserver(task.Invocation.Executor, b.addObservation)
 	}
@@ -212,7 +213,7 @@ func (b *eventBatcher) flush(ctx context.Context) {
 	if len(pending) == 0 {
 		return
 	}
-	if err := b.client.SendEvents(ctx, b.taskID, pending); err != nil {
+	if err := b.client.SendEvents(ctx, b.taskID, b.attempt, pending); err != nil {
 		// Re-queue for the next batch; seq keys make the retry idempotent.
 		b.mu.Lock()
 		b.buf = append(pending, b.buf...)
@@ -270,7 +271,7 @@ type execResult struct {
 // task-scoped credentials (e.g. CODEBUDDY_API_KEY for CodeBuddy tasks).
 func (d *Daemon) executeProcess(ctx context.Context, task domain.RunnerTask, argv []string, extraEnv ...map[string]string) execResult {
 	batcher := newEventBatcher(task, d.client)
-	if err := d.client.StartTask(ctx, task.ID); err != nil {
+	if err := d.client.StartTask(ctx, task.ID, task.Attempt); err != nil {
 		if err == ErrUnauthorized {
 			return execResult{status: domain.RunnerTaskFailed, errMsg: "runner session rejected"}
 		}
@@ -338,7 +339,7 @@ func (d *Daemon) executeProcess(ctx context.Context, task domain.RunnerTask, arg
 	defer renewTicker.Stop()
 	controlTicker := time.NewTicker(controlFallbackInterval)
 	defer controlTicker.Stop()
-	controlCh := d.taskControl(task.ID)
+	controlCh := d.taskControl(task.ID, task.Attempt)
 	flushTicker := time.NewTicker(eventFlushInterval)
 	defer flushTicker.Stop()
 
@@ -386,7 +387,7 @@ func (d *Daemon) executeProcess(ctx context.Context, task domain.RunnerTask, arg
 				continue
 			}
 			renewCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-			resp, renewErr := d.client.RenewLease(renewCtx, task.ID)
+			resp, renewErr := d.client.RenewLease(renewCtx, task.ID, task.Attempt)
 			cancel()
 			if renewErr != nil {
 				if renewErr == ErrUnauthorized {
@@ -401,7 +402,7 @@ func (d *Daemon) executeProcess(ctx context.Context, task domain.RunnerTask, arg
 			}
 		case <-controlTicker.C:
 			controlCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			resp, controlErr := d.client.TaskControl(controlCtx, task.ID)
+			resp, controlErr := d.client.TaskControl(controlCtx, task.ID, task.Attempt)
 			cancel()
 			if controlErr == ErrUnauthorized {
 				return execResult{status: domain.RunnerTaskFailed, errMsg: "runner session rejected"}

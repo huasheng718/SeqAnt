@@ -1150,7 +1150,7 @@ func TestSpaceAIStartPaths(t *testing.T) {
 func TestRunnerAdditionalSuccessAndDecodePaths(t *testing.T) {
 	f := cvBNewHTTPFixture(t)
 	runnerID, session := registerTestRunner(t, f.h)
-	auth := map[string]string{"Authorization": "Bearer " + session}
+	auth := map[string]string{"Authorization": "Bearer " + session, "X-Runner-Task-Protocol": "2"}
 	runner, _ := f.s.Runner(runnerID)
 	runner.OwnerUserID = f.user.ID
 	if err := f.s.PutRunner(runner); err != nil {
@@ -1172,8 +1172,8 @@ func TestRunnerAdditionalSuccessAndDecodePaths(t *testing.T) {
 	if json.Unmarshal(reregister.Body.Bytes(), &rotated) != nil || rotated.SessionToken == "" {
 		t.Fatalf("rotated session: %s", reregister.Body.String())
 	}
-	auth = map[string]string{"Authorization": "Bearer " + rotated.SessionToken}
-	if rec := requestWithHeaders(t, f.h, http.MethodPost, "/runners/previews/anything/complete", "ignored", auth); rec.Code != http.StatusOK {
+	auth = map[string]string{"Authorization": "Bearer " + rotated.SessionToken, "X-Runner-Task-Protocol": "2"}
+	if rec := requestWithHeaders(t, f.h, http.MethodPost, "/runners/previews/anything/complete", "ignored", auth); rec.Code != http.StatusGone {
 		t.Fatalf("preview complete = %d: %s", rec.Code, rec.Body.String())
 	}
 	reqMalformed := httptest.NewRequest(http.MethodPost, "/runners/tasks/anything/complete", strings.NewReader("{"))
@@ -1227,16 +1227,16 @@ func TestRunnerAdditionalSuccessAndDecodePaths(t *testing.T) {
 		map[string]any{"availableRuntimes": []string{"mock"}, "noWait": true}, auth); rec.Code != http.StatusOK {
 		t.Fatalf("claim task = %d: %s", rec.Code, rec.Body.String())
 	}
-	if rec := requestWithHeaders(t, f.h, http.MethodPost, "/runners/tasks/"+task.ID+"/start", nil, auth); rec.Code != http.StatusOK {
+	if rec := requestWithHeaders(t, f.h, http.MethodPost, "/runners/tasks/"+task.ID+"/start", map[string]any{"attempt": 1}, auth); rec.Code != http.StatusOK {
 		t.Fatalf("start task = %d: %s", rec.Code, rec.Body.String())
 	}
 	if rec := requestWithHeaders(t, f.h, http.MethodPost, "/runners/tasks/"+task.ID+"/events",
-		map[string]any{"events": []any{}}, auth); rec.Code != http.StatusOK {
+		map[string]any{"attempt": 1, "events": []any{}}, auth); rec.Code != http.StatusOK {
 		t.Fatalf("empty events = %d: %s", rec.Code, rec.Body.String())
 	}
 	exit := 0
 	if rec := requestWithHeaders(t, f.h, http.MethodPost, "/runners/tasks/"+task.ID+"/complete",
-		map[string]any{"status": domain.RunnerTaskSuccess, "exitCode": exit, "result": "done"}, auth); rec.Code != http.StatusOK {
+		map[string]any{"attempt": 1, "status": domain.RunnerTaskSuccess, "exitCode": exit, "result": "done"}, auth); rec.Code != http.StatusOK {
 		t.Fatalf("complete task = %d: %s", rec.Code, rec.Body.String())
 	}
 	longTask := cvBRequest(t, f, http.MethodPost, "/api/runners/tasks", map[string]any{

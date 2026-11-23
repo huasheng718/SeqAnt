@@ -13,6 +13,9 @@ import (
 )
 
 type dispatchRequest struct {
+	RunnerWorkspaceLayout                             string
+	WorkspaceBaseSHAs                                 map[string]string
+	NodePlacements                                    map[string]domain.NodePlacementRequest
 	IssueID, WorkflowID, ScheduleJobID, TriggerOrigin string
 	Rerun                                             bool
 	TriggerUserID                                     int64
@@ -202,7 +205,7 @@ func dispatchIssue(d *deps, req dispatchRequest) (domain.Task, error) {
 		return domain.Task{}, err
 	}
 	tapdID := issue.RequirementTAPDID()
-	run, err := d.engine.StartWithRepositoriesContext(workflowID, input, repositories, domain.TelemetryContext{ProjectID: issue.ProjectID, IssueID: issue.ID, TAPDID: tapdID, ResponsibleUserID: runUserID, IssueNumber: issue.Number, TaskID: taskID, ScheduleJobID: strings.TrimSpace(req.ScheduleJobID)})
+	run, err := d.engine.StartWithRepositoriesContext(workflowID, input, repositories, domain.TelemetryContext{ProjectID: issue.ProjectID, IssueID: issue.ID, TAPDID: tapdID, ResponsibleUserID: runUserID, IssueNumber: issue.Number, TaskID: taskID, ScheduleJobID: strings.TrimSpace(req.ScheduleJobID), RunnerWorkspaceLayout: req.RunnerWorkspaceLayout, WorkspaceBaseSHAs: req.WorkspaceBaseSHAs, NodePlacements: req.NodePlacements})
 	if err != nil {
 		task.Status = "failed"
 		_ = d.repo.PutTask(task)

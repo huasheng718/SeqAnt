@@ -11,7 +11,7 @@ import (
 	"path"
 	"path/filepath"
 	goruntime "runtime"
-	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -41,14 +41,14 @@ type Daemon struct {
 	running              int32
 	registerMu           sync.Mutex
 	controlMu            sync.RWMutex
-	controls             map[string]chan string
-	pendingControls      map[string]string
+	controls             map[taskAttemptKey]chan string
+	pendingControls      map[taskAttemptKey]string
 	wsOnline             atomic.Bool
 	updateMu             sync.RWMutex
 	updateReady          atomic.Bool
 	runSandboxMu         sync.Mutex
 	runSandboxes         map[string]*runSandbox
-	managedTasks         map[string]*managedTask
+	managedTasks         map[taskAttemptKey]*managedTask
 	workspacePreparing   sync.Map // run ID -> active environment preflight, not historical file stamp
 	workspacePreparation sync.Map
 	workspaceTerminals   runtime.TerminalPool
@@ -129,7 +129,7 @@ func New(cfg Config) (*Daemon, error) {
 		host, _ := os.Hostname()
 		cfg.Name = host
 	}
-	return &Daemon{cfg: cfg, client: NewClient(cfg.ServerURL), executor: runtime.NewExecutorRunner(), controls: map[string]chan string{}, pendingControls: map[string]string{}}, nil
+	return &Daemon{cfg: cfg, client: NewClient(cfg.ServerURL), executor: runtime.NewExecutorRunner(), controls: map[taskAttemptKey]chan string{}, pendingControls: map[taskAttemptKey]string{}}, nil
 }
 
 func trimTrailingSlash(s string) string {
@@ -480,14 +480,10 @@ func (d *Daemon) claimLoop(ctx context.Context) error {
 func (d *Daemon) claimTaskUncoordinated(ctx context.Context, providers []string, capacity int) (*domain.RunnerTask, bool, error) {
 	if !d.cfg.DisableAutoUpdate {
 		waitCtx, cancel := context.WithTimeout(ctx, d.cfg.LongPollTimeout+15*time.Second)
-		ready, legacyTask, err := d.client.WaitForTask(waitCtx, ClaimRequest{AvailableRuntimes: providers, Capacity: capacity})
+		ready, _, err := d.client.WaitForTask(waitCtx, ClaimRequest{AvailableRuntimes: providers, Capacity: capacity})
 		cancel()
 		if err != nil || !ready {
 			return nil, false, err
-		}
-		if legacyTask != nil {
-			atomic.AddInt32(&d.running, 1)
-			return legacyTask, true, nil
 		}
 		d.checkUpdatesBeforeClaim(ctx)
 		if d.updateReady.Load() {
@@ -512,7 +508,12 @@ func (d *Daemon) claimTaskUncoordinated(ctx context.Context, providers []string,
 
 func (d *Daemon) executeTask(ctx context.Context, task domain.RunnerTask) {
 	defer atomic.AddInt32(&d.running, -1)
-	defer d.releaseManagedTask(task.ID)
+	defer d.releaseManagedTask(task.ID, task.Attempt)
+	if task.ExecutionDeadline != nil {
+		var stopDeadline context.CancelFunc
+		ctx, stopDeadline = context.WithDeadline(ctx, *task.ExecutionDeadline)
+		defer stopDeadline()
+	}
 	// A claim already owns a lease. Keep it alive while waiting for workspace
 	// locks, cloning repositories, creating sandboxes and collecting outputs too.
 	ctx, stopLease := d.keepTaskLease(ctx, task, leaseRenewInterval)
@@ -521,20 +522,26 @@ func (d *Daemon) executeTask(ctx context.Context, task domain.RunnerTask) {
 	// sees this task terminal (and lets a paused run continue), a follow-up
 	// preparation or snapshot must not still find the gate held.
 	releaseGate := func() {}
+	var workspaceGateErr error
 	if task.RunID != "" {
-		gate := d.workspaceGate(d.taskGateKey(task))
-		gate.RLock()
-		releaseGate = onceRelease(gate.RUnlock)
+		releaseGate, workspaceGateErr = d.waitTaskWorkspaceGate(ctx, d.taskGateKey(task))
 	}
 	defer releaseGate()
-	d.registerTaskControl(task.ID)
-	defer d.unregisterTaskControl(task.ID)
+	d.registerTaskControl(task.ID, task.Attempt)
+	defer d.unregisterTaskControl(task.ID, task.Attempt)
 	log.Printf("task %s claimed (provider=%s attempt=%d)", task.ID, task.Provider, task.Attempt)
 
 	var result execResult
 	var artifacts map[string]string
-	managed := d.managedTaskState(task.ID)
+	managed := d.managedTaskState(task.ID, task.Attempt)
+	policyErr := domain.ValidateRunnerDelivery(task)
 	switch {
+	case domain.ExecutionDeadlineExpired(task.ExecutionDeadline, time.Now().UTC()):
+		result = execResult{status: domain.RunnerTaskFailed, errMsg: domain.ErrExecutionDeadlineExceeded.Error(), exitCode: 1}
+	case workspaceGateErr != nil:
+		result = execResult{status: domain.RunnerTaskCanceled, errMsg: workspaceGateErr.Error()}
+	case policyErr != nil:
+		result = execResult{status: domain.RunnerTaskFailed, errMsg: policyErr.Error()}
 	case managed != nil && managed.err != nil:
 		result = execResult{status: domain.RunnerTaskFailed, errMsg: fmt.Sprintf("pin managed CLI inventory: %v", managed.err)}
 	case task.Action == domain.RunnerTaskActionCleanupRun:
@@ -578,6 +585,19 @@ func (d *Daemon) executeTask(ctx context.Context, task domain.RunnerTask) {
 		}
 	}
 
+	if result.status == domain.RunnerTaskSuccess && !domain.ExecutionDeadlineExpired(task.ExecutionDeadline, time.Now().UTC()) && len(task.ContributionSpecs) > 0 {
+		var err error
+		result.outputs, err = d.exportTaskContributions(ctx, task, result.outputs)
+		if err != nil {
+			result.status = domain.RunnerTaskFailed
+			result.exitCode = 1
+			result.errMsg = fmt.Sprintf("collect immutable contribution: %v", err)
+		}
+	}
+	if domain.ExecutionDeadlineExpired(task.ExecutionDeadline, time.Now().UTC()) {
+		result.status, result.errMsg, result.exitCode = domain.RunnerTaskFailed, domain.ErrExecutionDeadlineExceeded.Error(), 1
+		result.outputs = nil
+	}
 	releaseGate()
 	completeCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -586,14 +606,15 @@ func (d *Daemon) executeTask(ctx context.Context, task domain.RunnerTask) {
 		exit := result.exitCode
 		req.ExitCode = &exit
 	}
-	if err := d.client.Complete(completeCtx, task.ID, req); err != nil {
-		log.Printf("task %s complete report: %v", task.ID, err)
+	if err := d.client.Complete(completeCtx, task.ID, task.Attempt, req); err != nil {
+		log.Printf("task %s attempt %d completion rejected: %v", task.ID, task.Attempt, err)
+		return
 	}
 	log.Printf("task %s finished (%s)", task.ID, result.status)
 }
 
 func (d *Daemon) executeRunCleanup(ctx context.Context, task domain.RunnerTask) execResult {
-	if err := d.client.StartTask(ctx, task.ID); err != nil {
+	if err := d.client.StartTask(ctx, task.ID, task.Attempt); err != nil {
 		return execResult{status: domain.RunnerTaskFailed, errMsg: fmt.Sprintf("start cleanup: %v", err)}
 	}
 	root, err := filepath.Abs(d.cfg.DefaultWorkspaceRoot)
@@ -606,6 +627,12 @@ func (d *Daemon) executeRunCleanup(ctx context.Context, task domain.RunnerTask) 
 	}
 	rel, err := filepath.Rel(root, target)
 	expected := filepath.Join("runs", task.RunID)
+	if filepath.ToSlash(rel) == domain.IsolatedRunWorkspaceRel(task.RunID) {
+		if err := verifyIsolatedRunCleanup(root, task.RunID); err != nil {
+			return execResult{status: domain.RunnerTaskFailed, errMsg: err.Error()}
+		}
+		expected = filepath.FromSlash(domain.IsolatedRunWorkspaceRel(task.RunID))
+	}
 	if err != nil || task.RunID == "" || filepath.Clean(rel) != filepath.Clean(expected) || rel == "." || strings.HasPrefix(rel, "..") {
 		return execResult{status: domain.RunnerTaskFailed, errMsg: fmt.Sprintf("refusing unsafe runner workspace cleanup %q", target)}
 	}
@@ -618,7 +645,7 @@ func (d *Daemon) executeRunCleanup(ctx context.Context, task domain.RunnerTask) 
 	if err := os.RemoveAll(target); err != nil {
 		return execResult{status: domain.RunnerTaskFailed, errMsg: fmt.Sprintf("remove runner workspace: %v", err)}
 	}
-	_ = d.client.SendEvents(ctx, task.ID, []domain.RunnerTaskEvent{{Seq: 1, Type: "system", Data: "run sandbox and workspace removed", Ts: time.Now().UTC()}})
+	_ = d.client.SendEvents(ctx, task.ID, task.Attempt, []domain.RunnerTaskEvent{{Seq: 1, Type: "system", Data: "run sandbox and workspace removed", Ts: time.Now().UTC()}})
 	return execResult{status: domain.RunnerTaskSuccess, exitCode: 0, result: "run sandbox and workspace removed"}
 }
 
@@ -698,6 +725,11 @@ func workspaceContainsPath(workspace, candidate string) bool {
 // relative path shared by the node's CLI runs and gate commands; manual
 // tasks fall back to a per-task directory.
 func (d *Daemon) taskWorkspace(task domain.RunnerTask) string {
+	if isolatedTask(task) {
+		if descriptor, err := domain.IsolatedWorkspaceDescriptor(task); err == nil {
+			return filepath.Join(d.cfg.DefaultWorkspaceRoot, filepath.FromSlash(descriptor.WorkspaceRel))
+		}
+	}
 	ws := strings.TrimSpace(task.Workspace)
 	if ws == "" {
 		return d.defaultWorkspace(task.ID)
@@ -713,11 +745,14 @@ func (d *Daemon) taskWorkspace(task domain.RunnerTask) string {
 // and verification gates.
 func (d *Daemon) executeTerminal(ctx context.Context, task domain.RunnerTask) execResult {
 	workspace := d.taskWorkspace(task)
+	if err := d.prepareTaskWorkspace(task); err != nil {
+		return execResult{status: domain.RunnerTaskFailed, errMsg: err.Error()}
+	}
 	if err := os.MkdirAll(workspace, 0o755); err != nil {
 		return execResult{status: domain.RunnerTaskFailed, errMsg: fmt.Sprintf("workspace %s: %v", workspace, err)}
 	}
 	if task.Invocation != nil {
-		if err := checkoutInvocationRepositories(ctx, workspace, task.Invocation, runnerTaskSandboxDriver(task)); err != nil {
+		if err := d.checkoutTaskRepositories(ctx, task); err != nil {
 			return execResult{status: domain.RunnerTaskFailed, errMsg: fmt.Sprintf("repository checkout: %v", err)}
 		}
 		if err := writeRunnerHumanContext(workspace, task.Invocation.HumanContext); err != nil {
@@ -757,11 +792,6 @@ func (d *Daemon) executeTerminal(ctx context.Context, task domain.RunnerTask) ex
 		if err != nil {
 			return execResult{status: domain.RunnerTaskFailed, errMsg: fmt.Sprintf("prepare git credentials: %v", err)}
 		}
-		cleanup, err := runtime.BindGitSSH(sandbox, workspace, gitEnv, task.Invocation.GitSSHKeys)
-		if err != nil {
-			return execResult{status: domain.RunnerTaskFailed, errMsg: fmt.Sprintf("prepare git credentials: %v", err)}
-		}
-		defer cleanup()
 		command = runtime.WithCommandEnvironment(command, gitEnv)
 	}
 	var result execResult
@@ -794,10 +824,13 @@ func (d *Daemon) mcpTarget(requireCredentials bool, gitTokens ...string) runtime
 func (d *Daemon) executeInvocation(ctx context.Context, task domain.RunnerTask) (execResult, map[string]string) {
 	inv := task.Invocation
 	workspace := d.taskWorkspace(task)
+	if err := d.prepareTaskWorkspace(task); err != nil {
+		return execResult{status: domain.RunnerTaskFailed, errMsg: err.Error()}, nil
+	}
 	if err := os.MkdirAll(workspace, 0o755); err != nil {
 		return execResult{status: domain.RunnerTaskFailed, errMsg: fmt.Sprintf("workspace %s: %v", workspace, err)}, nil
 	}
-	if err := checkoutInvocationRepositories(ctx, workspace, inv, runnerTaskSandboxDriver(task)); err != nil {
+	if err := d.checkoutTaskRepositories(ctx, task); err != nil {
 		return execResult{status: domain.RunnerTaskFailed, errMsg: fmt.Sprintf("repository checkout: %v", err)}, nil
 	}
 	if err := writeRunnerHumanContext(workspace, inv.HumanContext); err != nil {
@@ -818,10 +851,7 @@ func (d *Daemon) executeInvocation(ctx context.Context, task domain.RunnerTask) 
 		}
 		defer release()
 	}
-	target := d.mcpTarget(true, invocationGitToken(inv))
-	sshRepoCount := len(inv.GitSSHRemotes())
-	target.SSHRepositoriesOnly = sshRepoCount > 0 && sshRepoCount == max(len(inv.Repositories), 1)
-	boundAssets, _, err := runtime.PrepareMCPServers(inv.Assets, target)
+	boundAssets, _, err := runtime.PrepareMCPServers(inv.Assets, d.mcpTarget(true, invocationGitToken(inv)))
 	if err != nil {
 		return execResult{status: domain.RunnerTaskFailed, errMsg: fmt.Sprintf("bind MCP credentials: %v", err)}, nil
 	}
@@ -847,10 +877,10 @@ func (d *Daemon) executeInvocation(ctx context.Context, task domain.RunnerTask) 
 	}
 	if prepared.Builtin {
 		// Builtin executors (mock) need no CLI process.
-		if err := d.client.StartTask(ctx, task.ID); err != nil {
+		if err := d.client.StartTask(ctx, task.ID, task.Attempt); err != nil {
 			return execResult{status: domain.RunnerTaskFailed, errMsg: fmt.Sprintf("start: %v", err)}, nil
 		}
-		_ = d.client.SendEvents(ctx, task.ID, []domain.RunnerTaskEvent{{Seq: 1, Type: "system", Data: "builtin executor completed in-process", Ts: time.Now().UTC()}})
+		_ = d.client.SendEvents(ctx, task.ID, task.Attempt, []domain.RunnerTaskEvent{{Seq: 1, Type: "system", Data: "builtin executor completed in-process", Ts: time.Now().UTC()}})
 		return execResult{status: domain.RunnerTaskSuccess, exitCode: 0, result: prepared.BuiltinResult, outputs: collectTaskOutputs(workspace, inv)}, collectRunnerInvocationArtifacts(workspace, inv)
 	}
 	argv := prepared.Command.Argv
@@ -862,7 +892,7 @@ func (d *Daemon) executeInvocation(ctx context.Context, task domain.RunnerTask) 
 		return execResult{status: domain.RunnerTaskFailed, errMsg: err.Error()}, nil
 	}
 	if runtime.IsAgentCLI(prepared.Command.Provider) {
-		cred := runtime.ProviderCredential{APIKey: inv.AgentCLIAPIKey, BaseURL: inv.AgentCLIBaseURL, Protocol: inv.AgentCLIProtocol, Models: inv.AgentCLIModels}
+		cred := runtime.ProviderCredential{APIKey: inv.AgentCLIAPIKey, BaseURL: inv.AgentCLIBaseURL, Protocol: inv.AgentCLIProtocol}
 		var agentEnv map[string]string
 		argv, agentEnv, err = runtime.BindAgentCLICommand(sandbox, workspace, prepared.Command, cred, argv)
 		if err != nil {
@@ -887,21 +917,16 @@ func (d *Daemon) executeInvocation(ctx context.Context, task domain.RunnerTask) 
 	for key, value := range credentialEnv {
 		commandEnv[key] = value
 	}
-	if slices.Contains(prepared.Command.CredentialBindings, runtime.BindGit) {
+	if hasCredentialBinding(prepared.Command.CredentialBindings, runtime.BindGit) {
 		gitEnv, gitErr := runtime.GitEnvironment(sandbox, workspace, invocationGitToken(inv))
 		if gitErr != nil {
 			return execResult{status: domain.RunnerTaskFailed, errMsg: fmt.Sprintf("prepare git credentials: %v", gitErr)}, nil
 		}
-		cleanup, gitErr := runtime.BindGitSSH(sandbox, workspace, gitEnv, inv.GitSSHKeys)
-		if gitErr != nil {
-			return execResult{status: domain.RunnerTaskFailed, errMsg: fmt.Sprintf("prepare git credentials: %v", gitErr)}, nil
-		}
-		defer cleanup()
 		for key, value := range gitEnv {
 			commandEnv[key] = value
 		}
 	}
-	if slices.Contains(prepared.Command.CredentialBindings, runtime.BindMCP) {
+	if hasCredentialBinding(prepared.Command.CredentialBindings, runtime.BindMCP) {
 		servers := inv.MCPCallServers
 		if len(servers) == 0 {
 			servers = boundAssets.MCPServers
@@ -969,23 +994,14 @@ func collectRunnerInvocationArtifacts(workspace string, inv *domain.RunnerInvoca
 	return artifacts
 }
 
-// invocationRepositories returns the repositories an invocation carries:
-// Repositories when set, otherwise the persisted legacy single Repository.
-func invocationRepositories(inv *domain.RunnerInvocation) []domain.RunnerRepository {
-	if inv == nil {
-		return nil
-	}
-	if len(inv.Repositories) == 0 && inv.Repository != nil {
-		return []domain.RunnerRepository{*inv.Repository}
-	}
-	return inv.Repositories
-}
-
 func invocationRepositoryContexts(inv *domain.RunnerInvocation) []domain.RepositoryContext {
 	if inv == nil {
 		return nil
 	}
-	repositories := invocationRepositories(inv)
+	repositories := inv.Repositories
+	if len(repositories) == 0 && inv.Repository != nil {
+		repositories = []domain.RunnerRepository{*inv.Repository}
+	}
 	out := make([]domain.RepositoryContext, 0, len(repositories))
 	for _, repository := range repositories {
 		out = append(out, domain.RepositoryContext{
@@ -1018,6 +1034,7 @@ func bindSandboxPrivateHome(workspace, driver, provider string, env map[string]s
 	}
 	switch provider {
 	case "codex":
+		runtime.ClearHostCodexSession(env)
 		if err := os.MkdirAll(filepath.Join(home, ".codex"), 0o700); err != nil {
 			return nil, err
 		}
@@ -1057,11 +1074,24 @@ func bindInvocationCredentials(inv *domain.RunnerInvocation, bindings []runtime.
 				return nil, nil, errors.New("Codex 个人 API Key 未配置")
 			}
 			env["CODEX_API_KEY"] = key
-			withProvider, err := runtime.CodexUserProviderArgv(argv, inv.CodexBaseURL)
-			if err != nil {
-				return nil, nil, err
+			baseURL := strings.TrimSpace(inv.CodexBaseURL)
+			if baseURL == "" {
+				baseURL = "https://api.openai.com/v1"
 			}
-			argv = withProvider
+			if len(argv) < 2 {
+				return nil, nil, errors.New("invalid Codex invocation")
+			}
+			config := []string{
+				"-c", `model_provider="agentflow_user"`,
+				"-c", `model_providers.agentflow_user.name="User API"`,
+				"-c", "model_providers.agentflow_user.base_url=" + strconv.Quote(baseURL),
+				"-c", `model_providers.agentflow_user.env_key="CODEX_API_KEY"`,
+				"-c", `model_providers.agentflow_user.wire_api="responses"`,
+				"-c", "model_providers.agentflow_user.requires_openai_auth=false",
+			}
+			args := append([]string{}, argv[:len(argv)-1]...)
+			args = append(args, config...)
+			argv = append(args, argv[len(argv)-1])
 		case runtime.BindClaudeCode:
 			if !personal {
 				continue
@@ -1100,6 +1130,15 @@ func invocationGitToken(inv *domain.RunnerInvocation) string {
 	return ""
 }
 
+func hasCredentialBinding(bindings []runtime.CredentialBinding, want runtime.CredentialBinding) bool {
+	for _, binding := range bindings {
+		if binding == want {
+			return true
+		}
+	}
+	return false
+}
+
 // checkoutInvocationRepositories checks out every repository the invocation
 // carries: each into its Dir under the task workspace. Empty Dir is only
 // kept for persisted legacy invocations that already checked out at the
@@ -1109,8 +1148,13 @@ func checkoutInvocationRepositories(ctx context.Context, workspace string, inv *
 	if inv == nil {
 		return nil
 	}
-	ctx = gitwork.WithSSHKeys(ctx, inv.GitSSHKeys)
-	repos := invocationRepositories(inv)
+	repos := inv.Repositories
+	if len(repos) == 0 && inv.Repository != nil {
+		if strings.TrimSpace(inv.Repository.CloneURL) == "" {
+			return nil
+		}
+		repos = []domain.RunnerRepository{*inv.Repository}
+	}
 	for i := range repos {
 		repo := repos[i]
 		if strings.TrimSpace(repo.CloneURL) == "" {
@@ -1188,9 +1232,6 @@ func cloneRepository(ctx context.Context, workspace string, repo *domain.RunnerR
 	if repo.RequireExistingWorkBranch && strings.TrimSpace(repo.WorkBranch) == "" {
 		return fmt.Errorf("继续已有分支时必须指定工作分支")
 	}
-	if info, err := os.Stat(workspace); err != nil || !info.IsDir() {
-		return fmt.Errorf("clone workspace is not a directory: %s", workspace)
-	}
 	url := strings.TrimSpace(repo.CloneURL)
 	if err := gitwork.ValidateRemoteURL(url, true); err != nil {
 		return fmt.Errorf("git clone: %w", err)
@@ -1198,7 +1239,7 @@ func cloneRepository(ctx context.Context, workspace string, repo *domain.RunnerR
 	// `-c` auth is scoped to this command, so origin stays the clean URL and
 	// the token never lands in .git/config. --progress: without a terminal git
 	// prints nothing until it finishes, so a slow clone looked hung.
-	args := []string{"clone", "--progress"}
+	args := append(gitwork.AuthConfigArgs(repo.GitToken), "clone", "--progress")
 	if ref := strings.TrimSpace(repo.Ref); ref != "" {
 		args = append(args, "--branch", ref)
 	}
@@ -1206,9 +1247,14 @@ func cloneRepository(ctx context.Context, workspace string, repo *domain.RunnerR
 	watch := runnerCloneWatch(repo)
 	// The platform cannot see this host's output yet; the operator can.
 	ctx = procwatch.WithObserver(ctx, func(event procwatch.Event) { log.Printf("runner checkout: %s", event.Message) })
-	tail, err := gitwork.Watch(repositoryGitContext(ctx, *repo), workspace, watch, args...)
+	tail, err := procwatch.Run(ctx, func(ctx context.Context) *exec.Cmd {
+		cmd := exec.CommandContext(ctx, "git", args...)
+		cmd.Dir = workspace
+		cmd.Env = gitwork.Env(repo.GitToken)
+		return cmd
+	}, watch)
 	if err != nil {
-		return fmt.Errorf("git clone %s: %w (%s)", domain.StripURLCredentials(repo.CloneURL), err, cloneOutput([]byte(tail), repo.GitToken))
+		return fmt.Errorf("git clone %s: %w (%s)", repo.CloneURL, err, cloneOutput([]byte(tail), repo.GitToken))
 	}
 	// The branch steps below keep the bound they always had.
 	cloneCtx := ctx
@@ -1236,13 +1282,6 @@ func cloneRepository(ctx context.Context, workspace string, repo *domain.RunnerR
 	return nil
 }
 
-func repositoryGitContext(ctx context.Context, repo domain.RunnerRepository) context.Context {
-	if repo.UseSSH {
-		return gitwork.WithSSHRemote(ctx, repo.CloneURL)
-	}
-	return gitwork.WithToken(ctx, repo.GitToken)
-}
-
 // checkoutExistingRepositoryBranch validates the remote head even when the
 // run reuses a checkout. A normal tracking checkout may create a local ref;
 // it never invents a remote branch or resets existing local work.
@@ -1251,7 +1290,7 @@ func checkoutExistingRepositoryBranch(ctx context.Context, workspace string, rep
 	if branch == "" {
 		return fmt.Errorf("继续已有分支时必须指定工作分支")
 	}
-	repoCtx := repositoryGitContext(ctx, *repo)
+	repoCtx := gitwork.WithToken(ctx, repo.GitToken)
 	trackingRef := "refs/remotes/origin/" + branch
 	if _, err := gitwork.C(repoCtx, workspace, "fetch", "--no-tags", "origin", "+refs/heads/"+branch+":"+trackingRef); err != nil {
 		return fmt.Errorf("无法读取已有远端分支 %s，请确认分支存在且有访问权限: %w", branch, err)
@@ -1280,7 +1319,7 @@ func createNewRepositoryBranch(ctx context.Context, workspace string, repo *doma
 	if branch == "" {
 		return fmt.Errorf("新建分支时必须指定工作分支")
 	}
-	repoCtx := repositoryGitContext(ctx, *repo)
+	repoCtx := gitwork.WithToken(ctx, repo.GitToken)
 	out, err := gitwork.C(repoCtx, workspace, "ls-remote", "--heads", "origin", "refs/heads/"+branch)
 	if err != nil {
 		return fmt.Errorf("无法确认远端分支 %s 是否存在: %w", branch, err)
@@ -1304,7 +1343,7 @@ func checkoutCreatedRepositoryBranch(ctx context.Context, workspace string, repo
 	if branch == "" {
 		return fmt.Errorf("新建分支时必须指定工作分支")
 	}
-	repoCtx := repositoryGitContext(ctx, *repo)
+	repoCtx := gitwork.WithToken(ctx, repo.GitToken)
 	if current, _ := gitwork.C(repoCtx, workspace, "branch", "--show-current"); strings.TrimSpace(current) == branch {
 		return nil
 	}
@@ -1372,7 +1411,7 @@ func resolveCommandPath(argv []string) []string {
 // full register/claim/execute/complete loop works without a real Agent CLI.
 func (d *Daemon) executeMock(ctx context.Context, task domain.RunnerTask) execResult {
 	batcher := newEventBatcher(task, d.client)
-	if err := d.client.StartTask(ctx, task.ID); err != nil {
+	if err := d.client.StartTask(ctx, task.ID, task.Attempt); err != nil {
 		return execResult{status: domain.RunnerTaskFailed, errMsg: fmt.Sprintf("start: %v", err)}
 	}
 	batcher.addLine("stdout", "MOCK "+task.Prompt)
@@ -1385,7 +1424,24 @@ func (d *Daemon) defaultWorkspace(taskID string) string {
 }
 
 // runnerVersion is reported at registration; it matches the module build.
-var runnerVersion = "0.10.1"
+var runnerVersion = domain.RunnerVersionNodePlacement
 
 // Version returns the runner build version reported at registration.
 func Version() string { return runnerVersion }
+
+func repositoryGitContext(ctx context.Context, repo domain.RunnerRepository) context.Context {
+	return gitwork.WithToken(ctx, repo.GitToken)
+}
+
+func invocationRepositories(inv *domain.RunnerInvocation) []domain.RunnerRepository {
+	if inv == nil {
+		return nil
+	}
+	if len(inv.Repositories) > 0 {
+		return inv.Repositories
+	}
+	if inv.Repository != nil {
+		return []domain.RunnerRepository{*inv.Repository}
+	}
+	return nil
+}

@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -257,15 +258,21 @@ func (e *Engine) dispatchRunnerTask(ctx context.Context, runnerID string, run do
 		NodeID:      node.ID,
 		Invocation:  invocation,
 	}
+	if err := e.preparePlacedExecutionTask(run, &task, domain.NodeTaskRoleAuthor); err != nil {
+		return "", err
+	}
 	sandboxSpec, err := e.runnerSandboxSpec(run)
 	if err != nil {
 		return "", err
 	}
 	task.Sandbox = sandboxSpec
+	if err := e.applyRunnerTaskPolicy(run, &task); err != nil {
+		return "", err
+	}
 	if err := validateSOPHandoffRunnerPayload(run, task); err != nil {
 		return "", err
 	}
-	if err := e.repo.PutRunnerTask(task); err != nil {
+	if err := e.queuePlacedOrLegacyTask(task); err != nil {
 		return "", err
 	}
 	e.notifyRunnerDispatch(ex.Kind)
@@ -334,6 +341,9 @@ func resolveRunnerResumeSessionID(run domain.Run, nodeID string, options runtime
 func bindRunnerRepositories(invocation *domain.RunnerInvocation, run domain.Run, gitToken, gitUserName, gitUserEmail string) {
 	if invocation == nil {
 		return
+	}
+	if domain.ControlledDelivery(run.ExecutionContext.DeliveryPolicy) {
+		gitToken = ""
 	}
 	invocation.GitUserName = strings.TrimSpace(gitUserName)
 	invocation.GitUserEmail = strings.TrimSpace(gitUserEmail)
@@ -428,15 +438,21 @@ func (e *Engine) dispatchRunnerScript(ctx context.Context, runnerID string, run 
 		NodeID:      nodeID,
 		Invocation:  invocation,
 	}
+	if err := e.preparePlacedExecutionTask(run, &task, domain.NodeTaskRoleAuthor); err != nil {
+		return "", err
+	}
 	var err error
 	task.Sandbox, err = e.runnerSandboxSpec(run)
 	if err != nil {
 		return "", err
 	}
+	if err := e.applyRunnerTaskPolicy(run, &task); err != nil {
+		return "", err
+	}
 	if err := validateSOPHandoffRunnerPayload(run, task); err != nil {
 		return "", err
 	}
-	if err := e.repo.PutRunnerTask(task); err != nil {
+	if err := e.queuePlacedOrLegacyTask(task); err != nil {
 		return "", err
 	}
 	e.notifyRunnerDispatch("terminal")
@@ -532,19 +548,15 @@ func (e *Engine) validateExecutionReconnect(run domain.Run, nodeID string) error
 
 // queueRunnerRunCleanup durably schedules cleanup on the machine that owns
 // the frozen runner workspace. Successful runs call it during normal finish;
-// explicit deletion also calls it for failed/cancelled runs. The deterministic
-// task ID makes those paths idempotent without resetting active/completed work.
+// explicit deletion also calls it for failed/cancelled runs. Active work is
+// reused, but each new cleanup receives a fresh task identity and retry budget.
 func (e *Engine) queueRunnerRunCleanup(run domain.Run) error {
+	if participants := e.placedWorkspaceParticipants(run.ID); len(participants) > 0 {
+		return e.queuePlacedWorkspaceCleanup(run, time.Now().UTC(), participants)
+	}
 	runnerID := e.defaultExecutionRunner(run)
 	if runnerID == "" {
 		return nil
-	}
-	taskID := "rt-cleanup-" + safeRunnerPath(run.ID)
-	if existing, ok := e.repo.RunnerTask(taskID); ok {
-		switch existing.Status {
-		case domain.RunnerTaskQueued, domain.RunnerTaskLeased, domain.RunnerTaskRunning:
-			return nil
-		}
 	}
 	if _, ok := e.repo.Runner(runnerID); !ok {
 		// Explicit runner uninstall removes every runner workspace before it
@@ -553,7 +565,7 @@ func (e *Engine) queueRunnerRunCleanup(run domain.Run) error {
 		return nil
 	}
 	task := domain.RunnerTask{
-		ID:          taskID,
+		ID:          "rt-cleanup-" + rand.Text(),
 		RunnerID:    runnerID,
 		Provider:    "terminal",
 		Action:      domain.RunnerTaskActionCleanupRun,
@@ -563,10 +575,14 @@ func (e *Engine) queueRunnerRunCleanup(run domain.Run) error {
 		RunID:       run.ID,
 		Sandbox:     run.WorkflowSnapshot.SandboxSnapshot,
 	}
-	if err := e.repo.PutRunnerTask(task); err != nil {
+	if err := e.applyRunnerTaskPolicy(run, &task); err != nil {
 		return err
 	}
-	e.notifyRunnerDispatch("terminal")
+	if _, created, err := e.repo.QueueRunnerMaintenanceTask(task); err != nil {
+		return err
+	} else if created {
+		e.notifyRunnerDispatch("terminal")
+	}
 	return nil
 }
 
@@ -575,20 +591,11 @@ func (e *Engine) queueRunnerPreviewArchive(run domain.Run, spec domain.RunnerPre
 	if runnerID == "" {
 		return fmt.Errorf("preview archive requires the original runner")
 	}
-	taskID := "rt-preview-archive-" + safeRunnerPath(run.ID)
-	if existing, ok := e.repo.RunnerTask(taskID); ok {
-		switch existing.Status {
-		case domain.RunnerTaskQueued, domain.RunnerTaskLeased, domain.RunnerTaskRunning:
-			return nil
-		}
-		// A finished archive is replaced when the build node succeeds again.
-		// The new task carries a fresh upload token for the new bundle.
-	}
 	if _, ok := e.repo.Runner(runnerID); !ok {
 		return fmt.Errorf("preview archive runner %s is unavailable", runnerID)
 	}
 	task := domain.RunnerTask{
-		ID:             taskID,
+		ID:             "rt-preview-archive-" + rand.Text(),
 		RunnerID:       runnerID,
 		Provider:       "terminal",
 		Action:         domain.RunnerTaskActionArchivePreview,
@@ -598,10 +605,14 @@ func (e *Engine) queueRunnerPreviewArchive(run domain.Run, spec domain.RunnerPre
 		RunID:          run.ID,
 		PreviewArchive: &spec,
 	}
-	if err := e.repo.PutRunnerTask(task); err != nil {
+	if err := e.applyRunnerTaskPolicy(run, &task); err != nil {
 		return err
 	}
-	e.notifyRunnerDispatch("terminal")
+	if _, created, err := e.repo.QueueRunnerMaintenanceTask(task); err != nil {
+		return err
+	} else if created {
+		e.notifyRunnerDispatch("terminal")
+	}
 	return nil
 }
 
@@ -629,7 +640,14 @@ func (e *Engine) dispatchRunnerCommand(ctx context.Context, runnerID, runID, nod
 		}
 		task.Invocation = e.gateCommandInvocation(run, nodeID)
 	}
-	if err := e.repo.PutRunnerTask(task); err != nil {
+	run, _ := e.repo.RunState(runID)
+	if err := e.preparePlacedExecutionTask(run, &task, domain.NodeTaskRoleVerification); err != nil {
+		return "", err
+	}
+	if err := e.applyRunnerTaskPolicy(run, &task); err != nil {
+		return "", err
+	}
+	if err := e.queuePlacedOrLegacyTask(task); err != nil {
 		return "", err
 	}
 	e.notifyRunnerDispatch("terminal")
@@ -670,7 +688,9 @@ func (e *Engine) gateCommandInvocation(run domain.Run, nodeID string) *domain.Ru
 		RunID: run.ID, NodeID: nodeID, Assets: assets, MCPCallServers: assets.MCPServers}
 	identity := resolveGitIdentity(e.repo, run.ExecutionContext.ResponsibleUserID)
 	bindRunnerRepositories(invocation, run, resolveGitToken(e.repo, run.ExecutionContext.ResponsibleUserID), identity.name, identity.email)
-	return invocation
+	task := domain.RunnerTask{Invocation: invocation}
+	_ = e.applyRunnerTaskPolicy(run, &task)
+	return task.Invocation
 }
 
 // NotifyRunnerTaskChanged wakes workflow goroutines waiting for a runner task
@@ -709,8 +729,22 @@ func (e *Engine) subscribeRunnerTask(taskID string) (<-chan struct{}, func()) {
 // task/event stream when API and worker run in separate processes. Run
 // cancellation also flags the remote task.
 func (e *Engine) awaitRunnerTask(ctx context.Context, taskID string, sink runtime.EventSink) (domain.RunnerTask, error) {
+	if task, ok := e.repo.RunnerTask(taskID); ok && task.ExecutionDeadline != nil {
+		var stop context.CancelFunc
+		ctx, stop = context.WithDeadline(ctx, *task.ExecutionDeadline)
+		defer stop()
+	}
 	var lastEventSeq int64
+	lastAttempt := 0
 	lastStatus := ""
+	bridgeEvents := func(task domain.RunnerTask) {
+		if task.Attempt != lastAttempt {
+			lastAttempt = task.Attempt
+			lastEventSeq = 0
+			lastStatus = ""
+		}
+		lastEventSeq = bridgeRunnerEventsToSink(task, e.repo.RunnerTaskEventsAfter(taskID, task.Attempt, lastEventSeq), lastEventSeq, sink)
+	}
 	reportStatus := func(task domain.RunnerTask) {
 		if sink == nil || task.Status == lastStatus {
 			return
@@ -738,7 +772,11 @@ func (e *Engine) awaitRunnerTask(ctx context.Context, taskID string, sink runtim
 		if !ok {
 			return domain.RunnerTask{}, fmt.Errorf("runner task %s disappeared", taskID)
 		}
-		lastEventSeq = bridgeRunnerEventsToSink(current, e.repo.RunnerTaskEventsAfter(taskID, lastEventSeq), lastEventSeq, sink)
+		if domain.ExecutionDeadlineExpired(current.ExecutionDeadline, time.Now().UTC()) && current.Status != domain.RunnerTaskSuccess {
+			_ = e.repo.CancelRunnerTask(taskID, time.Now().UTC())
+			return domain.RunnerTask{}, domain.ErrExecutionDeadlineExceeded
+		}
+		bridgeEvents(current)
 		reportStatus(current)
 		switch current.Status {
 		case domain.RunnerTaskSuccess, domain.RunnerTaskFailed, domain.RunnerTaskCanceled:
@@ -752,7 +790,7 @@ func (e *Engine) awaitRunnerTask(ctx context.Context, taskID string, sink runtim
 			unsubscribe()
 			return domain.RunnerTask{}, fmt.Errorf("runner task %s disappeared", taskID)
 		}
-		lastEventSeq = bridgeRunnerEventsToSink(current, e.repo.RunnerTaskEventsAfter(taskID, lastEventSeq), lastEventSeq, sink)
+		bridgeEvents(current)
 		reportStatus(current)
 		switch current.Status {
 		case domain.RunnerTaskSuccess, domain.RunnerTaskFailed, domain.RunnerTaskCanceled:
@@ -770,6 +808,9 @@ func (e *Engine) awaitRunnerTask(ctx context.Context, taskID string, sink runtim
 			fallback.Stop()
 			unsubscribe()
 			_ = e.repo.CancelRunnerTask(taskID, time.Now().UTC())
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return domain.RunnerTask{}, domain.ErrExecutionDeadlineExceeded
+			}
 			return domain.RunnerTask{}, ctx.Err()
 		case <-changed:
 		case <-fallback.C:

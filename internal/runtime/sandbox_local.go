@@ -32,7 +32,7 @@ func (s *localSandbox) Exec(ctx context.Context, command CommandSpec, sink Event
 	if err != nil {
 		return "", fmt.Errorf("%w: %w", errProcessNotStarted, err)
 	}
-	return runCommand(cmd, sink)
+	return runNativeCommand(cmd, sink)
 }
 
 func (s *localSandbox) command(ctx context.Context, command CommandSpec, base []string) (*exec.Cmd, error) {

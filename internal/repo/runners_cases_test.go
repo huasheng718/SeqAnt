@@ -150,62 +150,62 @@ func TestRunnerTaskLeaseEventsExpiryCancellationAndDeregister(t *testing.T) {
 	if _, ok, err := s.ClaimRunnerTask(runner.ID, nil, now, time.Minute); err != nil || ok {
 		t.Fatalf("providerless claim ok=%v err=%v", ok, err)
 	}
-	claimed, ok, err := s.ClaimRunnerTask(runner.ID, []string{"codex"}, now, -time.Second)
+	claimed, ok, err := s.ClaimRunnerTask(runner.ID, []string{"codex"}, now, time.Minute)
 	if err != nil || !ok || claimed.Status != domain.RunnerTaskLeased || claimed.Attempt != 1 {
 		t.Fatalf("claimed=%+v ok=%v err=%v", claimed, ok, err)
 	}
-	if err := s.StartRunnerTask(task.ID, "wrong", now); !errors.Is(err, ErrRunnerTaskLeaseLost) {
+	if err := s.StartRunnerTask(task.ID, "wrong", claimed.Attempt, now); !errors.Is(err, ErrRunnerTaskLeaseLost) {
 		t.Fatalf("wrong start err=%v", err)
 	}
-	if err := s.StartRunnerTask(task.ID, runner.ID, now); err != nil {
+	if err := s.StartRunnerTask(task.ID, runner.ID, claimed.Attempt, now); err != nil {
 		t.Fatal(err)
 	}
-	if desired, err := s.RenewRunnerTaskLease(task.ID, "wrong", time.Minute, now); !errors.Is(err, ErrRunnerTaskLeaseLost) || desired != "" {
+	if desired, err := s.RenewRunnerTaskLease(task.ID, "wrong", claimed.Attempt, time.Minute, now); !errors.Is(err, ErrRunnerTaskLeaseLost) || desired != "" {
 		t.Fatalf("wrong renew desired=%q err=%v", desired, err)
 	}
-	if err := s.CancelRunnerTask(task.ID, now); err != nil {
-		t.Fatal(err)
-	}
-	if desired, err := s.RenewRunnerTaskLease(task.ID, runner.ID, time.Minute, now); err != nil || desired != domain.RunnerTaskDesiredCancel {
-		t.Fatalf("cancel desired=%q err=%v", desired, err)
-	}
-	if control, ok := s.RunnerTaskControl(task.ID); !ok || control.DesiredState != domain.RunnerTaskDesiredCancel {
-		t.Fatalf("control=%+v ok=%v", control, ok)
-	}
-	if err := s.CompleteRunnerTask(task.ID, runner.ID, "invalid", nil, "", "", nil, nil, now); err == nil {
-		t.Fatal("invalid completion accepted")
-	}
-	exit := 0
-	outputs := &domain.RunnerTaskOutputs{Files: map[string]string{"result.md": "ok"}}
-	if err := s.CompleteRunnerTask(task.ID, runner.ID, domain.RunnerTaskSuccess, &exit, "done", "", map[string]string{"result": "body"}, outputs, now); err != nil {
-		t.Fatal(err)
-	}
-	completed, ok := s.RunnerTask(task.ID)
-	if !ok || completed.Status != domain.RunnerTaskSuccess || completed.Invocation.CodexAPIKey != "" || completed.Invocation.Repository.GitToken != "" || completed.Invocation.Repositories[0].GitToken != "" {
-		t.Fatalf("completed=%+v ok=%v", completed, ok)
-	}
-	if err := s.CompleteRunnerTask(task.ID, runner.ID, domain.RunnerTaskSuccess, nil, "", "", nil, nil, now); !errors.Is(err, ErrRunnerTaskLeaseLost) {
-		t.Fatalf("double completion err=%v", err)
-	}
-
-	if accepted, err := s.AppendRunnerTaskEvents("", []domain.RunnerTaskEvent{{Seq: 1}}); err == nil || accepted != 0 {
+	if accepted, err := s.AppendRunnerTaskEvents("", runner.ID, claimed.Attempt, []domain.RunnerTaskEvent{{Seq: 1}}, now); err == nil || accepted != 0 {
 		t.Fatalf("empty events accepted=%d err=%v", accepted, err)
 	}
-	if accepted, err := s.AppendRunnerTaskEvents(task.ID, nil); err != nil || accepted != 0 {
+	if accepted, err := s.AppendRunnerTaskEvents(task.ID, runner.ID, claimed.Attempt, nil, now); err != nil || accepted != 0 {
 		t.Fatalf("empty batch accepted=%d err=%v", accepted, err)
 	}
 	events := []domain.RunnerTaskEvent{{Seq: 1, Type: "stdout", Data: "one", Ts: now}, {Seq: 2, Type: "stderr", Data: "two", Ts: now}}
-	if accepted, err := s.AppendRunnerTaskEvents(task.ID, events); err != nil || accepted != 2 {
+	if accepted, err := s.AppendRunnerTaskEvents(task.ID, runner.ID, claimed.Attempt, events, now); err != nil || accepted != 2 {
 		t.Fatalf("events accepted=%d err=%v", accepted, err)
 	}
-	if accepted, err := s.AppendRunnerTaskEvents(task.ID, events); err != nil || accepted != 0 {
+	if accepted, err := s.AppendRunnerTaskEvents(task.ID, runner.ID, claimed.Attempt, events, now); err != nil || accepted != 0 {
 		t.Fatalf("duplicate events accepted=%d err=%v", accepted, err)
 	}
 	if got := s.RunnerTaskEvents(task.ID); len(got) != 2 {
 		t.Fatalf("events=%v", got)
 	}
-	if got := s.RunnerTaskEventsAfter(task.ID, 1); len(got) != 1 || got[0].Seq != 2 {
+	if got := s.RunnerTaskEventsAfter(task.ID, claimed.Attempt, 1); len(got) != 1 || got[0].Seq != 2 {
 		t.Fatalf("events after=%v", got)
+	}
+
+	if err := s.CancelRunnerTask(task.ID, now); err != nil {
+		t.Fatal(err)
+	}
+	if desired, err := s.RenewRunnerTaskLease(task.ID, runner.ID, claimed.Attempt, time.Minute, now); err != nil || desired != domain.RunnerTaskDesiredCancel {
+		t.Fatalf("cancel desired=%q err=%v", desired, err)
+	}
+	if control, ok := s.RunnerTaskControl(task.ID); !ok || control.DesiredState != domain.RunnerTaskDesiredCancel {
+		t.Fatalf("control=%+v ok=%v", control, ok)
+	}
+	if err := s.CompleteRunnerTask(task.ID, runner.ID, claimed.Attempt, "invalid", nil, "", "", nil, nil, now); err == nil {
+		t.Fatal("invalid completion accepted")
+	}
+	exit := 0
+	outputs := &domain.RunnerTaskOutputs{Files: map[string]string{"result.md": "ok"}}
+	if err := s.CompleteRunnerTask(task.ID, runner.ID, claimed.Attempt, domain.RunnerTaskCanceled, &exit, "done", "", map[string]string{"result": "body"}, outputs, now); err != nil {
+		t.Fatal(err)
+	}
+	completed, ok := s.RunnerTask(task.ID)
+	if !ok || completed.Status != domain.RunnerTaskCanceled || completed.Invocation.CodexAPIKey != "" || completed.Invocation.Repository.GitToken != "" || completed.Invocation.Repositories[0].GitToken != "" {
+		t.Fatalf("completed=%+v ok=%v", completed, ok)
+	}
+	if err := s.CompleteRunnerTask(task.ID, runner.ID, claimed.Attempt, domain.RunnerTaskSuccess, nil, "", "", nil, nil, now); !errors.Is(err, ErrRunnerTaskLeaseLost) {
+		t.Fatalf("double completion err=%v", err)
 	}
 
 	expiring := domain.RunnerTask{ID: "cve-expire", RunnerID: runner.ID, Provider: "codex", RunID: "run-two", MaxAttempts: 2}

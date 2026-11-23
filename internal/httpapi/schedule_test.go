@@ -296,6 +296,7 @@ func TestScheduledJobWaitsWhenIntegrateConflictsWithDefault(t *testing.T) {
 		t.Fatal(err)
 	}
 	e := engine.New(st, runtime.NewManager(filepath.Join(t.TempDir(), "workspaces")))
+	_ = e.ConfigureDeliveryPolicy(domain.DeliveryPolicyLegacy)
 	e.ConfigureExecution("test", "test", time.Second, false)
 	s := &Server{deps: &deps{repo: st, engine: e, sync: tracker.NewService()}}
 	s.schedule = &scheduleHandlers{deps: s.deps}

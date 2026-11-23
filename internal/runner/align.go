@@ -16,7 +16,7 @@ import (
 // integration branch in a throwaway clone and pushes the result. Conflicts
 // abort the merge and are reported with their hunks, not as a failure.
 func (d *Daemon) executeAlignBaseline(ctx context.Context, task domain.RunnerTask) execResult {
-	if err := d.client.StartTask(ctx, task.ID); err != nil {
+	if err := d.client.StartTask(ctx, task.ID, task.Attempt); err != nil {
 		return execResult{status: domain.RunnerTaskFailed, errMsg: fmt.Sprintf("start: %v", err)}
 	}
 	dir := d.taskWorkspace(task)

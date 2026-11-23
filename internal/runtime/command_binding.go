@@ -9,6 +9,14 @@ import (
 	"strings"
 )
 
+func ClearHostCodexSession(environment map[string]string) {
+	for key := range environment {
+		if strings.HasPrefix(key, "CODEX_APP_") || key == "CODEX_INTERNAL_ORIGINATOR_OVERRIDE" || key == "CODEX_PERMISSION_PROFILE" || key == "CODEX_SESSION_ID" || key == "CODEX_THREAD_ID" || key == "CODEX_TOOL_CALL_ID" || key == "CODEX_TASK_WORKSPACE_VERIFYING_IDENTITY" {
+			environment[key] = ""
+		}
+	}
+}
+
 func upsertEnv(env []string, key, value string) []string {
 	prefix := key + "="
 	out := make([]string, 0, len(env)+1)
