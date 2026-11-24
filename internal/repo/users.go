@@ -26,6 +26,7 @@ type userWithConfig struct {
 	GitToken                     *string    `gorm:"column:git_token"`
 	GiteeToken                   *string    `gorm:"column:gitee_token"`
 	GitLabToken                  *string    `gorm:"column:gitlab_token"`
+	CodeupToken                  *string    `gorm:"column:codeup_token"`
 	GitSSHKeyConfigured          bool       `gorm:"column:git_ssh_key_configured"`
 	GongfengRefreshToken         *string    `gorm:"column:gongfeng_refresh_token"`
 	GongfengTokenExpiresAt       *time.Time `gorm:"column:gongfeng_token_expires_at"`
@@ -44,7 +45,7 @@ type userWithConfig struct {
 
 const userSelectColumns = `u.id, u.staff_id, u.login_name, u.chinese_name, u.dept_id, u.dept_name,
 	COALESCE(u.platform_role, '') AS platform_role,
-	c.git_token, c.gitee_token, c.gitlab_token, EXISTS (SELECT 1 FROM user_git_ssh_keys k WHERE k.user_id = u.id) AS git_ssh_key_configured,
+	c.git_token, c.gitee_token, c.gitlab_token, c.codeup_token, EXISTS (SELECT 1 FROM user_git_ssh_keys k WHERE k.user_id = u.id) AS git_ssh_key_configured,
 	c.gongfeng_refresh_token, c.gongfeng_token_expires_at, c.codebuddy_api_key, COALESCE(c.codebuddy_internet_environment, '') AS codebuddy_internet_environment,
 	c.codex_api_key, c.codex_base_url, c.codex_models, c.claude_code_api_key, c.claude_code_base_url, c.claude_code_models,
 	c.agent_cli_credentials,
@@ -65,6 +66,9 @@ func (r userWithConfig) toDomain() domain.User {
 	}
 	if r.GitLabToken != nil {
 		u.GitLabToken = *r.GitLabToken
+	}
+	if r.CodeupToken != nil {
+		u.CodeupToken = *r.CodeupToken
 	}
 	if r.GongfengRefreshToken != nil {
 		u.GongfengRefreshToken = *r.GongfengRefreshToken
@@ -237,6 +241,7 @@ func userHasConfig(user domain.User) bool {
 	return user.GitToken != "" ||
 		user.GiteeToken != "" ||
 		user.GitLabToken != "" ||
+		user.CodeupToken != "" ||
 		user.GongfengRefreshToken != "" ||
 		user.CodeBuddyAPIKey != "" ||
 		user.CodeBuddyInternetEnvironment != "" ||
@@ -256,6 +261,8 @@ type UserCredentialUpdate struct {
 	GiteeTokenClear              bool               `json:"giteeTokenClear"`
 	GitLabToken                  string             `json:"gitlabToken"`
 	GitLabTokenClear             bool               `json:"gitlabTokenClear"`
+	CodeupToken                  string             `json:"codeupToken"`
+	CodeupTokenClear             bool               `json:"codeupTokenClear"`
 	CodeBuddyAPIKey              string             `json:"codeBuddyApiKey"`
 	CodeBuddyAPIKeyClear         bool               `json:"codeBuddyApiKeyClear"`
 	CodeBuddyInternetEnvironment *string            `json:"codeBuddyInternetEnvironment"`
@@ -305,6 +312,11 @@ func (r *UsersRepo) UpdateUserCredentials(id int64, update UserCredentialUpdate)
 		user.GitLabToken = ""
 	} else if value := strings.TrimSpace(update.GitLabToken); value != "" {
 		user.GitLabToken = value
+	}
+	if update.CodeupTokenClear {
+		user.CodeupToken = ""
+	} else if value := strings.TrimSpace(update.CodeupToken); value != "" {
+		user.CodeupToken = value
 	}
 	if update.CodeBuddyAPIKeyClear {
 		user.CodeBuddyAPIKey = ""
@@ -377,6 +389,7 @@ func (r *UsersRepo) writeUserConfig(v domain.User) error {
 		"git_token":              nullableString(v.GitToken),
 		"gitee_token":            nullableString(v.GiteeToken),
 		"gitlab_token":           nullableString(v.GitLabToken),
+		"codeup_token":           nullableString(v.CodeupToken),
 		"gongfeng_refresh_token": nullableString(v.GongfengRefreshToken), "gongfeng_token_expires_at": timePtr(v.GongfengTokenExpiresAt),
 		"codebuddy_api_key":              nullableString(v.CodeBuddyAPIKey),
 		"codebuddy_internet_environment": v.CodeBuddyInternetEnvironment,

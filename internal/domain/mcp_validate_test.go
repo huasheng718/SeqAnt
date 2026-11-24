@@ -37,7 +37,7 @@ func TestValidateMCPServerErrorOrder(t *testing.T) {
 		{"valid project", stdio(func(v *MCPServerDefinition) { v.Scope = " project "; v.ProjectID = "p" }), ""},
 		{"personal missing owner", stdio(func(v *MCPServerDefinition) { v.Scope = "personal" }), "个人级 MCP 需要 ownerUserId"},
 		{"personal with project", stdio(func(v *MCPServerDefinition) { v.Scope = "personal"; v.OwnerUserID = 1; v.ProjectID = "p" }), "个人级 MCP 不能设置 projectId"},
-		{"personal market", stdio(func(v *MCPServerDefinition) { v.Scope = "personal"; v.OwnerUserID = 1; v.MarketID = "m" }), "市场 MCP 只能安装到项目，个人级 MCP 必须为自定义"},
+		{"personal market", stdio(func(v *MCPServerDefinition) { v.Scope = "personal"; v.OwnerUserID = 1; v.MarketID = "m" }), ""},
 		{"valid personal", stdio(func(v *MCPServerDefinition) { v.Scope = "personal"; v.OwnerUserID = 1 }), ""},
 		{"unknown scope", stdio(func(v *MCPServerDefinition) { v.Scope = "global" }), "scope 只能为空、project 或 personal"},
 		{"scope before auth", stdio(func(v *MCPServerDefinition) { v.Scope = "global"; v.AuthType = "basic" }), "scope 只能为空、project 或 personal"},

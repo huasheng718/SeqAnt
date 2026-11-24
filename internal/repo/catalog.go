@@ -15,6 +15,8 @@ import (
 	"gorm.io/gorm"
 )
 
+var ErrMCPConfigurationConflict = errors.New("MCP 配置版本已变化，请刷新后重试")
+
 // BaselineAlignResolverAgent is the shared platform role for scheduled
 // baseline alignment. No project hooks or issue-fix verification gates.
 func BaselineAlignResolverAgent() domain.AgentDefinition {
@@ -171,6 +173,78 @@ func (r *CatalogRepo) MCPServers() []domain.MCPServerDefinition {
 
 func (r *CatalogRepo) MCPServer(id string) (domain.MCPServerDefinition, bool) {
 	return payloadOne[domain.MCPServerDefinition](r.DB, "mcp_servers", id)
+}
+
+// CreateMCPServerIfAbsent creates a definition without replacing an existing
+// row. Market installs use this boundary so two callers cannot overwrite the
+// first caller's parameters or credentials through the general upsert writer.
+func (r *CatalogRepo) CreateMCPServerIfAbsent(v domain.MCPServerDefinition) (domain.MCPServerDefinition, bool, error) {
+	if existing, ok := r.MCPServer(v.ID); ok {
+		return existing, false, nil
+	}
+	if v.FileRefs == nil {
+		if existing, ok := r.MCPServer(v.ID); ok {
+			v.FileRefs = existing.FileRefs
+		}
+	}
+	if err := domain.ValidateMCPServer(v); err != nil {
+		return domain.MCPServerDefinition{}, false, err
+	}
+	v.UpdatedAt = time.Now().UTC()
+	err := r.DB.Create(&mcpServerRow{ID: v.ID, Name: v.Name, Payload: mustJSON(v), Updated: timePtr(v.UpdatedAt)}).Error
+	if err == nil {
+		return v, true, nil
+	}
+	if errors.Is(err, gorm.ErrDuplicatedKey) {
+		if existing, ok := r.MCPServer(v.ID); ok {
+			return existing, false, nil
+		}
+	}
+	return domain.MCPServerDefinition{}, false, err
+}
+
+// UpdateMCPServerRevision updates one installed market MCP under a row lock.
+// expectedRevision is checked against the locked payload so stale editors
+// cannot replace a newer credential or configuration.
+func (r *CatalogRepo) UpdateMCPServerRevision(id string, expectedRevision int64, v domain.MCPServerDefinition) (domain.MCPServerDefinition, error) {
+	var saved domain.MCPServerDefinition
+	err := r.DB.Transaction(func(tx *gorm.DB) error {
+		var row mcpServerRow
+		query := tx
+		if tx.Dialector.Name() == "mysql" {
+			query = query.Set("gorm:query_option", "FOR UPDATE")
+		}
+		if err := query.Where("id = ?", id).Take(&row).Error; err != nil {
+			return err
+		}
+		var current domain.MCPServerDefinition
+		if err := json.Unmarshal(row.Payload, &current); err != nil {
+			return err
+		}
+		if current.ConfigurationRevision != expectedRevision {
+			return ErrMCPConfigurationConflict
+		}
+		v.ID = current.ID
+		v.MarketID = current.MarketID
+		v.Scope = current.Scope
+		v.ProjectID = current.ProjectID
+		v.OwnerUserID = current.OwnerUserID
+		v.TemplateVersion = current.TemplateVersion
+		v.ConfigurationRevision = current.ConfigurationRevision + 1
+		v.UpdatedAt = time.Now().UTC()
+		if v.FileRefs == nil {
+			v.FileRefs = current.FileRefs
+		}
+		if err := domain.ValidateMCPServer(v); err != nil {
+			return err
+		}
+		if err := tx.Model(&mcpServerRow{}).Where("id = ?", id).Updates(map[string]any{"name": v.Name, "payload": mustJSON(v), "updated_at": timePtr(v.UpdatedAt)}).Error; err != nil {
+			return err
+		}
+		saved = v
+		return nil
+	})
+	return saved, err
 }
 
 func (r *CatalogRepo) PutMCPServer(v domain.MCPServerDefinition) error {

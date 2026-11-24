@@ -169,7 +169,7 @@ func (h *catalogHandlers) repositories(c *gin.Context) {
 	if primary != "" {
 		info, ok := domain.ParseRepositoryURL(primary)
 		if !ok {
-			c.JSON(400, gin.H{"error": "仓库 URL 无法识别，请提供 GitHub / Gitee / GitLab HTTPS 链接或 Git SSH 克隆地址"})
+			c.JSON(400, gin.H{"error": "仓库 URL 无法识别，请提供 GitHub / Gitee / GitLab / Codeup HTTPS 链接或 Git SSH 克隆地址"})
 			return
 		}
 		if body.RepoURL != "" && body.URL != "" {
@@ -191,7 +191,7 @@ func (h *catalogHandlers) repositories(c *gin.Context) {
 		if info, ok := domain.ParseRepositoryURL(v.GongfengProjectID); ok {
 			v.GongfengProjectID = info.Project
 		} else if !strings.HasPrefix(v.GongfengProjectID, "github:") && !domain.IsSafeGongfengProjectID(v.GongfengProjectID) {
-			c.JSON(400, map[string]string{"error": "仓库链接无法识别：请提供有效的 GitHub / Gitee / GitLab 仓库地址"})
+			c.JSON(400, map[string]string{"error": "仓库链接无法识别：请提供有效的 GitHub / Gitee / GitLab / Codeup 仓库地址"})
 			return
 		}
 	}
@@ -224,7 +224,7 @@ func (h *catalogHandlers) repositories(c *gin.Context) {
 		c.JSON(400, map[string]string{"error": "请提供 projectId 和代码仓库地址 repoUrl，名称和仓库标识会自动识别"})
 		return
 	}
-	for _, provider := range []string{"github", "gitee", "gitlab"} {
+	for _, provider := range []string{"github", "gitee", "gitlab", "codeup"} {
 		if strings.HasPrefix(v.GongfengProjectID, provider+":") {
 			v.Provider = provider
 			if v.DefaultBranch == "" {
@@ -235,8 +235,12 @@ func (h *catalogHandlers) repositories(c *gin.Context) {
 	if v.Provider == "" {
 		v.Provider = "gongfeng"
 	}
-	if v.Provider != "gongfeng" && v.Provider != "github" && v.Provider != "gitee" && v.Provider != "gitlab" {
-		c.JSON(400, map[string]string{"error": "provider must be github, gitee, gitlab or gongfeng"})
+	if v.Provider != "gongfeng" && !strings.HasPrefix(v.GongfengProjectID, v.Provider+":") {
+		c.JSON(400, map[string]string{"error": "外部代码平台仓库必须通过对应平台 URL 配置"})
+		return
+	}
+	if v.Provider != "gongfeng" && v.Provider != "github" && v.Provider != "gitee" && v.Provider != "gitlab" && v.Provider != "codeup" {
+		c.JSON(400, map[string]string{"error": "provider must be github, gitee, gitlab, codeup or gongfeng"})
 		return
 	}
 	if v.DefaultBranch == "" {

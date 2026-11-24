@@ -31,7 +31,7 @@ function mcpMarketAdded(item,installed){
 // Catalog entries not yet added to the project. Generic templates bind MCPs
 // by these aliases, so they stay installable without a separate market tab.
 function mcpCatalogSuggestionsHTML(installed,query){
-  const items=(state.mcpMarket||[]).filter(item=>!mcpMarketAdded(item,installed)&&mcpMatchesQuery(item,query));
+  const items=(state.mcpMarket||[]).filter(item=>(item.availability==='ready'||!item.availability)&&!mcpMarketAdded(item,installed)&&mcpMatchesQuery(item,query));
   if(!items.length)return '';
   return `<section class="mcp-catalog-suggest" aria-label="平台目录"><div><b>平台目录</b><span>通用模板按名称绑定这些 MCP，添加到本项目后即可使用。</span></div><div class="mcp-catalog-actions">${items.map(item=>`<button class="button ghost small" type="button" data-mcp-install="${escapeHTML(item.id)}">＋ ${escapeHTML(item.name)}</button>`).join('')}</div></section>`;
 }
@@ -46,7 +46,7 @@ async function installMarketMCP(marketId,button){
 }
 function scopedMCPInstallations(){
   const uid=state.currentUser&&!state.currentUser.isGuest?Number(state.currentUser.id):0;
-  return (state.data?.mcpServers||[]).filter(item=>state.mcpScope==='personal'?item.scope==='personal'&&!item.marketId&&Number(item.ownerUserId)===uid:item.scope==='project'&&item.projectId===state.projectFilter);
+  return (state.data?.mcpServers||[]).filter(item=>state.mcpScope==='personal'?item.scope==='personal'&&Number(item.ownerUserId)===uid:item.scope==='project'&&item.projectId===state.projectFilter);
 }
 function mcpSearchHaystack(item){
   return [item.id,item.name,item.description,item.category,item.url,item.marketId,...(item.tags||[]),...(item.aliases||[])].join(' ').toLowerCase();
@@ -191,12 +191,13 @@ function renderMCPManagement(){
   if(personal&&(!state.currentUser||state.currentUser.isGuest)){grid.innerHTML='<div class="mcp-market-empty"><b>登录后才能管理个人 MCP</b><p>项目级 MCP 仍可在当前项目中管理。</p></div>';return}
   const pagedMCP=paginateList('mcp',matchedInstalled);
   const catalog=personal?'':mcpCatalogSuggestionsHTML(installed,query);
-  const cards=pagedMCP.items.map(item=>`<article class="mcp-market-card is-installed"><div class="mcp-card-head"><span class="mcp-card-logo">${mcpMarketLogo(item)}</span><div><h3>${escapeHTML(item.name)}</h3><small>${personal?'个人专属':escapeHTML(project?.name||item.projectId)}</small></div><span class="mcp-installed-badge ${item.marketId?'is-market':'is-custom'}">${item.marketId?'市场':'自定义'}</span></div><p>${escapeHTML(item.description||'暂无说明')}</p><div class="mcp-card-meta">${item.authType==='github-token'?'<span>GitHub 令牌认证</span>':'<span>自定义认证</span>'}<span>${escapeHTML(item.transport||'http')}</span></div><div class="mcp-card-actions"><div class="mcp-action-buttons">${item.marketId?'':`<button class="button ghost small" type="button" data-mcp-edit="${escapeHTML(item.id)}">修改</button>`}<button class="button ghost small danger" type="button" data-mcp-remove="${escapeHTML(item.id)}">移除</button></div></div></article>`).join('');
+  const cards=pagedMCP.items.map(item=>`<article class="mcp-market-card is-installed"><div class="mcp-card-head"><span class="mcp-card-logo">${mcpMarketLogo(item)}</span><div><h3>${escapeHTML(item.name)}</h3><small>${personal?'个人专属':escapeHTML(project?.name||item.projectId)}</small></div><span class="mcp-installed-badge ${item.marketId?'is-market':'is-custom'}">${item.marketId?'市场':'自定义'}</span></div><p>${escapeHTML(item.description||'暂无说明')}</p><div class="mcp-card-meta">${item.authType==='github-token'?'<span>GitHub 令牌认证</span>':'<span>自定义认证</span>'}<span>${escapeHTML(item.transport||'http')}</span></div><div class="mcp-card-actions"><div class="mcp-action-buttons">${item.marketId?`<button class="button ghost small" type="button" data-mcp-market-edit="${escapeHTML(item.id)}">修改配置</button>`:`<button class="button ghost small" type="button" data-mcp-edit="${escapeHTML(item.id)}">修改</button>`}<button class="button ghost small danger" type="button" data-mcp-remove="${escapeHTML(item.id)}">移除</button></div></div></article>`).join('');
   grid.innerHTML=catalog+(cards||(query?'<div class="mcp-market-empty"><b>没有匹配的 MCP</b><p>换个关键词试试。</p></div>':`<div class="mcp-market-empty"><b>当前范围还没有 MCP</b><p>点击右上角「添加 MCP」，${personal?'创建个人专属配置':'为本项目接入工具'}。</p></div>`));
   if(cards)grid.insertAdjacentHTML('beforeend',pagerHTML('mcp',pagedMCP));
   bindMCPLogoFallbacks(grid);
   grid.querySelectorAll('[data-mcp-install]').forEach(button=>button.onclick=()=>installMarketMCP(button.dataset.mcpInstall,button));
   grid.querySelectorAll('[data-mcp-edit]').forEach(button=>button.onclick=()=>openCustomMCPModal(state.data.mcpServers.find(item=>item.id===button.dataset.mcpEdit)));
+  grid.querySelectorAll('[data-mcp-market-edit]').forEach(button=>button.onclick=()=>publicMcpEdit(state.data.mcpServers.find(item=>item.id===button.dataset.mcpMarketEdit)));
   grid.querySelectorAll('[data-mcp-remove]').forEach(button=>button.onclick=()=>removeInstalledMCP(button.dataset.mcpRemove,button));
   bindPager(grid);
 }
@@ -204,4 +205,65 @@ async function removeInstalledMCP(id,button){
   if(!await afConfirm({title:'移除 MCP 确认',message:'移除后，引用这个 MCP 的角色将无法再调用它。确定移除？',confirmText:'确认移除',isDanger:true}))return;
   button.disabled=true;
   try{await api(`/api/mcp-servers?id=${encodeURIComponent(id)}`,{method:'DELETE'});state.data.mcpServers=state.data.mcpServers.filter(item=>item.id!==id);renderMCPManagement();renderAgents();toast('MCP 已移除','ok')}catch(e){toast(e.message,'err');button.disabled=false}
+}
+
+let publicMcpState={step:'catalog',selected:null,query:'',transport:'',scope:'project',name:'',checkStatus:'untested',checkResult:null,editingId:''};
+function publicMcpItems(){
+  const query=publicMcpState.query.trim().toLowerCase();
+  return (state.mcpMarket||[]).filter(item=>{
+    if(publicMcpState.transport&&item.transport!==publicMcpState.transport)return false;
+    return !query||[item.id,item.name,item.description,item.category,...(item.tags||[]),...(item.aliases||[])].join(' ').toLowerCase().includes(query);
+  });
+}
+function publicMcpScopeText(){
+  if(publicMcpState.scope==='personal')return '个人 · 当前账号';
+  const project=currentProject();return `本项目 · ${project?.name||'未选择项目'}`;
+}
+function publicMcpOpen(){
+  publicMcpState={step:'catalog',selected:null,query:'',transport:'',scope:state.mcpScope||'project',name:'',checkStatus:'untested',checkResult:null,editingId:''};
+  const modal=$('#publicMcpModal');if(!modal)return;
+  $('#publicMcpScope').value=publicMcpState.scope;modal.classList.add('open');renderPublicMcp();setTimeout(()=>$('#publicMcpQuery')?.focus(),0);
+}
+function publicMcpClose(){ $('#publicMcpModal')?.classList.remove('open'); }
+function renderPublicMcp(){
+  const body=$('#publicMcpBody');if(!body)return;
+  $('#publicMcpScopeHint').textContent=publicMcpScopeText();
+  $('#publicMcpQuery').value=publicMcpState.query;$('#publicMcpTransport').value=publicMcpState.transport;
+  const back=$('#publicMcpBack'),next=$('#publicMcpNext');back.hidden=publicMcpState.step==='catalog';next.hidden=publicMcpState.step==='catalog';next.textContent=publicMcpState.step==='detail'?'配置此 MCP':(publicMcpState.editingId?'保存修改':'添加配置');
+  if(publicMcpState.step==='catalog'){
+    const items=publicMcpItems();
+    body.innerHTML=items.length?`<div class="public-mcp-catalog">${items.map(item=>{const ready=item.availability==='ready'||!item.availability;const installed=(state.data?.mcpServers||[]).some(row=>row.marketId===item.id&&row.scope===publicMcpState.scope&&(publicMcpState.scope==='personal'?Number(row.ownerUserId)===Number(state.currentUser?.id):row.projectId===state.projectFilter));return `<article class="public-mcp-item"><div class="public-mcp-item-head"><span class="mcp-card-logo">${mcpMarketLogo(item)}</span><div><h3>${escapeHTML(item.name)}</h3><small>${escapeHTML(item.category||'公共模板')}</small></div></div><p>${escapeHTML(item.description||'暂无说明')}</p><div class="public-mcp-badges"><span class="public-mcp-badge">${item.transport==='stdio'?'stdio':'HTTP'}</span><span class="public-mcp-badge ${ready?'':'candidate'}">${ready?'可添加':'候选 · 待核验'}</span></div><div class="public-mcp-item-actions"><span class="modal-hint">${installed?'本范围已添加':escapeHTML((item.requirements||[])[0]||'查看配置要求')}</span><button type="button" class="button ghost small" data-public-mcp-detail="${escapeHTML(item.id)}">查看详情</button></div></article>`}).join('')}</div>`:'<div class="public-mcp-empty">没有匹配的公共 MCP<br><small>换个关键词或接入方式试试。</small></div>';
+  }else if(publicMcpState.step==='detail'){
+    const item=publicMcpState.selected,ready=item?.availability==='ready'||!item?.availability;
+    body.innerHTML=`<div class="public-mcp-detail"><section><h3>${escapeHTML(item.name)}</h3><p>${escapeHTML(item.description||'暂无说明')}</p><h4>接入要求</h4><ul>${(item.requirements||['以实际连接检查结果为准']).map(x=>`<li>${escapeHTML(x)}</li>`).join('')}</ul><h4>官方来源</h4><p><a href="${escapeHTML(item.detailUrl||'#')}" target="_blank" rel="noopener noreferrer">查看官方来源 ↗</a></p><div class="mcp-scope-hint">工具列表在实际连接检查后读取；当前没有预先编造工具数量。</div></section><aside class="public-mcp-detail-aside"><b>配置摘要</b><div>接入方式：${item.transport==='stdio'?'stdio / 隔离进程':'HTTP / Streamable HTTP'}</div><div>模板版本：${escapeHTML(item.templateVersion||'待核验')}</div><div>安装范围：${escapeHTML(publicMcpScopeText())}</div><div>${ready?'可进入模板配置。':'来源已收录，但尚未完成平台适配，暂不能添加。'}</div></aside></div>`;
+    next.disabled=!ready;
+  }else if(publicMcpState.step==='config'){
+    const item=publicMcpState.selected;const status=publicMcpState.checkStatus;const label={untested:'尚未检查',checking:'正在检查…',passed:'✓ 握手与工具列表通过',failed:`未通过：${publicMcpState.checkResult?.code||'CHECK_FAILED'}`}[status]||status;
+    body.innerHTML=`<div class="public-mcp-config"><section><h3>配置 ${escapeHTML(item.name)}</h3><label>配置名称<input id="publicMcpName" value="${escapeHTML(publicMcpState.name||item.name)}" maxlength="80"></label><label>服务地址<input value="${escapeHTML(item.url||'由模板提供')}" readonly></label><button type="button" class="button ghost" id="publicMcpCheck" ${status==='checking'?'disabled':''}>测试连接</button><p class="mcp-scope-hint" id="publicMcpCheckStatus">${escapeHTML(label)}</p></section><aside>测试只执行 MCP 初始化和 tools/list，不调用业务工具。HTTP 测试位置：SeqAnt 平台。添加后仍需按需绑定角色，受控任务策略不会因此改变。</aside></div>`;
+    next.disabled=status==='checking';
+    $('#publicMcpName')?.addEventListener('input',e=>{publicMcpState.name=e.target.value;});
+    $('#publicMcpCheck')?.addEventListener('click',publicMcpCheck);
+  }
+}
+function publicMcpSelect(id){publicMcpState.selected=(state.mcpMarket||[]).find(x=>x.id===id)||null;publicMcpState.name=publicMcpState.selected?.name||'';publicMcpState.checkStatus='untested';publicMcpState.checkResult=null;publicMcpState.editingId='';publicMcpState.step='detail';renderPublicMcp()}
+function publicMcpEdit(server){const item=(state.mcpMarket||[]).find(x=>x.id===server?.marketId);if(!item)return;publicMcpState={...publicMcpState,step:'config',selected:item,scope:server.scope||'project',name:server.name||item.name,editingId:server.id,checkStatus:'untested',checkResult:null};$('#publicMcpScope').value=publicMcpState.scope;$('#publicMcpModal').classList.add('open');renderPublicMcp()}
+function publicMcpAdvance(){if(publicMcpState.step==='detail'){publicMcpState.step='config';renderPublicMcp();return}if(publicMcpState.step==='config'){if(publicMcpState.editingId)publicMcpUpdate();else publicMcpInstall()}}
+async function publicMcpCheck(){
+  const item=publicMcpState.selected;if(!item)return;publicMcpState.checkStatus='checking';renderPublicMcp();
+  try{const result=await api('/api/mcp-market/check',{method:'POST',body:JSON.stringify({marketId:item.id,scope:publicMcpState.scope,projectId:publicMcpState.scope==='project'?state.projectFilter:'',templateVersion:item.templateVersion})});publicMcpState.checkStatus=result?.status||'failed';publicMcpState.checkResult=result;}
+  catch(error){publicMcpState.checkStatus='failed';publicMcpState.checkResult={code:'CHECK_REQUEST_FAILED'};}
+  renderPublicMcp();
+}
+async function publicMcpInstall(){
+  const item=publicMcpState.selected;if(!item)return;
+  const button=$('#publicMcpNext');button.disabled=true;button.textContent='添加中…';
+  try{const saved=await api('/api/mcp-market/install',{method:'POST',body:JSON.stringify({marketId:item.id,scope:publicMcpState.scope,projectId:publicMcpState.scope==='project'?state.projectFilter:'',templateVersion:item.templateVersion,name:publicMcpState.name||item.name})});state.data.mcpServers=[...(state.data.mcpServers||[]),saved];state.mcpScope=publicMcpState.scope;publicMcpClose();renderMCPManagement();renderAgents();toast('公共 MCP 已添加到当前范围','ok')}catch(e){toast(e.message,'err')}finally{button.disabled=false;button.textContent='添加配置'}
+}
+async function publicMcpUpdate(){
+  const item=publicMcpState.selected,button=$('#publicMcpNext'),existing=(state.data?.mcpServers||[]).find(x=>x.id===publicMcpState.editingId);if(!item||!existing)return;
+  button.disabled=true;button.textContent='保存中…';
+  try{const saved=await api(`/api/mcp-market/installations/${encodeURIComponent(existing.id)}`,{method:'PUT',body:JSON.stringify({name:publicMcpState.name||item.name,timeoutSec:existing.timeoutSec||60,expectedRevision:Number(existing.configurationRevision||0),templateVersion:item.templateVersion})});const index=state.data.mcpServers.findIndex(x=>x.id===saved.id);if(index>=0)state.data.mcpServers[index]=saved;publicMcpClose();renderMCPManagement();toast('公共 MCP 配置已更新','ok')}catch(e){toast(e.message,'err')}finally{button.disabled=false;button.textContent='保存修改'}
+}
+function bindPublicMcpControls(){
+  $('#browsePublicMcp')?.addEventListener('click',publicMcpOpen);$('#publicMcpClose')?.addEventListener('click',publicMcpClose);$('#publicMcpCustom')?.addEventListener('click',()=>{publicMcpClose();openCustomMCPModal()});$('#publicMcpNext')?.addEventListener('click',publicMcpAdvance);$('#publicMcpBack')?.addEventListener('click',()=>{publicMcpState.step=publicMcpState.step==='config'?'detail':'catalog';renderPublicMcp()});$('#publicMcpQuery')?.addEventListener('input',e=>{publicMcpState.query=e.target.value;renderPublicMcp()});$('#publicMcpTransport')?.addEventListener('change',e=>{publicMcpState.transport=e.target.value;renderPublicMcp()});$('#publicMcpScope')?.addEventListener('change',e=>{publicMcpState.scope=e.target.value;renderPublicMcp()});$('#publicMcpBody')?.addEventListener('click',e=>{const button=e.target.closest('[data-public-mcp-detail]');if(button)publicMcpSelect(button.dataset.publicMcpDetail)});$('#publicMcpModal')?.addEventListener('click',e=>{if(e.target.id==='publicMcpModal')publicMcpClose()});
 }

@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
@@ -56,15 +57,15 @@ func TestMCPInstallIDBoundsLongNamesAndOwners(t *testing.T) {
 }
 
 func TestMCPMarketCatalogContainsOnlyPublicServices(t *testing.T) {
-	if len(mcpMarketItems) != 1 {
+	if len(mcpMarketItems) != 5 {
 		t.Fatalf("catalog: %+v", mcpMarketItems)
 	}
 	item, ok := marketItem("github")
 	if !ok || item.URL != "https://api.githubcopilot.com/mcp/" || item.AuthType != "github-token" {
 		t.Fatalf("GitHub: %+v", item)
 	}
-	if _, ok := marketItem("58"); ok {
-		t.Fatal("enterprise catalog must not ship by default")
+	if item, ok := marketItem("filesystem"); !ok || item.Availability != "candidate" {
+		t.Fatal("candidate catalog metadata missing")
 	}
 }
 
@@ -151,6 +152,73 @@ func TestMCPMarketInstallAliasStoresCanonicalID(t *testing.T) {
 	h.mcpMarketInstall(conflictCtx)
 	if conflictRec.Code != http.StatusConflict {
 		t.Fatalf("expected conflict for alias/canonical, status=%d body=%s", conflictRec.Code, conflictRec.Body.String())
+	}
+}
+
+func TestMCPMarketCheckPerformsStrictReadOnlyProbe(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Method string `json:"method"`
+			ID     int64  `json:"id"`
+		}
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &req)
+		w.Header().Set("Content-Type", "application/json")
+		switch req.Method {
+		case "initialize":
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05"}}`))
+		case "tools/list":
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"read_docs"}]}}`))
+		default:
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":0,"result":{}}`))
+		}
+	}))
+	t.Cleanup(upstream.Close)
+	saved := mcpMarketItems
+	t.Cleanup(func() { mcpMarketItems = saved })
+	mcpMarketItems = []mcpMarketItem{{ID: "probe", Name: "Probe", URL: upstream.URL, Transport: "http", Availability: "ready", TemplateVersion: "1"}}
+	h := &marketHandlers{deps: &deps{repo: nil}}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/mcp-market/check", bytes.NewBufferString(`{"marketId":"probe","scope":"project","templateVersion":"1"}`))
+	h.mcpMarketCheck(c)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"status":"passed"`) || !strings.Contains(rec.Body.String(), `read_docs`) {
+		t.Fatalf("probe status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestMCPMarketInstallationUpdateUsesRevision(t *testing.T) {
+	st, err := repo.OpenTest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(st.Close)
+	if err := st.PutProject(domain.Project{ID: "p1", Name: "P1"}); err != nil {
+		t.Fatal(err)
+	}
+	server := domain.MCPServerDefinition{ID: "mcp-github-project-p1", Name: "GitHub", Scope: "project", ProjectID: "p1", MarketID: "github", TemplateVersion: "1", Transport: "http", URL: "https://example.test/mcp"}
+	if err := st.PutMCPServer(server); err != nil {
+		t.Fatal(err)
+	}
+	h := &marketHandlers{deps: &deps{repo: st}}
+	g := gin.New()
+	g.PUT("/api/mcp-market/installations/:id", h.mcpMarketInstallationUpdate)
+	rec := httptest.NewRecorder()
+	g.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/api/mcp-market/installations/"+server.ID, bytes.NewBufferString(`{"name":"GitHub docs","timeoutSec":45,"expectedRevision":0,"templateVersion":"1"}`)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var saved domain.MCPServerDefinition
+	if err := json.Unmarshal(rec.Body.Bytes(), &saved); err != nil {
+		t.Fatal(err)
+	}
+	if saved.Name != "GitHub docs" || saved.ConfigurationRevision != 1 || saved.TimeoutSec != 45 {
+		t.Fatalf("saved=%+v", saved)
+	}
+	stale := httptest.NewRecorder()
+	g.ServeHTTP(stale, httptest.NewRequest(http.MethodPut, "/api/mcp-market/installations/"+server.ID, bytes.NewBufferString(`{"name":"stale","timeoutSec":30,"expectedRevision":0,"templateVersion":"1"}`)))
+	if stale.Code != http.StatusConflict {
+		t.Fatalf("stale status=%d body=%s", stale.Code, stale.Body.String())
 	}
 }
 

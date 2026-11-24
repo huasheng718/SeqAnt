@@ -773,7 +773,7 @@ async function refreshGenericWorkflowRoles(){
 }
 function scopedAgents(){const all=state.data?.agents||[];return state.agentScope==='shared'?all.filter(a=>catalogShared(a.projectId,a.shared)):all.filter(a=>catalogOwned(a.projectId))}
 function visibleAssets(items){return (items||[]).filter(assetVisible)}
-function visibleMCPAssets(items){const uid=state.currentUser&&!state.currentUser.isGuest?Number(state.currentUser.id):0;return (items||[]).filter(item=>item.scope==='project'?item.projectId===state.projectFilter:item.scope==='personal'&&!item.marketId&&uid>0&&Number(item.ownerUserId)===uid)}
+function visibleMCPAssets(items){const uid=state.currentUser&&!state.currentUser.isGuest?Number(state.currentUser.id):0;return (items||[]).filter(item=>item.scope==='project'?item.projectId===state.projectFilter:item.scope==='personal'&&uid>0&&Number(item.ownerUserId)===uid)}
 function projectQuery(){return state.projectFilter?`?projectId=${encodeURIComponent(state.projectFilter)}`:''}
 function projectQueryWith(extra){const q=projectQuery();return q?q+`&${extra}`:`?${extra}`}
 function runProjectId(r){
@@ -1200,6 +1200,7 @@ function bind(){
   let mcpSearchTimer=0;
   $('#mcpMarketSearch')&&($('#mcpMarketSearch').oninput=e=>{state.mcpQuery=e.target.value.trim().toLowerCase();resetListPage('mcp');clearTimeout(mcpSearchTimer);mcpSearchTimer=setTimeout(()=>renderMCPManagement(),120)});
   $('#newCustomMcp')&&($('#newCustomMcp').onclick=()=>openCustomMCPModal());
+  bindPublicMcpControls();
   $$('.custom-mcp-close').forEach(btn=>btn.onclick=()=>$('#customMcpModal').classList.remove('open'));
   $('#customMcpForm')&&($('#customMcpForm').onsubmit=saveCustomMCP);
   $('#customMcpForm')?.addEventListener('change',e=>{

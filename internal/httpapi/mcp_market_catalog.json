@@ -19,7 +19,107 @@
       "aliases": [
         "github"
       ],
-      "iconUrl": "/mcp-icons/github.svg"
+      "iconUrl": "/mcp-icons/github.svg",
+      "templateVersion": "1",
+      "availability": "ready",
+      "requirements": [
+        "GitHub HTTPS MCP 地址可达",
+        "需要当前责任人的 GitHub 凭证"
+      ]
+    },
+    {
+      "id": "context7",
+      "name": "Context7",
+      "description": "检索库与框架文档，帮助 Agent 查询用法。",
+      "category": "documentation",
+      "tags": [
+        "docs",
+        "reference"
+      ],
+      "url": "https://mcp.context7.com/mcp",
+      "transport": "http",
+      "authType": "",
+      "official": false,
+      "detailUrl": "https://github.com/upstash/context7",
+      "aliases": [
+        "context7"
+      ],
+      "templateVersion": "candidate-2026-11",
+      "availability": "candidate",
+      "requirements": [
+        "HTTP 地址与认证规则待核验",
+        "官方 Key 与匿名配额待核验"
+      ]
+    },
+    {
+      "id": "filesystem",
+      "name": "Filesystem",
+      "description": "在明确允许的沙箱工作区目录内读写文件。",
+      "category": "filesystem",
+      "tags": [
+        "files",
+        "sandbox"
+      ],
+      "transport": "stdio",
+      "authType": "",
+      "official": false,
+      "detailUrl": "https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem",
+      "aliases": [
+        "filesystem"
+      ],
+      "templateVersion": "candidate-2026-11",
+      "availability": "candidate",
+      "requirements": [
+        "固定包版本待核验",
+        "必须在隔离执行环境运行",
+        "只能访问沙箱工作区"
+      ]
+    },
+    {
+      "id": "fetch",
+      "name": "Fetch",
+      "description": "获取网页内容并转换为 Agent 可阅读的文本。",
+      "category": "web",
+      "tags": [
+        "web",
+        "fetch"
+      ],
+      "transport": "stdio",
+      "authType": "",
+      "official": false,
+      "detailUrl": "https://github.com/modelcontextprotocol/servers/tree/main/src/fetch",
+      "aliases": [
+        "fetch"
+      ],
+      "templateVersion": "candidate-2026-11",
+      "availability": "candidate",
+      "requirements": [
+        "Python / uvx 依赖待核验",
+        "必须在隔离执行环境运行"
+      ]
+    },
+    {
+      "id": "playwright",
+      "name": "Playwright",
+      "description": "提供受控浏览器操作能力，用于页面走查与验证。",
+      "category": "web",
+      "tags": [
+        "browser",
+        "testing"
+      ],
+      "transport": "stdio",
+      "authType": "",
+      "official": false,
+      "detailUrl": "https://github.com/microsoft/playwright-mcp",
+      "aliases": [
+        "playwright"
+      ],
+      "templateVersion": "candidate-2026-11",
+      "availability": "candidate",
+      "requirements": [
+        "浏览器依赖待核验",
+        "必须在隔离执行环境运行"
+      ]
     }
   ]
 }

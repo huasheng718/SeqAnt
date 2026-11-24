@@ -448,6 +448,8 @@ func newWithNotifications(s *repo.Store, e *engine.Engine, syncSvc *tracker.Serv
 	g.POST("/api/mcp-servers/custom", api.market.mcpCustomInstall)
 	g.GET("/api/mcp-market", api.market.mcpMarket)
 	g.POST("/api/mcp-market/install", api.market.mcpMarketInstall)
+	g.POST("/api/mcp-market/check", api.market.mcpMarketCheck)
+	g.PUT("/api/mcp-market/installations/:id", api.market.mcpMarketInstallationUpdate)
 	g.GET("/api/skillhub/skills", api.skillhub.list)
 	g.GET("/api/skillhub/categories", api.skillhub.categories)
 	g.GET("/api/skillhub/skills/:slug", api.skillhub.detail)

@@ -45,8 +45,8 @@ func TestValidateMCPServerScope(t *testing.T) {
 		t.Fatal("personal MCP without owner should be rejected")
 	}
 	personal.OwnerUserID, personal.MarketID = 2, "wiki"
-	if err := ValidateMCPServer(personal); err == nil {
-		t.Fatal("personal market MCP should be rejected")
+	if err := ValidateMCPServer(personal); err != nil {
+		t.Fatalf("personal market MCP should be valid: %v", err)
 	}
 }
 

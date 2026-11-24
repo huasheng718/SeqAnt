@@ -2,13 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { loadApp, settle } from '../lib/load-app.mjs';
 
-test('Gitee and nested GitLab repository addresses produce matching platform bindings', async (t) => {
+test('Gitee, nested GitLab, and Codeup repository addresses produce matching platform bindings', async (t) => {
   const app = await loadApp();
   t.after(app.close);
   app.evaluate(`state.currentUser={id:1,loginName:'owner'};state.projectAdminDetailId='project-1'`);
   for (const [address, provider, identity, tokenField] of [
     ['https://gitee.com/team/repo.git', 'gitee', 'gitee:team/repo', 'giteeToken'],
     ['https://gitlab.com/group/subgroup/repo/-/tree/main', 'gitlab', 'gitlab:group/subgroup/repo', 'gitlabToken'],
+    ['https://codeup.aliyun.com/org/platform/repo.git', 'codeup', 'codeup:org/platform/repo', 'codeupToken'],
   ]) {
     app.evaluate(`openRepoDrawer()`);
     const form = app.document.querySelector('#repoDrawerForm');
@@ -18,11 +19,11 @@ test('Gitee and nested GitLab repository addresses produce matching platform bin
     const payload = app.evaluate(`repoDrawerPayload(document.querySelector('#repoDrawerForm'),parseGongfengRepoURL(document.querySelector('#repoDrawerForm').elements.repoUrl.value))`);
     assert.equal(payload.provider, provider);
     assert.equal(payload.gongfengProjectId, identity);
-    assert.equal(payload.cloneUrl, `https://${provider}.com/${identity.split(':')[1]}.git`);
+    assert.equal(payload.cloneUrl, provider === 'codeup' ? `https://codeup.aliyun.com/${identity.split(':')[1]}.git` : `https://${provider}.com/${identity.split(':')[1]}.git`);
     assert.equal(app.evaluate(`repositoryCredentialField(parseGongfengRepoURL(document.querySelector('#repoDrawerForm').elements.repoUrl.value))`), tokenField);
     app.evaluate(`closeRepoDrawer()`);
   }
-  for (const value of ['https://gitee.com.attacker.invalid/team/repo', 'https://token:secret@gitlab.com/group/repo', 'https://gitlab.com/group/../repo']) {
+  for (const value of ['https://gitee.com.attacker.invalid/team/repo', 'https://token:secret@gitlab.com/group/repo', 'https://gitlab.com/group/../repo', 'https://codeup.aliyun.com.attacker.invalid/org/repo', 'https://token:secret@codeup.aliyun.com/org/repo']) {
     assert.equal(app.evaluate(`parseGongfengRepoURL(${JSON.stringify(value)})`), null);
   }
 });

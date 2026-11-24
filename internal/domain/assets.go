@@ -71,27 +71,29 @@ type SkillFileRef struct {
 }
 
 type MCPServerDefinition struct {
-	ID               string            `json:"id"`
-	Name             string            `json:"name"`
-	ProjectID        string            `json:"projectId,omitempty"`
-	MarketID         string            `json:"marketId,omitempty"`
-	Scope            string            `json:"scope,omitempty"` // project, personal; empty is a legacy shared asset
-	OwnerUserID      int64             `json:"ownerUserId,omitempty"`
-	IconURL          string            `json:"iconUrl,omitempty"`
-	Description      string            `json:"description"`
-	Transport        string            `json:"transport"` // stdio, http
-	Command          string            `json:"command,omitempty"`
-	Args             []string          `json:"args,omitempty"`
-	URL              string            `json:"url,omitempty"`
-	Environment      map[string]string `json:"environment,omitempty"`
-	Headers          map[string]string `json:"headers,omitempty"`
-	InstallScript    string            `json:"installScript,omitempty"`
-	WorkingDirectory string            `json:"workingDirectory,omitempty"`
-	PathEntries      []string          `json:"pathEntries,omitempty"`
-	FileRefs         []MCPFileRef      `json:"fileRefs,omitempty"`
-	AuthType         string            `json:"authType,omitempty"` // empty, github-token
-	TimeoutSec       int               `json:"timeoutSec"`
-	UpdatedAt        time.Time         `json:"updatedAt"`
+	ID                    string            `json:"id"`
+	Name                  string            `json:"name"`
+	ProjectID             string            `json:"projectId,omitempty"`
+	MarketID              string            `json:"marketId,omitempty"`
+	TemplateVersion       string            `json:"templateVersion,omitempty"`
+	ConfigurationRevision int64             `json:"configurationRevision,omitempty"`
+	Scope                 string            `json:"scope,omitempty"` // project, personal; empty is a legacy shared asset
+	OwnerUserID           int64             `json:"ownerUserId,omitempty"`
+	IconURL               string            `json:"iconUrl,omitempty"`
+	Description           string            `json:"description"`
+	Transport             string            `json:"transport"` // stdio, http
+	Command               string            `json:"command,omitempty"`
+	Args                  []string          `json:"args,omitempty"`
+	URL                   string            `json:"url,omitempty"`
+	Environment           map[string]string `json:"environment,omitempty"`
+	Headers               map[string]string `json:"headers,omitempty"`
+	InstallScript         string            `json:"installScript,omitempty"`
+	WorkingDirectory      string            `json:"workingDirectory,omitempty"`
+	PathEntries           []string          `json:"pathEntries,omitempty"`
+	FileRefs              []MCPFileRef      `json:"fileRefs,omitempty"`
+	AuthType              string            `json:"authType,omitempty"` // empty, github-token
+	TimeoutSec            int               `json:"timeoutSec"`
+	UpdatedAt             time.Time         `json:"updatedAt"`
 }
 
 type MCPFileRef struct {
@@ -366,9 +368,6 @@ func validateMCPScope(v MCPServerDefinition) error {
 		}
 		if strings.TrimSpace(v.ProjectID) != "" {
 			return fmt.Errorf("个人级 MCP 不能设置 projectId")
-		}
-		if strings.TrimSpace(v.MarketID) != "" {
-			return fmt.Errorf("市场 MCP 只能安装到项目，个人级 MCP 必须为自定义")
 		}
 	default:
 		return fmt.Errorf("scope 只能为空、project 或 personal")

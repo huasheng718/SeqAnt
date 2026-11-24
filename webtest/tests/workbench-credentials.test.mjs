@@ -201,18 +201,22 @@ test('Gitee and GitLab platform credentials can be added, edited, and removed', 
   const savedUsers = {
     giteeToken: false,
     gitlabToken: false,
+    codeupToken: false,
   };
   app.router.put('/api/users/1/credentials', (call) => {
     const body = call.body;
     if (body.giteeToken) savedUsers.giteeToken = true;
     if (body.gitlabToken) savedUsers.gitlabToken = true;
+    if (body.codeupToken) savedUsers.codeupToken = true;
     if (body.giteeTokenClear) savedUsers.giteeToken = false;
     if (body.gitlabTokenClear) savedUsers.gitlabToken = false;
+    if (body.codeupTokenClear) savedUsers.codeupToken = false;
     return {
       id: 1,
       username: 'tester',
       giteeTokenConfigured: savedUsers.giteeToken,
       gitlabTokenConfigured: savedUsers.gitlabToken,
+      codeupTokenConfigured: savedUsers.codeupToken,
     };
   });
   await app.evaluate(`renderPersonalSettings()`);
@@ -220,8 +224,9 @@ test('Gitee and GitLab platform credentials can be added, edited, and removed', 
   const platform = app.document.querySelector('#credentialWizard [aria-label="平台集成"]');
   assert.ok(platform.querySelector('[data-wizard-kind="giteeToken"]'));
   assert.ok(platform.querySelector('[data-wizard-kind="gitlabToken"]'));
+  assert.ok(platform.querySelector('[data-wizard-kind="codeupToken"]'));
   app.evaluate(`closeCredentialWizard(true)`);
-  for (const [kind, token] of [['giteeToken', 'gitee-pat'], ['gitlabToken', 'gitlab-pat']]) {
+  for (const [kind, token] of [['giteeToken', 'gitee-pat'], ['gitlabToken', 'gitlab-pat'], ['codeupToken', 'codeup-pat']]) {
     app.evaluate(`openCredentialWizard('${kind}')`);
     const wizard = () => app.document.querySelector('#credentialWizard');
     wizard().querySelector('[data-wizard-next]').click();
@@ -237,8 +242,8 @@ test('Gitee and GitLab platform credentials can be added, edited, and removed', 
     wizard().querySelector('[data-wizard-done]').click();
     await app.evaluate(`renderPersonalSettings()`);
   }
-  for (const kind of ['giteeToken', 'gitlabToken']) {
-    assert.ok(app.router.calls.some((call) => call.body?.[kind] === (kind === 'giteeToken' ? 'gitee-pat' : 'gitlab-pat')));
+  for (const kind of ['giteeToken', 'gitlabToken', 'codeupToken']) {
+    assert.ok(app.router.calls.some((call) => call.body?.[kind] === (kind === 'giteeToken' ? 'gitee-pat' : kind === 'gitlabToken' ? 'gitlab-pat' : 'codeup-pat')));
     const row = () => app.document.querySelector(`[data-credential-row="${kind}"]`);
     assert.ok(row().classList.contains('is-configured'));
     row().querySelector('.credential-row-main').click();

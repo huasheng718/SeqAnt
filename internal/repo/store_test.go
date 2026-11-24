@@ -1,6 +1,7 @@
 package repo
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -17,6 +18,44 @@ func TestPutMCPServerRejectsInvalidDefinition(t *testing.T) {
 	err = s.PutMCPServer(domain.MCPServerDefinition{ID: "bad", Name: "Bad", Transport: "http", URL: "not-a-url"})
 	if err == nil {
 		t.Fatal("invalid MCP should be rejected")
+	}
+}
+
+func TestCreateMCPServerIfAbsentDoesNotOverwrite(t *testing.T) {
+	s, err := OpenTest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Close)
+	first := domain.MCPServerDefinition{ID: "market-project-p1", Name: "First", Scope: "project", ProjectID: "p1", MarketID: "github", Transport: "http", URL: "https://example.test/mcp"}
+	second := first
+	second.Name = "Second"
+	if saved, created, err := s.CreateMCPServerIfAbsent(first); err != nil || !created || saved.Name != "First" {
+		t.Fatalf("first create: saved=%+v created=%t err=%v", saved, created, err)
+	}
+	if saved, created, err := s.CreateMCPServerIfAbsent(second); err != nil || created || saved.Name != "First" {
+		t.Fatalf("duplicate create overwrote row: saved=%+v created=%t err=%v", saved, created, err)
+	}
+}
+
+func TestUpdateMCPServerRevisionRejectsStaleEditor(t *testing.T) {
+	s, err := OpenTest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Close)
+	server := domain.MCPServerDefinition{ID: "market-project-p1", Name: "First", Scope: "project", ProjectID: "p1", MarketID: "github", TemplateVersion: "1", Transport: "http", URL: "https://example.test/mcp"}
+	if _, created, err := s.CreateMCPServerIfAbsent(server); err != nil || !created {
+		t.Fatalf("create: %v", err)
+	}
+	server.Name = "Second"
+	updated, err := s.UpdateMCPServerRevision(server.ID, 0, server)
+	if err != nil || updated.ConfigurationRevision != 1 || updated.Name != "Second" {
+		t.Fatalf("update: %+v %v", updated, err)
+	}
+	server.Name = "Stale"
+	if _, err := s.UpdateMCPServerRevision(server.ID, 0, server); !errors.Is(err, ErrMCPConfigurationConflict) {
+		t.Fatalf("stale revision error=%v", err)
 	}
 }
 

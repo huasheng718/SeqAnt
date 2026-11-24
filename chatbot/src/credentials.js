@@ -8,6 +8,7 @@ export const CREDENTIALS = {
   gitToken: "GitHub Git Token",
   giteeToken: "Gitee 访问令牌",
   gitlabToken: "GitLab 访问令牌",
+  codeupToken: "云效 Codeup 访问令牌",
   gitSshKey: "Git SSH 密钥",
 };
 
@@ -121,6 +122,15 @@ export const CREDENTIAL_GUIDES = {
       "保存后回到这里点「重试节点」",
     ],
   },
+  codeupToken: {
+    url: "/#/settings",
+    link: "配置 Codeup 访问令牌",
+    steps: [
+      "到「个人配置 → Codeup」创建云效个人访问令牌并复制；令牌需要目标仓库的最小读写权限",
+      "Codeup HTTPS 仓库使用 codeup.aliyun.com 地址，云效 HTTPS 克隆账号 / 密码与个人令牌是两种独立认证方式",
+      "保存后回到这里点「重试节点」",
+    ],
+  },
   codeBuddyApiKey: {
     url: CODEBUDDY_ENVIRONMENTS[0].keyUrl,
     link: "打开 CodeBuddy 创建 Key",
@@ -168,6 +178,7 @@ const RULES = [
   ],
   ["giteeToken", /Gitee[^。\n]{0,16}(?:Token|令牌|访问令牌)|gitee\.com[^\n]*(?:Authentication failed|could not read Username|HTTP Basic: Access denied)|(?:Authentication failed|could not read Username|HTTP Basic: Access denied)[^\n]*gitee\.com/i],
   ["gitlabToken", /GitLab[^。\n]{0,16}(?:Token|令牌|访问令牌)|gitlab\.com[^\n]*(?:Authentication failed|could not read Username|HTTP Basic: Access denied)|(?:Authentication failed|could not read Username|HTTP Basic: Access denied)[^\n]*gitlab\.com/i],
+  ["codeupToken", /Codeup[^。\n]{0,20}(?:Token|令牌|访问令牌)|codeup\.aliyun\.com[^\n]*(?:Authentication failed|could not read Username|HTTP Basic: Access denied)|(?:Authentication failed|could not read Username|HTTP Basic: Access denied)[^\n]*codeup\.aliyun\.com/i],
   [
     "gitToken",
     /Git Token|工蜂[^。\n]{0,12}令牌|could not read Username|Authentication failed|HTTP Basic: Access denied|terminal prompts disabled|requested URL returned error: 40[13]/i,

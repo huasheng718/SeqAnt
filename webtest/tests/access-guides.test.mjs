@@ -38,6 +38,7 @@ test('token management renders client specs, revealed prompts, and credential hi
   assert.equal(app.evaluate(`credentialHint('工蜂 Authentication failed，需由责任人处理').field`), 'gitToken');
   assert.equal(app.evaluate(`credentialHint('Authentication failed for https://gitee.com/a/b.git').field`), 'giteeToken');
   assert.equal(app.evaluate(`credentialHint('https://gitlab.com/a/b.git: HTTP Basic: Access denied').field`), 'gitlabToken');
+  assert.equal(app.evaluate(`credentialHint('Authentication failed for https://codeup.aliyun.com/org/repo.git').field`), 'codeupToken');
   assert.match(app.evaluate(`credentialActionHTML('CodeBuddy API Key 被拒绝')`), /codeBuddyApiKey/);
 
   body.querySelector('[data-revealed-client="codex"]').click();

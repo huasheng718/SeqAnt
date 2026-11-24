@@ -12,11 +12,12 @@ import (
 func (r *UsersRepo) GitHostCredentials(id int64) map[string]string {
 	user, _ := r.User(id)
 	tokens := map[string]string{
-		"gitee.com":  strings.TrimSpace(user.GiteeToken),
-		"gitlab.com": strings.TrimSpace(user.GitLabToken),
+		"gitee.com":         strings.TrimSpace(user.GiteeToken),
+		"gitlab.com":        strings.TrimSpace(user.GitLabToken),
+		"codeup.aliyun.com": strings.TrimSpace(user.CodeupToken),
 	}
 	for host, token := range tokens {
-		if token != "" {
+		if token != "" && host != "codeup.aliyun.com" {
 			tokens[host] = "oauth2:" + token
 		}
 	}

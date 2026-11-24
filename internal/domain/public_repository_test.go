@@ -10,6 +10,8 @@ func TestPlatformRepositoryURLs(t *testing.T) {
 		{"https://gitlab.com/group/subgroup/repo/-/tree/main", "gitlab:group/subgroup/repo", "https://gitlab.com/group/subgroup/repo.git"},
 		{"gitlab:group/subgroup/repo", "gitlab:group/subgroup/repo", "https://gitlab.com/group/subgroup/repo.git"},
 		{"gitlab.com/group/subgroup/repo", "gitlab:group/subgroup/repo", "https://gitlab.com/group/subgroup/repo.git"},
+		{"https://codeup.aliyun.com/org/group/repo.git", "codeup:org/group/repo", "https://codeup.aliyun.com/org/group/repo.git"},
+		{"codeup:org/group/repo", "codeup:org/group/repo", "https://codeup.aliyun.com/org/group/repo.git"},
 	} {
 		got, ok := ParseRepositoryURL(tc.input)
 		if !ok || got.Project != tc.identity || got.CloneURL != tc.clone {

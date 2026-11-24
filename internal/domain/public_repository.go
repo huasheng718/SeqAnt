@@ -16,9 +16,13 @@ func ParseRepositoryURL(raw string) (GongfengRepoInfo, bool) {
 	s := strings.TrimSpace(raw)
 	s = strings.TrimPrefix(s, "git clone ")
 	s = strings.Trim(s, "\"'")
-	for _, provider := range []string{"github", "gitee", "gitlab"} {
+	for _, provider := range []string{"github", "gitee", "gitlab", "codeup"} {
 		if strings.HasPrefix(s, provider+":") {
-			s = "https://" + provider + ".com/" + strings.TrimPrefix(s, provider+":")
+			host := provider + ".com"
+			if provider == "codeup" {
+				host = "codeup.aliyun.com"
+			}
+			s = "https://" + host + "/" + strings.TrimPrefix(s, provider+":")
 		}
 	}
 	for _, prefix := range []string{"git@github.com:", "ssh://git@github.com/", "ssh://git@github.com:22/"} {
@@ -27,7 +31,7 @@ func ParseRepositoryURL(raw string) (GongfengRepoInfo, bool) {
 			break
 		}
 	}
-	if strings.HasPrefix(s, "github.com/") || strings.HasPrefix(s, "gitee.com/") || strings.HasPrefix(s, "gitlab.com/") {
+	if strings.HasPrefix(s, "github.com/") || strings.HasPrefix(s, "gitee.com/") || strings.HasPrefix(s, "gitlab.com/") || strings.HasPrefix(s, "codeup.aliyun.com/") {
 		s = "https://" + s
 	}
 	u, err := url.Parse(s)
@@ -62,6 +66,21 @@ func ParseRepositoryURL(raw string) (GongfengRepoInfo, bool) {
 		path = strings.Join(parts, "/")
 		base := "https://" + strings.ToLower(u.Host) + "/" + path
 		return GongfengRepoInfo{Project: provider + ":" + path, Name: parts[len(parts)-1], WebURL: base, CloneURL: base + ".git"}, true
+	}
+	if err == nil && strings.EqualFold(u.Host, "codeup.aliyun.com") && u.User == nil && (u.Scheme == "https" || u.Scheme == "http") {
+		parts := strings.Split(strings.Trim(strings.SplitN(strings.Trim(u.Path, "/"), "/-/", 2)[0], "/"), "/")
+		if len(parts) < 2 {
+			return GongfengRepoInfo{}, false
+		}
+		for _, part := range parts {
+			if part == "." || part == ".." || !hostedRepositorySegment.MatchString(part) {
+				return GongfengRepoInfo{}, false
+			}
+		}
+		parts[len(parts)-1] = strings.TrimSuffix(parts[len(parts)-1], ".git")
+		path := strings.Join(parts, "/")
+		base := "https://codeup.aliyun.com/" + path
+		return GongfengRepoInfo{Project: "codeup:" + path, Name: parts[len(parts)-1], WebURL: base, CloneURL: base + ".git"}, true
 	}
 	return ParseGongfengRepoURL(raw)
 }

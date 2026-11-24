@@ -1,0 +1,158 @@
+{
+  "baseline": "2e37094063b4a4f25b804427c256f27b1007a752",
+  "planVersion": "v1.0",
+  "implementationStarted": true,
+  "tasks": [
+    {
+      "id": "MCP",
+      "task": "11-23-public-mcp-visual-config",
+      "status": "in_progress",
+      "dependsOn": [
+        "11-23-public-mcp-templates",
+        "11-23-public-mcp-scoped-install",
+        "11-23-public-mcp-selector-ui",
+        "11-23-public-mcp-http-check",
+        "11-23-public-mcp-stdio-check",
+        "11-23-public-mcp-acceptance"
+      ],
+      "acceptance": [
+        "AC01",
+        "AC02",
+        "AC03",
+        "AC04",
+        "AC05",
+        "AC06",
+        "AC07",
+        "AC08",
+        "AC09",
+        "AC10",
+        "AC11",
+        "AC12",
+        "AC13",
+        "AC14",
+        "AC15",
+        "AC16",
+        "AC17",
+        "AC18",
+        "AC19",
+        "AC20"
+      ],
+      "evidence": "implementation-progress.md"
+    },
+    {
+      "id": "MCP-01",
+      "task": "11-23-public-mcp-templates",
+      "status": "planning",
+      "dependsOn": [],
+      "acceptance": [
+        "AC05",
+        "AC09",
+        "AC20"
+      ]
+    },
+    {
+      "id": "MCP-02",
+      "task": "11-23-public-mcp-scoped-install",
+      "status": "planning",
+      "dependsOn": [
+        "11-23-public-mcp-templates"
+      ],
+      "acceptance": [
+        "AC03",
+        "AC04",
+        "AC07",
+        "AC08",
+        "AC09",
+        "AC19"
+      ]
+    },
+    {
+      "id": "MCP-03",
+      "task": "11-23-public-mcp-selector-ui",
+      "status": "planning",
+      "dependsOn": [
+        "11-23-public-mcp-templates",
+        "11-23-public-mcp-scoped-install"
+      ],
+      "acceptance": [
+        "AC01",
+        "AC02",
+        "AC03",
+        "AC05",
+        "AC06",
+        "AC07",
+        "AC08",
+        "AC14",
+        "AC15",
+        "AC16",
+        "AC18",
+        "AC19"
+      ]
+    },
+    {
+      "id": "MCP-04",
+      "task": "11-23-public-mcp-http-check",
+      "status": "planning",
+      "dependsOn": [
+        "11-23-public-mcp-templates",
+        "11-23-public-mcp-scoped-install"
+      ],
+      "acceptance": [
+        "AC10",
+        "AC13",
+        "AC19",
+        "AC20"
+      ]
+    },
+    {
+      "id": "MCP-05",
+      "task": "11-23-public-mcp-stdio-check",
+      "status": "planning",
+      "dependsOn": [
+        "11-23-public-mcp-templates",
+        "11-23-public-mcp-scoped-install"
+      ],
+      "acceptance": [
+        "AC11",
+        "AC12",
+        "AC13",
+        "AC19",
+        "AC20"
+      ]
+    },
+    {
+      "id": "MCP-06",
+      "task": "11-23-public-mcp-acceptance",
+      "status": "planning",
+      "dependsOn": [
+        "11-23-public-mcp-scoped-install",
+        "11-23-public-mcp-selector-ui",
+        "11-23-public-mcp-http-check",
+        "11-23-public-mcp-stdio-check"
+      ],
+      "acceptance": [
+        "AC01",
+        "AC02",
+        "AC03",
+        "AC04",
+        "AC05",
+        "AC06",
+        "AC07",
+        "AC08",
+        "AC09",
+        "AC10",
+        "AC11",
+        "AC12",
+        "AC13",
+        "AC14",
+        "AC15",
+        "AC16",
+        "AC17",
+        "AC18",
+        "AC19",
+        "AC20"
+      ]
+    }
+  ],
+  "startedTask": "11-23-public-mcp-templates"
+}

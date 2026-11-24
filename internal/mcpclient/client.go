@@ -16,12 +16,13 @@ import (
 // Client is a minimal Streamable HTTP MCP client that sends JSON-RPC 2.0
 // tool-call requests to an MCP gateway and parses the response.
 type Client struct {
-	url    string
-	hdrs   map[string]string
-	http   *http.Client
-	mu     sync.Mutex
-	nextID int64
-	init   bool
+	url       string
+	hdrs      map[string]string
+	http      *http.Client
+	mu        sync.Mutex
+	nextID    int64
+	init      bool
+	sessionID string
 }
 
 func New(url string, headers map[string]string) *Client {
@@ -262,6 +263,174 @@ func (c *Client) ListToolsContext(ctx context.Context) ([]Tool, error) {
 		return nil, fmt.Errorf("mcp tools/list result: %w", err)
 	}
 	return result.Tools, nil
+}
+
+// ProbeToolsContext performs a strict, read-only MCP handshake followed by
+// tools/list. Unlike the legacy runtime path, initialization failures and
+// malformed responses are errors rather than a best-effort continuation.
+func (c *Client) ProbeToolsContext(ctx context.Context) ([]Tool, error) {
+	if c == nil {
+		return nil, fmt.Errorf("nil MCP client")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	c.mu.Lock()
+	c.nextID++
+	initID := c.nextID
+	c.nextID++
+	toolsID := c.nextID
+	c.mu.Unlock()
+	initRaw, err := c.strictRPC(ctx, rpcRequest{JSONRPC: "2.0", ID: initID, Method: "initialize", Params: map[string]any{
+		"protocolVersion": "2024-11-05", "capabilities": map[string]any{}, "clientInfo": map[string]any{"name": "agentflow-check", "version": "1"},
+	}})
+	if err != nil {
+		return nil, fmt.Errorf("mcp initialize: %w", err)
+	}
+	var initResp rpcResponse
+	if err := json.Unmarshal(initRaw, &initResp); err != nil || initResp.Result == nil {
+		return nil, fmt.Errorf("mcp initialize returned an invalid result")
+	}
+	if err := c.strictNotification(ctx, rpcRequest{JSONRPC: "2.0", Method: "notifications/initialized", Params: map[string]any{}}); err != nil {
+		return nil, fmt.Errorf("mcp initialized notification: %w", err)
+	}
+	tools := make([]Tool, 0)
+	cursor := ""
+	for page := 0; page < 20; page++ {
+		params := map[string]any{}
+		if cursor != "" {
+			params["cursor"] = cursor
+		}
+		toolsRaw, err := c.strictRPC(ctx, rpcRequest{JSONRPC: "2.0", ID: toolsID + int64(page), Method: "tools/list", Params: params})
+		if err != nil {
+			return nil, err
+		}
+		var toolsResp rpcResponse
+		if err := json.Unmarshal(toolsRaw, &toolsResp); err != nil {
+			return nil, fmt.Errorf("mcp tools/list response: %w", err)
+		}
+		var result struct {
+			Tools      []Tool `json:"tools"`
+			NextCursor string `json:"nextCursor"`
+		}
+		if err := json.Unmarshal(toolsResp.Result, &result); err != nil {
+			return nil, fmt.Errorf("mcp tools/list result: %w", err)
+		}
+		tools = append(tools, result.Tools...)
+		if len(tools) > 1000 {
+			return nil, fmt.Errorf("mcp tools/list response limit exceeded")
+		}
+		if result.NextCursor == "" {
+			return tools, nil
+		}
+		cursor = result.NextCursor
+	}
+	return nil, fmt.Errorf("mcp tools/list pagination limit exceeded")
+}
+
+func (c *Client) strictRPC(ctx context.Context, request rpcRequest) ([]byte, error) {
+	body, err := json.Marshal(request)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	for key, value := range c.hdrs {
+		req.Header.Set(key, value)
+	}
+	c.mu.Lock()
+	sessionID := c.sessionID
+	c.mu.Unlock()
+	if sessionID != "" {
+		req.Header.Set("Mcp-Session-Id", sessionID)
+	}
+	client := *c.http
+	client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("gateway HTTP %d", resp.StatusCode)
+	}
+	if sessionID := resp.Header.Get("Mcp-Session-Id"); sessionID != "" {
+		c.mu.Lock()
+		c.sessionID = sessionID
+		c.mu.Unlock()
+	}
+	raw, err := c.readResponseLimited(resp, 1<<20)
+	if err != nil {
+		return nil, err
+	}
+	var decoded rpcResponse
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return nil, fmt.Errorf("invalid JSON-RPC response: %w", err)
+	}
+	if decoded.ID != request.ID {
+		return nil, fmt.Errorf("JSON-RPC response id mismatch")
+	}
+	if decoded.Error != nil {
+		return nil, fmt.Errorf("JSON-RPC error [%d]: %s", decoded.Error.Code, decoded.Error.Message)
+	}
+	if decoded.Result == nil {
+		return nil, fmt.Errorf("JSON-RPC response has no result")
+	}
+	return raw, nil
+}
+
+func (c *Client) readResponseLimited(resp *http.Response, max int64) ([]byte, error) {
+	var raw []byte
+	var err error
+	if strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
+		raw, err = c.readSSE(io.LimitReader(resp.Body, max+1))
+	} else {
+		raw, err = io.ReadAll(io.LimitReader(resp.Body, max+1))
+	}
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(raw)) > max {
+		return nil, fmt.Errorf("MCP response exceeds %d bytes", max)
+	}
+	return raw, nil
+}
+
+func (c *Client) strictNotification(ctx context.Context, request rpcRequest) error {
+	body, err := json.Marshal(request)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	for key, value := range c.hdrs {
+		req.Header.Set(key, value)
+	}
+	c.mu.Lock()
+	sessionID := c.sessionID
+	c.mu.Unlock()
+	if sessionID != "" {
+		req.Header.Set("Mcp-Session-Id", sessionID)
+	}
+	client := *c.http
+	client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("gateway HTTP %d", resp.StatusCode)
+	}
+	return nil
 }
 
 func (c *Client) ensureInit() error {

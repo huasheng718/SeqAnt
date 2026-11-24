@@ -174,7 +174,7 @@ func (d deps) allowAssetWrite(c *gin.Context, path string) bool {
 		peekJSON(c, &body)
 		issue, _ := d.repo.Issue(strings.TrimSpace(body.IssueID))
 		return d.requireProjectWriter(c, issue.ProjectID)
-	case "/api/mcp-market/install", "/api/mcp-servers/custom":
+	case "/api/mcp-market/install", "/api/mcp-market/check", "/api/mcp-servers/custom":
 		var body struct {
 			Scope     string `json:"scope"`
 			ProjectID string `json:"projectId"`
