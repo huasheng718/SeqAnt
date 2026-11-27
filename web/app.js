@@ -988,6 +988,7 @@ themeMedia.addEventListener('change',()=>applyTheme());
 window.addEventListener('storage',event=>{if(!event.key||event.key===THEME_KEY)applyTheme()});
 
 function bind(){
+	bindPrompts();
 	prepareMCPFormHints();
   $$('.nav[data-view]').forEach(btn=>btn.onclick=async()=>{
     if(!(await confirmAssetLeave()))return;
@@ -995,7 +996,9 @@ function bind(){
       if(!(await confirmDiscardProjectDraft()))return;
       resetProjectAdminDetail();
     }
-    if(btn.id==='railSettingsEntry'&&(settingsRouteTransition?.target?isSettingsManagementView(settingsRouteTransition.target):document.body.classList.contains('management-mode'))){
+    if(btn.id==='railSettingsEntry'&&(settingsRouteTransition?.target?isSettingsManagementView(settingsRouteTransition.target)&&settingsRouteTransition.target!=='prompts':document.body.classList.contains('management-mode')&&!document.body.classList.contains('tools-mode'))){
+      switchView('collaboration');
+    }else if(btn.id==='railToolsEntry'&&(settingsRouteTransition?.target==='prompts'||document.body.classList.contains('tools-mode'))){
       switchView('collaboration');
     }else switchView(btn.dataset.view);
   });
@@ -1579,7 +1582,7 @@ function settingsSidebarExpanded(){
 }
 let settingsSidebarEntryFrame=0;
 let settingsSidebarWasManaged=false;
-const settingsManagementViews=['settings','assistant','projects','bots','sops','flow','runs','aiSchedules','agents','mcp','rules','skills','runners','dockerfiles','environments','sandboxes','guide','platform'];
+const settingsManagementViews=['settings','assistant','projects','bots','sops','flow','runs','aiSchedules','agents','mcp','rules','skills','runners','dockerfiles','environments','sandboxes','guide','platform','prompts'];
 const settingsRouteMotion=matchMedia('(prefers-reduced-motion: reduce)');
 let settingsRouteTransition=null;
 let settingsRouteApplying=false;
@@ -1714,12 +1717,22 @@ function setSettingsSidebarExpanded(expanded){
   document.body.classList.toggle('sidebar-open',open&&matchMedia('(max-width:1000px)').matches);
   const settingsEntry=$('#railSettingsEntry');
   if(settingsEntry){
-    const label=managing?'返回首页':'设置';
+    const label=managing&&!document.body.classList.contains('tools-mode')?'返回首页':'设置';
     settingsEntry.setAttribute('aria-expanded',String(open));
-    settingsEntry.setAttribute('aria-pressed',String(managing));
+    settingsEntry.setAttribute('aria-pressed',String(managing&&!document.body.classList.contains('tools-mode')));
     settingsEntry.setAttribute('aria-label',label);
     settingsEntry.setAttribute('title',label);
     settingsEntry.dataset.tooltip=label;
+  }
+  const toolsEntry=$('#railToolsEntry');
+  if(toolsEntry){
+    const active=managing&&document.body.classList.contains('tools-mode');
+    const label=active?'返回首页':'工具';
+    toolsEntry.setAttribute('aria-expanded',String(active&&open));
+    toolsEntry.setAttribute('aria-pressed',String(active));
+    toolsEntry.setAttribute('aria-label',label);
+    toolsEntry.setAttribute('title',label);
+    toolsEntry.dataset.tooltip=label;
   }
   const toggle=$('#settingsSidebarToggle');
   if(toggle){
@@ -1769,7 +1782,7 @@ function setPlatformRailExpanded(expanded){
   const text=button.querySelector('.rail-label');
   if(text)text.textContent=label;
 }
-function viewTitles(){return {management:'设置',collaboration:'AI 工作台',issues:'需求列表',aiSchedules:'定时任务',bots:'通道管理',assistant:'AI 助手',runs:'运行记录',approvals:'待我确认',sops:'流程模板',flow:'流程设计',agents:'角色定义',mcp:'能力资产',rules:'能力资产',skills:'能力资产',dockerfiles:'环境资产',environments:'环境资产',sandboxes:'环境资产',observability:'统计',projects:'项目配置',platform:'平台管理',runners:'执行机器',settings:'个人配置',access:'访问密钥',guide:'访问密钥'}}
+function viewTitles(){return {management:'设置',tools:'工具',prompts:'提示词',collaboration:'AI 工作台',issues:'需求列表',aiSchedules:'定时任务',bots:'通道管理',assistant:'AI 助手',runs:'运行记录',approvals:'待我确认',sops:'流程模板',flow:'流程设计',agents:'角色定义',mcp:'能力资产',rules:'能力资产',skills:'能力资产',dockerfiles:'环境资产',environments:'环境资产',sandboxes:'环境资产',observability:'统计',projects:'项目配置',platform:'平台管理',runners:'执行机器',settings:'个人配置',access:'访问密钥',guide:'访问密钥'}}
 // 设置侧栏只列一级入口；被合并进同一页的子视图（能力资产、环境资产的类型 Tab，
 // 从流程模板打开的流程设计）按 data-nav-match 高亮它们所属的入口。
 function settingsNavMatches(btn,name){return btn.dataset.view===name||String(btn.dataset.navMatch||'').split(/\s+/).includes(name)}
@@ -1910,6 +1923,7 @@ function switchView(name){
   $$('details.collab-settings').forEach(menu=>menu.open=false);
   const titles=viewTitles();
   if(name==='dashboard')name='collaboration';
+  if(name==='tools')name='prompts';
   if(name==='access')name='guide';
   if(name==='assets')name='dockerfiles';
   if(name==='playbooks')name='sops';
@@ -1940,13 +1954,16 @@ function switchView(name){
   document.body.classList.toggle('view-has-heading',!!$(`#${target}View`).querySelector('.page-heading,.page-header,.kb-head,.pa-ph'));
   const isPureManagement = isSettingsManagementView(name);
   document.body.classList.toggle('management-mode', isPureManagement);
+  document.body.classList.toggle('tools-mode', name==='prompts');
+  const navigationSurfaceTitle=$('#navigationSurfaceTitle');
+  if(navigationSurfaceTitle)navigationSurfaceTitle.textContent=name==='prompts'?'工具':'设置';
   // At ≤1000px the settings navigation is an overlay drawer: it opens when the
   // user comes into settings from another page, and closes once a settings
   // page is picked (or deep-linked) so the page itself is visible.
   const narrowSettings=isPureManagement&&matchMedia('(max-width:1000px)').matches;
   setSettingsSidebarExpanded(!narrowSettings?isPureManagement:staying?settingsSidebarExpanded():!!prevView&&!isSettingsManagementView(previous));
   $('#managementEntry')?.classList.toggle('active', isPureManagement);
-  $('#railSettingsEntry')?.classList.toggle('active', isPureManagement);
+  $('#railSettingsEntry')?.classList.toggle('active', isPureManagement&&name!=='prompts');
   const noSidebarViews = ['issues', 'approvals', 'observability'];
   document.body.classList.toggle('no-sidebar', noSidebarViews.includes(name));
   document.body.classList.toggle('chat-next-active', name==='collaboration');
@@ -2005,6 +2022,7 @@ function switchView(name){
   if(name==='mcp')loadMCPMarket();
   if(name==='runners')refreshRunners();
   if(name==='guide')renderGuide();
+  if(name==='prompts')renderPrompts();
   if(name==='flow'){if(!state.workflow?.nodes?.some(n=>n.id===state.selectedNode))state.selectedNode=null;renderWorkflowMeta();renderCanvas();renderProperties();setFlowView('canvas');refreshGenericWorkflowRoles()}
 }
-function renderAll(){renderUserBadge();renderPlatformNav();renderObsTabs();renderProjectSwitcher();renderIssues();renderSOPCatalog();renderWorkflowMeta();renderCanvas();renderProperties();renderAgents();renderAssets();renderMCPManagement();renderRuns();renderSync();renderProjectAdmin();renderDashboard();renderGuide();updateApprovalBadge();showDirectRunButton($('#flowView').classList.contains('active'))}
+function renderAll(){renderUserBadge();renderPlatformNav();renderObsTabs();renderProjectSwitcher();renderIssues();renderSOPCatalog();renderWorkflowMeta();renderCanvas();renderProperties();renderAgents();renderAssets();renderMCPManagement();renderRuns();renderSync();renderProjectAdmin();renderDashboard();renderGuide();renderPrompts();updateApprovalBadge();showDirectRunButton($('#flowView').classList.contains('active'))}

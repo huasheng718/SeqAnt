@@ -43,6 +43,7 @@
   <link rel="stylesheet" href="/app/observability-harness.css?v=20261030obs1">
   <link rel="stylesheet" href="/app/topbar-harness.css?v=20261030tb1">
   <link rel="stylesheet" href="/app/approvals-harness.css?v=20261030ap1">
+  <link rel="stylesheet" href="/app/prompts.css">
   <style>
     .boot-loader{position:fixed;inset:0;z-index:2147483000;display:flex;align-items:center;justify-content:center;background:#0a0e16;background:var(--bg,#0a0e16);color:#94a3bd;color:var(--muted,#94a3bd);transition:opacity .18s ease}
     [data-theme=light] .boot-loader{background:#f5f7fb;background:var(--bg,#f5f7fb);color:#475569;color:var(--muted,#475569)}
@@ -92,6 +93,12 @@
         <span class="rail-label">需求列表</span>
       </button>
 
+      <!-- 工具 -->
+      <button class="rail-btn nav" id="railToolsEntry" data-view="tools" data-nav-match="prompts" data-tooltip="工具" aria-label="工具" aria-controls="settingsSidebar" aria-expanded="false">
+        <svg class="agent-icon harness-icon" data-icon="prompt" data-icon-motion="idle" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3"/><path d="M13 15h4"/></svg>
+        <span class="rail-label">工具</span>
+      </button>
+
       <!-- 4. 待我确认 (带审批徽标) -->
       <button class="rail-btn nav" data-view="approvals" data-tooltip="待我确认" aria-label="待我确认">
         <svg class="agent-icon harness-icon" data-icon="gate" data-icon-motion="idle" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path class="gate-shield" d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/><path class="gate-check agent-check-draw" pathLength="1" d="m9 12 2 2 4-4"/></svg>
@@ -128,7 +135,7 @@
   <!-- 侧边栏：二级会话与管理导航 -->
   <aside class="platform-sidebar" id="settingsSidebar">
     <header class="settings-navigation-header">
-      <h2 class="settings-navigation-title">设置</h2>
+      <h2 class="settings-navigation-title" id="navigationSurfaceTitle">设置</h2>
       <button type="button" id="settingsSidebarToggle" class="settings-navigation-toggle" aria-label="收起设置导航" title="收起设置导航" aria-controls="settingsSidebar" aria-expanded="false"><svg class="agent-icon harness-icon" data-icon="panel-left" data-icon-motion="idle" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/><path d="m16 15-3-3 3-3"/></svg></button>
     </header>
     <nav>
@@ -136,6 +143,7 @@
       <div class="sidebar-conversations">
           <section class="collaboration-tasks"><h3>任务运行 <span class="collab-task-actions"><button id="collabSearchToggle" type="button" title="搜索与筛选任务" aria-label="搜索与筛选任务" aria-expanded="false" aria-controls="collabTaskFilters"></button><button id="collabRefresh" class="button ghost small" type="button" title="刷新任务" aria-label="刷新任务"></button></span></h3><div id="collabTaskFilters" class="collab-task-filters" hidden><input id="collabTaskSearch" type="search" placeholder="搜索任务…" aria-label="搜索任务"><select id="collabTaskFilter" aria-label="任务状态筛选"><option value="all">全部状态</option><option value="running">正在运行</option><option value="active">未完成</option><option value="waiting">待处理 / 暂停</option><option value="failed">失败</option><option value="succeeded">已完成</option></select><select id="collabTaskResponsible" aria-label="任务责任人筛选"><option value="all">全部责任人</option><option value="me">我负责的</option></select></div><div id="collabTasks"></div></section>
           </div>
+      <button class="nav mobile-tools-entry" data-view="tools" data-nav-match="prompts"><span class="nav-icon"><svg class="agent-icon harness-icon" data-icon="prompt" width="18" height="18" aria-hidden="true" focusable="false"></svg></span><span class="nav-label">工具</span></button>
       </div>
       <div id="configurationNav" class="management-navigation">
       <button class="nav management-back" data-jump="collaboration"><span class="nav-icon"><svg class="agent-icon harness-icon" data-icon="chevron-left" data-icon-motion="idle" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M15 6l-6 6 6 6"/></svg></span><span class="nav-label">返回工作台</span></button>
@@ -157,6 +165,11 @@
       <p>开放与平台</p>
       <button class="nav" data-view="guide"><span class="nav-icon"><svg class="agent-icon harness-icon" data-icon="key" data-icon-motion="idle" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="8" cy="15" r="4"/><path d="M10.8 12.2 20 3"/><path d="M16 7l3 3"/><path d="M18 5l2 2"/></svg></span><span class="nav-label">访问密钥</span></button>
       <div id="platformNavGroup" hidden><button class="nav" data-view="platform"><span class="nav-icon"><svg class="agent-icon harness-icon" data-icon="gate" data-icon-motion="idle" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path class="gate-shield" d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/><path class="gate-check agent-check-draw" pathLength="1" d="m9 12 2 2 4-4"/></svg></span><span class="nav-label">平台管理</span></button></div>
+      </div>
+      <div id="toolsNavigation" class="management-navigation">
+        <button class="nav management-back" data-jump="collaboration"><span class="nav-icon"><svg class="agent-icon harness-icon" data-icon="chevron-left" data-icon-motion="idle" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M15 6l-6 6 6 6"/></svg></span><span class="nav-label">返回工作台</span></button>
+        <p>工具</p>
+        <button class="nav" data-view="prompts"><span class="nav-icon"><svg class="agent-icon harness-icon" data-icon="prompt" data-icon-motion="idle" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3"/><path d="M13 15h4"/></svg></span><span class="nav-label">提示词</span></button>
       </div>
     </nav>
 
@@ -198,6 +211,18 @@
         <div><p class="eyebrow">平台</p><h1>平台管理</h1><p>跨项目生效的平台级设置，只有平台管理员可见。</p></div>
       </div>
       <div id="platformAdminPanel" class="platform-admin-panel"></div>
+    </section>
+    <section id="promptsView" class="view page-view">
+      <div class="page-heading prompts-heading">
+        <div><p class="eyebrow">工具 · 提示词</p><h1>提示词</h1><p>收集、整理和复用工作中验证过的提示词片段。</p></div>
+        <div class="heading-actions"><button id="newPrompt" class="button primary" type="button"><svg class="agent-icon harness-icon" data-icon="plus" width="16" height="16" aria-hidden="true" focusable="false"></svg>新增提示词</button></div>
+      </div>
+      <div class="prompts-toolbar">
+        <label class="prompts-search"><svg class="agent-icon harness-icon" data-icon="search" width="15" height="15" aria-hidden="true" focusable="false"></svg><input id="promptSearch" type="search" placeholder="搜索标题、内容或标签" aria-label="搜索提示词"></label>
+        <select id="promptCategoryFilter" class="select" aria-label="筛选提示词分类"><option value="">全部分类</option><option value="需求分析">需求分析</option><option value="代码开发">代码开发</option><option value="代码评审">代码评审</option><option value="文档写作">文档写作</option><option value="其他">其他</option></select>
+        <span id="promptCount" class="prompts-count" role="status"></span>
+      </div>
+      <div id="promptList" class="prompt-list" aria-live="polite"></div>
     </section>
     <!-- 工作台 -->
     <section id="dashboardView" class="view page-view">
@@ -1337,6 +1362,7 @@
   <script src="/app/hover-ink.js"></script>
   <script src="/app/sidebar-mode-motion.js"></script>
   <script src="/app/sliding-tabs.js?v=20261031req1"></script>
+  <script src="/app/prompts.js"></script>
   <script src="/app/page-feedback.js"></script>
   <script src="/app/start.js"></script>
   </div>

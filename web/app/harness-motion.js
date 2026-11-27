@@ -40,6 +40,14 @@
     "strokeWidth": 1.7,
     "note": "外框保持固定，提示符前移，光标闪烁两次"
   },
+  "prompt": {
+    "body": "<rect x=\"3\" y=\"4\" width=\"18\" height=\"16\" rx=\"2\"/><path class=\"prompt\" d=\"M7 9l3 3-3 3\"/><path class=\"cursor\" d=\"M13 15h4\"/>",
+    "duration": 1100,
+    "viewBox": "0 0 24 24",
+    "filled": false,
+    "strokeWidth": 1.7,
+    "note": "提示词光标轻微闪动"
+  },
   "stage-terminal": {
     "body": "<rect x=\"3.2\" y=\"4.2\" width=\"17.6\" height=\"15.6\" rx=\"2\"/><path class=\"prompt\" d=\"M7.1 9.3 10.3 12 7.1 14.7\"/><path class=\"cursor\" d=\"M12.2 14.8h4.6\"/>",
     "duration": 1100,
@@ -1151,7 +1159,7 @@
     settings: "settings", bots: "robot", assistant: "sparkles", projects: "users", flow: "workflow",
     agents: "user", mcp: "connector", rules: "doc", skills: "skills",
     dockerfiles: "layers", environments: "terminal", sandboxes: "server",
-    observability: "token", guide: "key", platform: "gate",
+    observability: "token", guide: "key", platform: "gate", tools: "prompt", prompts: "prompt",
   };
   const controls = {
     collabNew: "plus", collabRefresh: "refresh", collabSearchToggle: "search",
